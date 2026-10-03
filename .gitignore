@@ -1,0 +1,9 @@
+# generated from your own SS2.exe: derived from copyrighted code, never commit
+out/
+build/
+*.exe
+*.dll
+*.osm
+*.log
+*.bmp
+__pycache__/
