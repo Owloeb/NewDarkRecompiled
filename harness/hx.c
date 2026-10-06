@@ -53,6 +53,11 @@ void rt_call_external(CPU *c, uint32_t t) {
 }
 void rt_fault(CPU *c, uint32_t a, int kind) { (void)c; (void)a; outcome = OUT_FAULT; outarg = kind; siglongjmp(jb, 1); }
 void rt_budget_exhausted(CPU *c) { (void)c; outcome = OUT_BUDGET; siglongjmp(jb, 1); }
+/* setjmp/longjmp are exercised in the full host only: here a longjmp ends the trial like a fault */
+static void *sj_dummy[5];
+void **rt_sj_begin(CPU *c, uint32_t buf) { (void)c; (void)buf; return sj_dummy; }
+void rt_sj_resume(CPU *c, uint32_t buf) { (void)c; (void)buf; }
+void rt_longjmp(CPU *c) { (void)c; outcome = OUT_FAULT; outarg = 3; siglongjmp(jb, 1); }
 
 static void on_sig(int s, siginfo_t *si, void *u) {
     (void)u;

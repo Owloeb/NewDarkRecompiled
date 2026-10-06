@@ -32,6 +32,8 @@ def main():
     ap.add_argument("--jobs", type=int, default=os.cpu_count() or 2, help="parallel compile jobs")
     ap.add_argument("--install", action="store_true", help="copy the built exe into the folder that contains SS2.exe")
     ap.add_argument("--no-osm", action="store_true", help="don't recompile the script modules (the game then uses the original DLLs)")
+    ap.add_argument("--hooks", help="hooks file for tools/apply_hooks.py: call your own C functions at the entry of recompiled functions (for mods)")
+    ap.add_argument("--extra-src", nargs="*", default=[], help="extra C files to compile and link into the exe (for mods; they see runtime/rt.h)")
     ap.add_argument("--named-sources", action="store_true", help="also write out/nd_named: a copy of the generated C with function names and notes, for reading")
     a = ap.parse_args()
     exe = os.path.abspath(a.ss2exe)
@@ -95,6 +97,16 @@ def main():
           "const RecompModDesc *const recomp_mods[] = { " + "".join(f"&{p}_desc, " for p, _ in mods) + "0 };\n"
     if not os.path.exists(modsc) or open(modsc).read() != txt: open(modsc, "w").write(txt)
 
+    # mod support: hooks into the generated C (seconds, no re-lift) and extra sources
+    r = run([PY, os.path.join("tools", "apply_hooks.py")] + (["--hooks", os.path.abspath(a.hooks)] if a.hooks else []) + [gen] + [md for _, md in mods], "hooks")
+    if a.hooks: print("  " + r.stdout.strip())
+    extra = [os.path.abspath(x) for x in a.extra_src]
+    for x in extra:
+        if not os.path.isfile(x): sys.exit(f"extra source not found: {x}")
+    keep = {"extra_" + os.path.basename(x)[:-2] + ".o" for x in extra}
+    for o in glob.glob(os.path.join(objd, "extra_*.o")):
+        if os.path.basename(o) not in keep: os.remove(o)
+
     step(2, "Compiling (about 10 minutes the first time; later runs only rebuild what changed)")
     cf = ["-target", "x86-windows-gnu", "-O1", "-fno-sanitize=undefined", "-fno-stack-protector", "-fno-strict-aliasing", "-fwrapv", "-w",
           "-DRT_IDENTITY", "-DRT_RING", "-DHOST_BUILD=\"dev\"", "-Iruntime"]
@@ -104,12 +116,12 @@ def main():
     zig = [PY, "-m", "ziglang", "cc"]
     jobs = []
     run(zig + ["-target", "x86-windows-gnu", "-c", os.path.join("host", "guest_region.s"), "-o", os.path.join("build", "win", "00_guest_region.o")], "guest region")
-    srcs = sorted(glob.glob(os.path.join(gen, "*.c"))) + [c for _, md in mods for c in sorted(glob.glob(os.path.join(md, "*.c")))] + [modsc, os.path.join(ROOT, "host", "win_host.c")]
+    srcs = sorted(glob.glob(os.path.join(gen, "*.c"))) + [c for _, md in mods for c in sorted(glob.glob(os.path.join(md, "*.c")))] + [modsc, os.path.join(ROOT, "host", "win_host.c")] + extra
     deps = os.path.getmtime(os.path.join(ROOT, "runtime", "rt.h"))
     stamp = os.path.join(objd, "host_flags.txt"); hf = " ".join(hostflags)
     host_changed = not os.path.exists(stamp) or open(stamp).read() != hf
     for s in srcs:
-        o = os.path.join(objd, os.path.basename(s)[:-2] + ".o")
+        o = os.path.join(objd, ("extra_" if s in extra else "") + os.path.basename(s)[:-2] + ".o")
         dep = deps
         if s.endswith(("_moddata.c", "win_host.c")) or s == modsc: dep = max(deps, os.path.getmtime(os.path.join(ROOT, "runtime", "recomp_mod.h")))
         need = not os.path.exists(o) or os.path.getmtime(o) < max(os.path.getmtime(s), dep) or (s.endswith("win_host.c") and host_changed)
@@ -117,8 +129,8 @@ def main():
     done = [0]
     def comp(j):
         s, o = j
-        extra = hostflags if s.endswith("win_host.c") else inc[os.path.dirname(s)]
-        run(zig + cf + extra + ["-c", os.path.relpath(s, ROOT), "-o", os.path.relpath(o, ROOT)], "compile " + os.path.basename(s))
+        fl = hostflags if s.endswith("win_host.c") or s in extra else inc[os.path.dirname(s)]
+        run(zig + cf + fl + ["-c", s if s in extra else os.path.relpath(s, ROOT), "-o", os.path.relpath(o, ROOT)], "compile " + os.path.basename(s))
         done[0] += 1; print(f"  compiled {done[0]}/{len(jobs)}: {os.path.basename(s)}", flush=True)
     print(f"  {len(jobs)} of {len(srcs)} files to compile with {a.jobs} jobs")
     with ThreadPoolExecutor(a.jobs) as ex: list(ex.map(comp, jobs))

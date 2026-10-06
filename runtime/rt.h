@@ -71,6 +71,18 @@ extern uint32_t rt_shadow[]; extern int rt_shadow_sp;
 #define RETCHK(c) do {} while (0)
 #endif
 
+/* setjmp/longjmp. A guest setjmp must snapshot the state of its caller, so the lifter translates a call to setjmp
+ * (an import, or the CRT's own _setjmp3 in a statically linked module) into RT_SETJMP, which takes a host
+ * __builtin_setjmp in the recompiled caller's own C frame. A call to longjmp becomes rt_longjmp, which restores the
+ * guest registers saved for that jump buffer and __builtin_longjmp's back there; RT_SETJMP then returns the value as if
+ * from setjmp. (No C++ destructors run in between, unlike MSVC's longjmp; leaks at worst.) */
+void **rt_sj_begin(CPU *c, uint32_t buf);     /* record the guest state for setjmp(buf); returns the host jump buffer */
+void rt_sj_resume(CPU *c, uint32_t buf);      /* after a longjmp to buf: restore the guest registers, eax = value */
+void rt_longjmp(CPU *c);                      /* longjmp(buf = [esp+4], value = [esp+8]); does not return */
+#define RT_SETJMP(c) do { uint32_t sjb_ = RD32((c)->esp + 4); void **hj_ = rt_sj_begin((c), sjb_); \
+                          if (__builtin_setjmp(hj_) == 0) (c)->eax = 0; else rt_sj_resume((c), sjb_); \
+                          RETCHK(c); (c)->esp += 4; } while (0)
+
 #ifdef RT_TRACE
 void rt_trace(CPU *c, uint32_t va);
 #define TRACE(va) rt_trace(c, va)

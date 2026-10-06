@@ -761,9 +761,14 @@ class Fn:
         if op.type == X86_OP_IMM:
             t = op.imm & 0xFFFFFFFF
             if t not in self.L.entries: raise Unsupported(f'call to non-entry {t:x}')
+            if t in self.L.setjmp_fns: return [f'CALLPUSH(c, 0x{n:x}u); RT_SETJMP(c); /* setjmp */']
+            if t in self.L.longjmp_fns: return [f'CALLPUSH(c, 0x{n:x}u); rt_longjmp(c); return; /* longjmp */']
             return [f'CALLPUSH(c, 0x{n:x}u); {self.fl_store(self.L.fl_in.get(t, 0))}{self.L.fname(t)}(c); {self.fl_load(self.L.fl_out.get(t, 0))}']
         if op.type == X86_OP_MEM and op.mem.base == 0 and op.mem.index == 0 and (op.mem.disp & 0xFFFFFFFF) in self.img.iat:
             s = op.mem.disp & 0xFFFFFFFF
+            kind = SJ_IMPORTS.get(self.img.imports[self.img.iat[s]][1])
+            if kind == 'set': return [f'CALLPUSH(c, 0x{n:x}u); RT_SETJMP(c); /* {self.L.impname(s)} */']
+            if kind == 'long': return [f'CALLPUSH(c, 0x{n:x}u); rt_longjmp(c); return; /* {self.L.impname(s)} */']
             return [f'CALLPUSH(c, 0x{n:x}u); rt_call_import(c, {self.img.iat[s]}); /* {self.L.impname(s)} */']
         return [f'uint32_t t = {self.rd(i, op, 4)};',
                 f'CALLPUSH(c, 0x{n:x}u); {self.fl_store(self.L.fl_ind_in)}{self.L.prefix}_call(c, t); {self.fl_load(self.L.fl_ind_out)}']
@@ -953,11 +958,39 @@ class SynthImage(Image):
         self._cache = {}
 
 
+# MSVC CRT setjmp/longjmp, statically linked into a module: recognised by their code so calls to them can be translated
+# (setjmp must take its snapshot in the caller's frame; see RT_SETJMP in runtime/rt.h).
+SJ_SETJMP3 = bytes.fromhex('8b542404892a895a04897a0889720c896210')   # mov edx,[esp+4]; mov [edx],ebp; ... mov [edx+10h],esp
+SJ_LONGJMP = bytes.fromhex('558bec83ec508b5c2458')
+SJ_IMPORTS = {'_setjmp3': 'set', '_setjmp': 'set', 'setjmp': 'set', 'longjmp': 'long'}
+
+def find_sjlj(img, entries):
+    sj, lj = set(), set()
+    for lo, hi in img.code:
+        blob = img.img[lo - img.base:hi - img.base]
+        for pat, out in ((SJ_SETJMP3, sj), (SJ_LONGJMP, lj)):
+            k = blob.find(pat)
+            while k >= 0:
+                if lo + k in entries: out.add(lo + k)
+                k = blob.find(pat, k + 1)
+    for e in entries:                          # import thunks: jmp [IAT setjmp/longjmp]
+        o = e - img.base
+        if 0 <= o < len(img.img) - 6 and img.img[o:o + 2] == b'\xff\x25':
+            slot = int.from_bytes(img.img[o + 2:o + 6], 'little')
+            if slot in img.iat:
+                kind = SJ_IMPORTS.get(img.imports[img.iat[slot]][1])
+                if kind == 'set': sj.add(e)
+                elif kind == 'long': lj.add(e)
+    if sj or lj: print(f'setjmp/longjmp: {len(sj)} setjmp, {len(lj)} longjmp function(s) recognised')
+    return sj, lj
+
+
 class Lifter:
     def __init__(self, path, prefix, img=None):
         self.img = img or Image(path)
         self.prefix = prefix
         self.entries, self.jt_targets = discover(self.img)
+        self.setjmp_fns, self.longjmp_fns = find_sjlj(self.img, self.entries)
         self.smc_sites = {}     # insn va -> [ {kind, off, size, target} ]
         self.smc_branch = {}    # branch insn va -> set(targets)
         self.smc_problems = []

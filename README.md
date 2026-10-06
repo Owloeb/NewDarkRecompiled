@@ -107,8 +107,9 @@ Empty text files placed next to the exe change its behaviour:
   leftovers in the engine's default script list and are safely skipped.
 - `lgvid.dll`, `fmsel.dll` and `darkdlgs.dll` still run as the original DLLs, so this is not yet a fully recompiled
   program.
-- C++ exceptions and `longjmp` inside recompiled code are not supported. The Squirrel compiler uses `longjmp` to report
-  syntax errors, so a script with a syntax error will stop the game instead of logging the error.
+- C++ exceptions inside recompiled code are not supported (a `throw` would stop the game). `setjmp`/`longjmp` are
+  supported (the Squirrel compiler uses them to report script syntax errors), but unlike MSVC's `longjmp` they don't run
+  C++ destructors of the frames they skip, so such an error may leak a little memory.
 - The engine's SSE code paths are disabled (the recompiler doesn't translate SSE), so it uses its x87 fallbacks, as it
   would on an old CPU.
 - Windows only (the host is a 32-bit Windows executable; 64-bit Windows 10/11 run it fine). Only tested with NewDark
@@ -133,6 +134,13 @@ function's name and notes above it, plus `functions.txt`, an index, for reading.
 
 The generated names stay on your machine; only `symbols/manual.sym` (our own findings, keyed by address) is in the
 repository. Contributions to it are welcome: one line per function, `0x<address> func <name>  # what it does`.
+
+## Hooks (for mods)
+
+`build_win.py --hooks hooks.txt --extra-src mymod.c` makes recompiled engine functions call your own C code when they
+are entered, without re-lifting: `tools/apply_hooks.py` inserts the calls into the generated C in seconds, and only the
+touched files recompile. A hooks file has one line per hook, `0x<function address> <void function(CPU *c)>`. This
+repository itself stays vanilla; mods live in their own repositories.
 
 ## Roadmap
 

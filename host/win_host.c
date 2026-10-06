@@ -125,7 +125,9 @@ static ImpRec *imp_begin(CPU *c, void *fn, int idx, LONG n) {
     return r;
 }
 
-typedef struct { CPU cpu; uint32_t stk_lo, stk_hi; int depth; } TC;
+typedef struct { uint32_t buf, esp, ebp, ebx, esi, edi, fs0, val; int depth, used; void *hj[5]; } SjRec;   /* one guest setjmp */
+#define SJ_MAX 32
+typedef struct { CPU cpu; uint32_t stk_lo, stk_hi; int depth; SjRec sj[SJ_MAX]; unsigned sj_tick; } TC;
 static DWORD tls_idx = TLS_OUT_OF_INDEXES;
 
 static TC *get_tc(void) {
@@ -823,6 +825,41 @@ static void call_native(CPU *c, void *fn, int idx) {
     if (heapcheck_on && !heaps_valid()) heap_report(c, idx, fn, n, "AFTER the call: the native callee itself did it");
     if (r.hasf) FPUSH(c, r.f);
     c->esp += 4 + r.popped;
+}
+
+/* ---- setjmp/longjmp for recompiled code (see RT_SETJMP in runtime/rt.h) ---- */
+static SjRec *sj_find(TC *t, uint32_t buf, int create) {
+    SjRec *lru = &t->sj[0];
+    for (int i = 0; i < SJ_MAX; i++) {
+        if (t->sj[i].used && t->sj[i].buf == buf) return &t->sj[i];
+        if (t->sj[i].used < lru->used) lru = &t->sj[i];
+    }
+    if (!create) return NULL;
+    memset(lru, 0, sizeof *lru); lru->buf = buf; return lru;
+}
+void **rt_sj_begin(CPU *c, uint32_t buf) {
+    TC *t = get_tc(); SjRec *r = sj_find(t, buf, 1);
+    r->used = (int)++t->sj_tick; if (r->used <= 0) r->used = 1;
+    r->esp = c->esp; r->ebp = c->ebp; r->ebx = c->ebx; r->esi = c->esi; r->edi = c->edi; r->depth = t->depth;
+    r->fs0 = RD32(c->fs_base);
+    /* fill the guest jump buffer like MSVC's _setjmp3 does, for any code that looks inside it */
+    WR32(buf, c->ebp); WR32(buf + 4, c->ebx); WR32(buf + 8, c->edi); WR32(buf + 12, c->esi); WR32(buf + 16, c->esp);
+    WR32(buf + 20, RD32(c->esp)); WR32(buf + 24, r->fs0); WR32(buf + 28, 0xFFFFFFFFu); WR32(buf + 32, 0x56433230u); WR32(buf + 36, 0);
+    return r->hj;
+}
+void rt_sj_resume(CPU *c, uint32_t buf) {
+    SjRec *r = sj_find(get_tc(), buf, 0);
+    if (!r) die("setjmp resumed for an unknown jump buffer %08x", buf);
+    c->esp = r->esp; c->ebp = r->ebp; c->ebx = r->ebx; c->esi = r->esi; c->edi = r->edi; c->eax = r->val;
+    WR32(c->fs_base, r->fs0);   /* drop SEH registrations made after setjmp */
+}
+void rt_longjmp(CPU *c) {
+    TC *t = get_tc(); uint32_t buf = RD32(c->esp + 4), val = RD32(c->esp + 8);
+    SjRec *r = sj_find(t, buf, 0);
+    if (!r) die("longjmp to jump buffer %08x, which recompiled code never passed to setjmp", buf);
+    if (r->depth != t->depth) die("longjmp to %08x across native code (setjmp at callback depth %d, longjmp at %d)", buf, r->depth, t->depth);
+    r->val = val ? val : 1;
+    __builtin_longjmp(r->hj, 1);
 }
 
 void rt_call_import(CPU *c, int idx) {
