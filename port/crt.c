@@ -174,6 +174,17 @@ static FILE *F(uint32_t g) { uint32_t i = g ? RD32(g) : 0; return i && i < MAXF 
 SHIM(fopen_) {
     char hp[1400]; host_path(gs(A(0)), hp, sizeof hp); char m[16]; snprintf(m, sizeof m, "%s", gs(A(1)));
     char *t = strchr(m, 't'); if (t) memmove(t, t + 1, strlen(t)); char *b = strchr(m, 'b'); (void)b;
+    int textrd = m[0] == 'r' && !strchr(m, 'b') && !strchr(m, '+'); /* Windows text mode: CRLF reads back as LF */
+    if (textrd) {
+        FILE *rf = fopen(hp, "rb");
+        if (rf) {
+            fseek(rf, 0, SEEK_END); long n = ftell(rf); fseek(rf, 0, SEEK_SET); char *buf = malloc(n + 1); long k = 0;
+            if (buf && fread(buf, 1, n, rf) == (size_t)n) {
+                for (long i = 0; i < n; i++) { if (buf[i] == '\r' && i + 1 < n && buf[i + 1] == '\n') continue; buf[k++] = buf[i]; }
+                fclose(rf); FILE *mf = k ? fmemopen(buf, k, "r") : NULL; if (mf) { RET(file_new(mf)); return; }
+            } else fclose(rf);
+        }
+    }
     FILE *f = fopen(hp, m); if (!f) { if (errno == ENOENT) port_miss("fopen", gs(A(0)), hp); RET(0); return; } RET(file_new(f));
 }
 SHIM(fclose_) { FILE *f = F(A(0)); if (!f) { RET((uint32_t)-1); return; } ftab[RD32(A(0))] = NULL; g_free(A(0)); RET((uint32_t)fclose(f)); }
