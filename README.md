@@ -9,27 +9,23 @@ This is a work in progress, not a finished product (see *Known issues*).
 
 ## Why this exists
 
-The goal is a **VR version of System Shock 2** (OpenXR, aimed at Quest 3 via PC link) built on the NewDark engine:
-head tracking decoupled from the aim/body, tracked hands and weapons, a left-handed mode, and the HUD on a floating
-panel you point at. That needs engine-level access (the camera, the world renderer, the weapon and HUD code) that the
-original program doesn't expose and whose source was never released. Patching the original binary byte by byte doesn't
-scale to that. Turning the binary into readable, rebuildable C does: once the engine is C, we can find the camera,
-render two eyes, move the weapon to a controller and so on, in a normal compile-edit-run loop.
+System Shock 2's engine source was never released, so the only way to change how the engine works has been patching the
+original binary. This project turns the binary into C that can be rebuilt, read and changed: a **vanilla recompilation**
+that plays exactly like the original, as a foundation for others to build on. Fixes, mods that need engine-level access
+(a VR version is being built as a separate project on top of this one), and ports to other platforms all start from here.
 
-Static recompilation also makes the engine portable. The same C can be built for other targets, and a PS Vita port is a
-longer-term goal on the back burner.
-
-VR itself is **not** in this repository yet. First the flat game has to run correctly through the recompiled code, which
-is where this stands now.
+This repository stays vanilla: it reproduces the original game and adds nothing to it.
 
 ## What it is, in one paragraph
 
-`lift.py` reads your own `SS2.exe`, finds every function (about 16,000), and emits one C function per x86 function.
+`lift.py` reads your own `SS2.exe`, finds every function (about 21,000), and emits one C function per x86 function.
 The Windows host (`host/win_host.c`) is linked at the game's original address (0x400000). At start-up it loads your
 `SS2.exe` sections into that range, wires the import table to the real Windows API, and redirects every original function
 to its recompiled version. Window procedures, DirectX callbacks, the C runtime's static constructors and script modules
-that call into the engine land in recompiled code too. The Looking Glass DLLs the game loads (`lgvid.dll`, `fmsel.dll`,
-`darkdlgs.dll`, `allobjs.osm`, `Squirrel.osm`) still run as the original binaries for now; recompiling them is a later step.
+that call into the engine land in recompiled code too. The game's object scripts (`allobjs.osm`) are recompiled the same way:
+when the engine loads that module, the host maps it itself, checks it is the exact file that was recompiled, and runs the
+recompiled code instead (falling back to the original if a mod ships its own copy). The other Looking Glass DLLs
+(`lgvid.dll`, `fmsel.dll`, `darkdlgs.dll`, `Squirrel.osm`) still run as the original binaries for now.
 
 ## Legal and ground rules
 
@@ -55,7 +51,8 @@ The tools here are MIT-licensed (see LICENSE). The game, its engine and anything
         python host\build_win.py "C:\Games\System Shock 2\SS2.exe" --install
 
    The first build takes about 20 minutes (about 8 to convert the game to C, about 10 to compile). It prints progress as it
-   goes. Later builds only redo what changed.
+   goes. Later builds only redo what changed. `Data\allobjs.osm` next to your `SS2.exe` is found and recompiled
+   automatically (`--no-osm` skips it).
 
 4. Run `ss2_native.exe` from your System Shock 2 folder instead of `SS2.exe`. Leave everything else in that folder where it
    is: the game's data, `lgvid.dll`, `ffmpeg.dll`, `fmsel.dll`, `darkdlgs.dll`, `allobjs.osm`, `Squirrel.osm` and the config
@@ -78,6 +75,7 @@ Empty text files placed next to the exe change its behaviour:
 | `darkrecomp_nomsaa.txt` | force multisampling off |
 | `darkrecomp_novsync.txt` | present without vsync |
 | `darkrecomp_nolgvid.txt` | hide the video decoder (skips cutscenes) |
+| `darkrecomp_native_osm.txt` | use the original `allobjs.osm` instead of the recompiled one |
 | `darkrecomp_heapcheck.txt` | validate all heaps after every native call (slow; for tracking corruption) |
 | `darkrecomp_realquery.txt` | use the real D3D frame-limiter query instead of the shortcut |
 
@@ -105,7 +103,10 @@ Empty text files placed next to the exe change its behaviour:
 - The game's log (`SS2.log`) shows `Failed to load script module ...` lines for `baseelev.osm`, `traps.osm` and one
   with an unreadable name (`+x?A.osm`, error 126). All three appear in logs from the retail game too: they are harmless
   leftovers in the engine's default script list and are safely skipped.
-- The original Looking Glass DLLs and `.osm` scripts still run natively, so this is not yet a fully recompiled program.
+- `Squirrel.osm`, `lgvid.dll`, `fmsel.dll` and `darkdlgs.dll` still run as the original DLLs, so this is not yet a fully
+  recompiled program.
+- The engine's SSE code paths are disabled (the recompiler doesn't translate SSE), so it uses its x87 fallbacks, as it
+  would on an old CPU.
 - Windows only (the host is a 32-bit Windows executable; 64-bit Windows 10/11 run it fine). Only tested with NewDark
   2.48 on an NVIDIA GPU.
 - Many diagnostic hooks from the bring-up are still in `host/win_host.c`; they are inactive unless
@@ -113,11 +114,12 @@ Empty text files placed next to the exe change its behaviour:
 
 ## Roadmap
 
-1. Flat-screen shakedown: long play sessions across all decks, to flush out remaining crashes.
-2. Understand the engine's camera, world-render, weapon and HUD paths in the recompiled code.
-3. D3D9 stereo rendering and OpenXR (Quest 3): head tracking decoupled from body.
-4. Tracked hands and weapons, with a left-handed option; HUD on a floating panel with a pointer.
-5. Later: recompile the original DLLs and scripts; Vita backend.
+1. Shakedown on more machines (AMD and Intel GPUs, other Windows versions) and with popular mods.
+2. A symbol file: names for functions, globals and structures (from RTTI, strings and observation), applied by the
+   lifter so the generated C is readable.
+3. Recompile the remaining Looking Glass modules (`Squirrel.osm`, `lgvid.dll`, `fmsel.dll`, `darkdlgs.dll`) and replace
+   the bundled `ffmpeg.dll` with a modern open-source decoder.
+4. A platform layer (graphics, audio, input, Windows API) so the recompiled game can run beyond 32-bit Windows.
 
 ## Technical notes: the recompiler
 

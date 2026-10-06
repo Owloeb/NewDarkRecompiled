@@ -31,6 +31,15 @@ typedef struct { uint32_t va; guest_fn fn; } rc_ent;
 extern const rc_ent nd_table[];
 extern const unsigned nd_table_n;
 extern guest_fn nd_lookup(uint32_t va);
+#ifdef HAVE_AO   /* recompiled allobjs.osm (lifted with --iat-indirect, described by host/gen_moddata.py) */
+extern const rc_ent ao_table[];
+extern const unsigned ao_table_n;
+extern guest_fn ao_lookup(uint32_t va);
+extern const char ao_mod_name[];
+extern const uint32_t ao_mod_base, ao_mod_size, ao_mod_entry, ao_mod_crc, ao_mod_code_lo[], ao_mod_code_hi[];
+extern const unsigned ao_mod_ncode;
+#endif
+static volatile int ao_active;    /* recompiled allobjs.osm is mapped and in use */
 typedef struct { const char *dll, *name; } ImpDef;
 extern const ImpDef hd_imports[];
 extern const unsigned hd_nimports;
@@ -50,7 +59,7 @@ static char exe_dir[MAX_PATH];
 
 static void hlog(const char *fmt, ...) {
     if (!hlogf) return;
-    if (!g_debug && !g_crash && strncmp(fmt, "FFMEM", 5) && strncmp(fmt, "darkrecomp host build", 21)) return;
+    if (!g_debug && !g_crash && strncmp(fmt, "FFMEM", 5) && strncmp(fmt, "RECOMP", 6) && strncmp(fmt, "darkrecomp host build", 21)) return;
     EnterCriticalSection(&log_cs);
     SYSTEMTIME st; GetLocalTime(&st);
     fprintf(hlogf, "[%02d:%02d:%02d.%03d t%lu] ", st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, GetCurrentThreadId());
@@ -243,6 +252,9 @@ __asm__(
 uint32_t cb_dispatch(uint32_t addr, const uint32_t *nargs, uint32_t ecx, uint32_t edx, uint32_t *popped) {
     TC *t = get_tc(); CPU *c = &t->cpu;
     guest_fn f = nd_lookup(addr);
+#ifdef HAVE_AO
+    if (!f && ao_active) f = ao_lookup(addr);
+#endif
     if (!f) die("native code called guest address %08x which is not a recompiled function", addr);
     CPU save = *c;
     uint32_t sp = t->depth ? c->esp : t->stk_hi - 64;
@@ -795,6 +807,11 @@ void rt_call_import(CPU *c, int idx) {
 }
 
 void rt_call_external(CPU *c, uint32_t target) {
+    guest_fn f = nd_lookup(target);            /* a recompiled module calling into another one (osm -> engine, engine -> osm) */
+#ifdef HAVE_AO
+    if (!f && ao_active) f = ao_lookup(target);
+#endif
+    if (f) { f(c); return; }
     for (unsigned i = 0; i < hd_ncode; i++)
         if (target >= hd_code_lo[i] && target < hd_code_hi[i])
             die("indirect call/jump to guest address %08x which is not a recompiled function", target);
@@ -905,11 +922,18 @@ static void ff_patch_video(void) {
     HMODULE f = GetModuleHandleA("ffmpeg.dll"); if (!f) f = LoadLibraryA("ffmpeg.dll");
     ff_patched = 1; patch_msvcrt_alloc(a, "lgvid.dll"); if (f) patch_msvcrt_alloc(f, "ffmpeg.dll"); else hlog("FFMEM: ffmpeg.dll not loadable");
 }
+static HMODULE ao_try_load(LPCSTR n);
+static int ao_try_free(HMODULE h);
 static HMODULE WINAPI hk_LoadLibraryA(LPCSTR n) {
+    { HMODULE r = ao_try_load(n); if (r) return r; }
     HMODULE h = LoadLibraryA(n); DWORD e = GetLastError();
     hlog("LoadLibraryA(%s) = %p%s", n, h, h ? "" : " FAILED"); if (!h) hlog("   GetLastError=%lu", e);
     vid_ranges(); if (h && strstr(n, "lgvid")) ff_patch_video();
     SetLastError(e); return h;
+}
+static BOOL WINAPI hk_FreeLibrary(HMODULE h) {
+    if (ao_try_free(h)) return TRUE;
+    return FreeLibrary(h);
 }
 static HMODULE WINAPI hk_LoadLibraryExA(LPCSTR n, HANDLE f, DWORD fl) {
     HMODULE h = LoadLibraryExA(n, f, fl); DWORD e = GetLastError();
@@ -953,7 +977,7 @@ static HANDLE WINAPI hk_CreateFileA(LPCSTR n, DWORD a, DWORD s, LPSECURITY_ATTRI
 static void *hook_for(const char *name) {
 #define H(x) if (!strcmp(name, #x)) return (void *)hk_##x;
     H(GetModuleHandleA) H(GetModuleHandleW) H(GetModuleFileNameA) H(GetModuleFileNameW)
-    H(LoadLibraryA) H(LoadLibraryExA) H(LoadLibraryW) H(GetProcAddress)
+    H(LoadLibraryA) H(LoadLibraryExA) H(LoadLibraryW) H(GetProcAddress) H(FreeLibrary)
     H(MessageBoxA) H(MessageBoxW) H(OutputDebugStringA) H(CreateFileA)
 #undef H
     return NULL;
@@ -1062,6 +1086,100 @@ static void install_entry_hooks(void) {
     hlog("entry hooks: %u patched, %u too small, %u overlap patch fields (left as original code)", patched, tiny, smc);
 }
 
+/* ---- recompiled DLLs (allobjs.osm) ----
+   The engine loads script modules with LoadLibraryA and unloads them with FreeLibrary on every mission change. For a module we
+   have recompiled, the host maps the real file itself at its preferred base WITHOUT running its DllMain or binding imports
+   (DONT_RESOLVE_DLL_REFERENCES), checks that its code is byte-identical to what was lifted, binds the imports (through the
+   same wrappers the exe uses), sends every function entry to the recompiled code, and then runs DllMain - recompiled too.
+   If anything doesn't match (a mod ships its own allobjs.osm, the address is taken, ...) the original DLL is used as before. */
+static void hook_code(const rc_ent *tab, unsigned n, const uint32_t *lo, const uint32_t *hi, unsigned nr, uint8_t **poolp, const char *what) {
+    if (!*poolp) *poolp = (uint8_t *)VirtualAlloc(NULL, (size_t)n * 10, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE);
+    uint8_t *pool = *poolp; if (!pool) die("cannot allocate entry stubs for %s", what);
+    unsigned patched = 0, tiny = 0;
+    for (unsigned r = 0; r < nr; r++) { DWORD op; VirtualProtect((void *)(uintptr_t)lo[r], hi[r] - lo[r], PAGE_EXECUTE_READWRITE, &op); }
+    for (unsigned i = 0; i < n; i++) {
+        uint32_t e = tab[i].va, end = 0;
+        for (unsigned k = 0; k < nr; k++) if (e >= lo[k] && e < hi[k]) end = hi[k];
+        if (!end) continue;
+        uint32_t next = i + 1 < n ? tab[i + 1].va : end; if (next > end) next = end;
+        if (next < e + 5) { tiny++; continue; }
+        uint8_t *s = pool + (size_t)i * 10;
+        s[0] = 0xB8; *(uint32_t *)(s + 1) = e;
+        s[5] = 0xE9; *(int32_t *)(s + 6) = (int32_t)((uint8_t *)cb_common - (s + 10));
+        uint8_t *p = (uint8_t *)(uintptr_t)e;
+        p[0] = 0xE9; *(int32_t *)(p + 1) = (int32_t)(s - (p + 5));
+        patched++;
+    }
+    FlushInstructionCache(GetCurrentProcess(), NULL, 0);
+    hlog("%s: %u entry points redirected to recompiled code, %u too small", what, patched, tiny);
+}
+static void *ao_resv; static HMODULE ao_h; static int ao_refs, ao_disabled;
+static void ao_reserve(void) {
+#ifdef HAVE_AO
+    if (!ao_resv && !ao_h) ao_resv = VirtualAlloc((void *)(uintptr_t)ao_mod_base, ao_mod_size, MEM_RESERVE, PAGE_NOACCESS);
+#endif
+}
+static HMODULE ao_try_load(LPCSTR n) {
+#ifdef HAVE_AO
+    if (ao_disabled || (uintptr_t)n <= 0xFFFF) return NULL;
+    const char *b = strrchr(n, '\\'), *b2 = strrchr(n, '/'); if (b2 > b) b = b2; b = b ? b + 1 : n;
+    if (_stricmp(b, ao_mod_name)) return NULL;
+    if (ao_h) { ao_refs++; return ao_h; }
+    if (ao_resv) { VirtualFree(ao_resv, 0, MEM_RELEASE); ao_resv = NULL; }
+    HMODULE h = LoadLibraryExA(n, NULL, DONT_RESOLVE_DLL_REFERENCES);
+    const char *why = NULL;
+    if (!h) why = "could not be mapped";
+    else if ((uintptr_t)h != ao_mod_base) why = "did not get its preferred address";
+    else {
+        uint32_t crc = 0;
+        for (unsigned r = 0; r < ao_mod_ncode; r++) {   /* crc32 over all code ranges, chained like zlib.crc32 */
+            const uint8_t *q = (const uint8_t *)(uintptr_t)ao_mod_code_lo[r]; size_t len = ao_mod_code_hi[r] - ao_mod_code_lo[r];
+            static uint32_t tab[256]; if (!tab[1]) for (uint32_t i = 0; i < 256; i++) { uint32_t c = i; for (int k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320u ^ (c >> 1) : c >> 1; tab[i] = c; }
+            uint32_t c = ~crc; while (len--) c = tab[(c ^ *q++) & 0xFF] ^ (c >> 8); crc = ~c;
+        }
+        if (crc != ao_mod_crc) why = "is a different version than the one that was recompiled (a mod's copy?)";
+    }
+    if (why) {
+        hlog("RECOMP %s %s: using the original DLL", n, why);
+        if (h) FreeLibrary(h);
+        ao_reserve(); return NULL;
+    }
+    /* bind imports like the Windows loader would, through the exe's import wrappers where we have one */
+    uint8_t *base = (uint8_t *)h; IMAGE_NT_HEADERS *nt = (IMAGE_NT_HEADERS *)(base + ((IMAGE_DOS_HEADER *)base)->e_lfanew);
+    DWORD irva = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress; int nb = 0;
+    for (IMAGE_IMPORT_DESCRIPTOR *d = (IMAGE_IMPORT_DESCRIPTOR *)(base + irva); irva && d->Name; d++) {
+        HMODULE dm = LoadLibraryA((const char *)(base + d->Name));
+        IMAGE_THUNK_DATA *ot = (IMAGE_THUNK_DATA *)(base + (d->OriginalFirstThunk ? d->OriginalFirstThunk : d->FirstThunk)), *ft = (IMAGE_THUNK_DATA *)(base + d->FirstThunk);
+        for (; ot->u1.AddressOfData; ot++, ft++) {
+            void *p;
+            if (ot->u1.Ordinal & 0x80000000u) p = dm ? (void *)GetProcAddress(dm, (LPCSTR)(uintptr_t)(ot->u1.Ordinal & 0xFFFF)) : NULL;
+            else { const char *fn = (const char *)((IMAGE_IMPORT_BY_NAME *)(base + ot->u1.AddressOfData))->Name; p = dm ? (void *)GetProcAddress(dm, fn) : NULL; void *hk = hook_for(fn); if (hk && p) p = hk; }
+            if (!p) p = (void *)missing_import;
+            DWORD op; VirtualProtect(&ft->u1.Function, 4, PAGE_READWRITE, &op); ft->u1.Function = (DWORD)(uintptr_t)p; VirtualProtect(&ft->u1.Function, 4, op, &op); nb++;
+        }
+    }
+    static uint8_t *pool; hook_code(ao_table, ao_table_n, ao_mod_code_lo, ao_mod_code_hi, ao_mod_ncode, &pool, ao_mod_name);
+    ao_h = h; ao_refs = 1; ao_active = 1;
+    BOOL ok = ((BOOL (WINAPI *)(HINSTANCE, DWORD, LPVOID))(uintptr_t)ao_mod_entry)((HINSTANCE)h, DLL_PROCESS_ATTACH, NULL);
+    hlog("RECOMP %s: loaded the recompiled module (%d imports bound), DllMain -> %d", n, nb, ok);
+    if (!ok) { ao_active = 0; ao_h = NULL; ao_refs = 0; FreeLibrary(h); ao_reserve(); SetLastError(ERROR_DLL_INIT_FAILED); return NULL; }
+    return h;
+#else
+    (void)n; return NULL;
+#endif
+}
+static int ao_try_free(HMODULE h) {
+#ifdef HAVE_AO
+    if (!h || h != ao_h) return 0;
+    if (--ao_refs > 0) return 1;
+    ((BOOL (WINAPI *)(HINSTANCE, DWORD, LPVOID))(uintptr_t)ao_mod_entry)((HINSTANCE)h, DLL_PROCESS_DETACH, NULL);
+    ao_active = 0; ao_h = NULL; FreeLibrary(h); ao_reserve();
+    return 1;
+#else
+    (void)h; return 0;
+#endif
+}
+
 /* ------------------------------------------------------------------ diagnostics */
 
 static DWORD WINAPI heartbeat(LPVOID p) {
@@ -1093,11 +1211,11 @@ static LONG CALLBACK veh(EXCEPTION_POINTERS *ep) {
     HMODULE host = GetModuleHandleA(NULL);
     if (a >= (uintptr_t)host && a < (uintptr_t)host + 0x4000000) where = "host/recompiled code";
     if (code == 0xC00000FDu || code == 0xC0000374u || code == 0xC0000409u || code == 0xC000001Du || code == 0xC0000096u || code == 0xC0000094u || strcmp(where, "other")) g_crash = 1;
-    if (code == EXCEPTION_ACCESS_VIOLATION && !g_crash) {   /* in quiet mode, still report access violations outside the benign IsBadReadPtr probes in KERNELBASE/ntdll */
+    if (code == EXCEPTION_ACCESS_VIOLATION && !g_crash) {   /* in quiet mode, still report access violations outside the benign IsBadReadPtr probes in KERNEL32/KERNELBASE/ntdll */
         HMODULE m = NULL; char mn[MAX_PATH] = "";
         if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)a, &m)) GetModuleFileNameA(m, mn, sizeof mn);
         const char *b = strrchr(mn, '\\'); b = b ? b + 1 : mn;
-        if (_stricmp(b, "KERNELBASE.dll") && _stricmp(b, "ntdll.dll")) g_crash = 1;
+        if (_stricmp(b, "KERNELBASE.dll") && _stricmp(b, "KERNEL32.dll") && _stricmp(b, "ntdll.dll")) g_crash = 1;
     }
     char buf[300];
     snprintf(buf, sizeof buf, "first-chance exception %08lx at %p (%s)", code, (void *)a, where);
@@ -1162,6 +1280,8 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPSTR cmd, int show) {
     SetCurrentDirectoryA(exe_dir);
     SetDllDirectoryA(exe_dir);
     tls_idx = TlsAlloc();
+    { char f[MAX_PATH]; snprintf(f, sizeof f, "%s\\darkrecomp_native_osm.txt", exe_dir); ao_disabled = GetFileAttributesA(f) != INVALID_FILE_ATTRIBUTES; }
+    ao_reserve();
     AddVectoredExceptionHandler(1, veh);
     { char f[MAX_PATH]; snprintf(f, sizeof f, "%s\\darkrecomp_debug.txt", exe_dir); if (GetFileAttributesA(f) != INVALID_FILE_ATTRIBUTES) { g_debug = 1; hlog("debug mode ON (darkrecomp_debug.txt present)"); } }
     if (g_debug) CreateThread(NULL, 0, heartbeat, NULL, 0, NULL);

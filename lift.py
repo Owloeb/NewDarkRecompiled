@@ -1193,8 +1193,11 @@ if __name__ == '__main__':
     ap.add_argument('pe'); ap.add_argument('prefix'); ap.add_argument('outdir')
     ap.add_argument('--funcs-per-file', type=int, default=150)
     ap.add_argument('--smc', action='store_true', help='analyse and translate self-modifying code')
+    ap.add_argument('--iat-indirect', action='store_true', help='for DLLs loaded by Windows: call imports through their IAT slot as plain indirect calls (the slot holds the real address)')
     a = ap.parse_args()
-    L = Lifter(a.pe, a.prefix)
+    img = Image(a.pe)
+    if a.iat_indirect: img.iat = {}
+    L = Lifter(a.pe, a.prefix, img)
     if a.smc:
         w = L.smc_analyze()
         print(f'SMC: {len(w)} code writes -> {sum(len(v) for v in L.smc_sites.values())} patched fields in '
