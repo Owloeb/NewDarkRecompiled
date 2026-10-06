@@ -27,12 +27,14 @@ that call into the engine land in recompiled code too. The script modules (`allo
 file itself, checks it is the exact file that was recompiled, and runs the recompiled code instead (falling back to the
 original if a mod ships its own copy). Both modules want the same address, so `Squirrel.osm` is lifted as if loaded at
 0x30000000 and the host maps and relocates it there. The same goes for the other Looking Glass DLLs the game uses:
-`lgvid.dll` (the cutscene player) and `fmsel.dll` (the fan-mission selector). What still runs as an original binary is
-third-party: the 2011 `ffmpeg.dll` that `lgvid.dll` decodes the (Indeo 5) cutscenes with, and Windows itself.
+`lgvid.dll` (the cutscene player) and `fmsel.dll` (the fan-mission selector). The 2011 `ffmpeg.dll` that `lgvid.dll`
+used to decode the cutscenes with is no longer needed: a small built-in decoder written in portable C (`video/`) answers
+`lgvid.dll` in its place. What still runs as an original binary is Windows itself.
 
 ## Legal and ground rules
 
-The tools here are MIT-licensed (see LICENSE). The game, its engine and anything generated from it are not.
+The tools here are MIT-licensed (see LICENSE). The game, its engine and anything generated from it are not. The Indeo 5
+video decoder in `video/ffmpeg/` is taken unmodified from FFmpeg and is LGPL 2.1 (see `video/README.md`).
 
 - No leaked Dark Engine source was used. Everything is derived from binaries by analysis and testing.
 - The generated C and the built exe are derived from the copyrighted game binary. **They are not distributed.**
@@ -58,8 +60,8 @@ The tools here are MIT-licensed (see LICENSE). The game, its engine and anything
    your `SS2.exe` are found and recompiled automatically (`--no-osm` skips them).
 
 4. Run `ss2_native.exe` from your System Shock 2 folder instead of `SS2.exe`. Leave everything else in that folder where it
-   is: the game's data, `lgvid.dll`, `ffmpeg.dll`, `fmsel.dll`, `allobjs.osm`, `Squirrel.osm` and the config
-   files. Display and audio settings come from the game's own config, so whatever you use in the normal game applies here.
+   is: the game's data, `lgvid.dll`, `fmsel.dll`, `allobjs.osm`, `Squirrel.osm` and the config files (`ffmpeg.dll` can
+   stay too; it is only used with the switch file below). Display and audio settings come from the game's own config, so whatever you use in the normal game applies here.
 
 Without `--install` the exe is left in `build\win\ss2_native.exe` and you copy it over yourself. On Linux or macOS the same
 command works with `python3 host/build_win.py /path/to/SS2.exe` (you can only build it there, not run it).
@@ -79,6 +81,7 @@ Empty text files placed next to the exe change its behaviour:
 | `darkrecomp_novsync.txt` | present without vsync |
 | `darkrecomp_nolgvid.txt` | hide the video decoder (skips cutscenes) |
 | `darkrecomp_native_osm.txt` | use the original `allobjs.osm`, `Squirrel.osm`, `lgvid.dll` and `fmsel.dll` instead of the recompiled ones |
+| `darkrecomp_native_ffmpeg.txt` | decode cutscenes with the original `ffmpeg.dll` instead of the built-in decoder (needed only for movies in formats the built-in one doesn't play; see *Known issues*) |
 | `darkrecomp_heapcheck.txt` | validate all heaps after every native call (slow; for tracking corruption) |
 | `darkrecomp_realquery.txt` | use the real D3D frame-limiter query instead of the shortcut |
 
@@ -96,17 +99,21 @@ Empty text files placed next to the exe change its behaviour:
   exact instruction field, so the game's own patching keeps working.
 - **Verification.** Every function and every distinct instruction encoding was differential-tested against an x86
   emulator (numbers below, in the technical notes).
+- **Cutscenes without ffmpeg.dll.** The recompiled `lgvid.dll` still asks for `ffmpeg.dll` and its 2011 API; the host
+  answers with `video/lavshim.c`, which implements exactly the calls and struct layouts `lgvid.dll` uses on top of an AVI
+  reader, FFmpeg's Indeo 5 decoder and a YUV-to-RGB scaler, all plain C (details in `video/README.md`).
 
 ## Known issues
 
-- **Cutscenes use a workaround.** The original `ffmpeg.dll` frees a handful of invalid pointers while opening a video.
-  On the original binary this is tolerated; here the process heap aborts the program. The host redirects ffmpeg's
-  allocator and skips frees of pointers that aren't valid heap blocks (a few small leaks per session). The root cause
-  isn't understood yet.
+- **The built-in cutscene decoder plays what the game ships: AVI files with Indeo 5 video and PCM audio.** Mods that replace
+  the cutscenes with other formats (MPEG-4, H.264, MP4/MKV containers, ADPCM audio) won't play with it; the log says why
+  (`LAVSHIM ...` lines). For those, `darkrecomp_native_ffmpeg.txt` switches back to the original `ffmpeg.dll`.
+- With `darkrecomp_native_ffmpeg.txt`, the original `ffmpeg.dll` frees a handful of invalid pointers while opening a video.
+  On the original binary this is tolerated; here the process heap would abort the program, so the host redirects ffmpeg's
+  allocator and skips frees of pointers that aren't valid heap blocks (a few small leaks per session).
 - The game's log (`SS2.log`) shows `Failed to load script module ...` lines for `baseelev.osm`, `traps.osm` and one
   with an unreadable name (`+x?A.osm`, error 126). All three appear in logs from the retail game too: they are harmless
   leftovers in the engine's default script list and are safely skipped.
-- `ffmpeg.dll` (third-party video decoding) still runs as the original DLL.
 - C++ exceptions inside recompiled code are not supported (a `throw` would stop the game). `setjmp`/`longjmp` are
   supported (the Squirrel compiler uses them to report script syntax errors), but unlike MSVC's `longjmp` they don't run
   C++ destructors of the frames they skip, so such an error may leak a little memory.
@@ -147,9 +154,7 @@ repository itself stays vanilla; mods live in their own repositories.
 1. Shakedown on more machines (AMD and Intel GPUs, other Windows versions) and with popular mods.
 2. More names: globals and structure layouts, and hand-named functions for the main systems (render, input, physics,
    AI, save/load), in `symbols/manual.sym`.
-3. Replace
-   the bundled `ffmpeg.dll` with a modern open-source decoder.
-4. A platform layer (graphics, audio, input, Windows API) so the recompiled game can run beyond 32-bit Windows.
+3. A platform layer (graphics, audio, input, Windows API) so the recompiled game can run beyond 32-bit Windows.
 
 ## Technical notes: the recompiler
 

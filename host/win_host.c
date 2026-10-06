@@ -18,6 +18,7 @@
 #include <math.h>
 #include "rt.h"
 #include "recomp_mod.h"
+#include "lavshim.h"
 
 #ifndef HOST_BUILD
 #define HOST_BUILD "dev"
@@ -79,7 +80,7 @@ static char exe_dir[MAX_PATH];
 
 static void hlog(const char *fmt, ...) {
     if (!hlogf) return;
-    if (!g_debug && !g_crash && strncmp(fmt, "FFMEM", 5) && strncmp(fmt, "RECOMP", 6) && strncmp(fmt, "darkrecomp host build", 21)) return;
+    if (!g_debug && !g_crash && strncmp(fmt, "FFMEM", 5) && strncmp(fmt, "RECOMP", 6) && strncmp(fmt, "LAVSHIM", 7) && strncmp(fmt, "darkrecomp host build", 21)) return;
     EnterCriticalSection(&log_cs);
     SYSTEMTIME st; GetLocalTime(&st);
     fprintf(hlogf, "[%02d:%02d:%02d.%03d t%lu] ", st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, GetCurrentThreadId());
@@ -886,7 +887,75 @@ void rt_call_import(CPU *c, int idx) {
     call_native(c, g_imp[idx], idx);
 }
 
+/* ---- built-in cutscene decoder (video/lavshim.c): stands in for ffmpeg.dll when the recompiled lgvid.dll loads it ----
+   Its functions are host C called like guest cdecl functions. They get addresses in a reserved, inaccessible block, so a
+   GetProcAddress result can be stored and called by guest code; rt_call_external recognises the block and runs them. */
+#define LAV_SLOTS 64
+static uint8_t *lav_base;             /* reserved block; also used as the pseudo module handle of "ffmpeg.dll" */
+static lav_fn lav_slot[LAV_SLOTS];
+static CRITICAL_SECTION lav_cs; static int lav_cs_init;
+static int lav_enabled = -1;
+static void lav_init(void) {
+    if (lav_cs_init) return;
+    InitializeCriticalSection(&lav_cs); lav_cs_init = 1;
+    lav_base = (uint8_t *)VirtualAlloc(NULL, 0x10000, MEM_RESERVE, PAGE_NOACCESS);
+}
+uint32_t lavh_fnaddr(lav_fn fn) {
+    lav_init(); if (!lav_base || !fn) return 0;
+    EnterCriticalSection(&lav_cs);
+    int i = 0; while (i < LAV_SLOTS && lav_slot[i] && lav_slot[i] != fn) i++;
+    if (i < LAV_SLOTS) lav_slot[i] = fn;
+    LeaveCriticalSection(&lav_cs);
+    return i < LAV_SLOTS ? (uint32_t)(uintptr_t)(lav_base + 16 * i) : 0;
+}
+static int lav_is(uint32_t a) { return lav_base && a >= (uint32_t)(uintptr_t)lav_base && a < (uint32_t)(uintptr_t)lav_base + 16 * LAV_SLOTS; }
+uint32_t lavh_alloc(uint32_t n) { void *p = _aligned_malloc(n ? n : 1, 16); if (p) memset(p, 0, n); return (uint32_t)(uintptr_t)p; }
+void lavh_free(uint32_t p) { if (p) _aligned_free((void *)(uintptr_t)p); }
+int64_t lavh_time_us(void) { static LARGE_INTEGER f; LARGE_INTEGER t; if (!f.QuadPart) QueryPerformanceFrequency(&f); QueryPerformanceCounter(&t); return (int64_t)(t.QuadPart / f.QuadPart * 1000000 + t.QuadPart % f.QuadPart * 1000000 / f.QuadPart); }
+void lavh_lock(void) { lav_init(); EnterCriticalSection(&lav_cs); }
+void lavh_unlock(void) { LeaveCriticalSection(&lav_cs); }
+void lavh_log(const char *fmt, ...) {
+    char b[512]; va_list ap; va_start(ap, fmt); vsnprintf(b, sizeof b, fmt, ap); va_end(ap);
+    hlog("LAVSHIM %s", strncmp(b, "LAVSHIM ", 8) ? b : b + 8);
+}
+void lavh_call(CPU *c, uint32_t fn, int n, const uint32_t *a) {   /* cdecl call into guest code (lgvid's read callback) */
+    uint32_t sp = c->esp;
+    for (int i = n - 1; i >= 0; i--) PUSH32(c, a[i]);
+    CALLPUSH(c, 0);
+    rt_call_external(c, fn);   /* the callee pops the return address */
+    c->esp = sp;
+}
+static int lav_wanted(void) {   /* darkrecomp_native_ffmpeg.txt next to the exe: let lgvid load the original ffmpeg.dll */
+    if (lav_enabled < 0) {
+        char f[MAX_PATH]; snprintf(f, sizeof f, "%s\\darkrecomp_native_ffmpeg.txt", exe_dir);
+        lav_enabled = GetFileAttributesA(f) == INVALID_FILE_ATTRIBUTES;
+        if (!lav_enabled) hlog("RECOMP ffmpeg.dll: darkrecomp_native_ffmpeg.txt present, cutscenes use the original ffmpeg.dll");
+    }
+    return lav_enabled;
+}
+static int lav_is_ffmpeg_name(const char *n) {
+    if (!n) return 0;
+    const char *b = n + strlen(n); while (b > n && b[-1] != '\\' && b[-1] != '/') b--;
+    return !_stricmp(b, "ffmpeg.dll") || !_stricmp(b, "ffmpeg");
+}
+static HMODULE lav_load(const char *n) {
+    if (!lav_is_ffmpeg_name(n) || !lav_wanted()) return NULL;
+    lav_init(); if (!lav_base) return NULL;
+    static int said; if (!said++) hlog("RECOMP ffmpeg.dll: using the built-in portable cutscene decoder instead of the DLL (AVI, Indeo 5, PCM)");
+    return (HMODULE)lav_base;
+}
+static FARPROC lav_export(const char *n) {
+    if ((uintptr_t)n <= 0xFFFF) return NULL;
+    for (const LavExport *e = lav_exports; e->name; e++) if (!strcmp(e->name, n)) return (FARPROC)(uintptr_t)lavh_fnaddr(e->fn);
+    return NULL;
+}
+
 void rt_call_external(CPU *c, uint32_t target) {
+    if (lav_is(target)) {   /* built-in ffmpeg.dll replacement: cdecl, the return address is ours to pop */
+        lav_fn h = lav_slot[(target - (uint32_t)(uintptr_t)lav_base) / 16];
+        if (!h || (target & 15)) die("call into the built-in decoder at %08x, which is not a function", target);
+        h(c); c->esp += 4; return;
+    }
     guest_fn f = nd_lookup(target);            /* a recompiled module calling into another one (osm -> engine, engine -> osm) */
     if (!f) f = mod_lookup(target);
     if (f) { f(c); return; }
@@ -1007,8 +1076,11 @@ static void ff_patch_video(void) {   /* once ffmpeg.dll is loaded (by lgvid.dll,
 static HMODULE mod_try_load(LPCSTR n);
 static int mod_try_free(HMODULE h);
 static FARPROC mod_export(HMODULE h, LPCSTR n);
+static HMODULE lav_load(const char *n);
+static FARPROC lav_export(const char *n);
 static HMODULE WINAPI hk_LoadLibraryA(LPCSTR n) {
     { HMODULE r = mod_try_load(n); if (r) return r; }
+    { HMODULE r = lav_load(n); if (r) return r; }
     HMODULE h = LoadLibraryA(n); DWORD e = GetLastError();
     hlog("LoadLibraryA(%s) = %p%s", n, h, h ? "" : " FAILED"); if (!h) hlog("   GetLastError=%lu", e);
     vid_ranges(); if (h && (strstr(n, "lgvid") || strstr(n, "ffmpeg"))) ff_patch_video();
@@ -1016,6 +1088,7 @@ static HMODULE WINAPI hk_LoadLibraryA(LPCSTR n) {
 }
 static BOOL WINAPI hk_FreeLibrary(HMODULE h) {
     if (mod_try_free(h)) return TRUE;
+    if (h && (uint8_t *)h == lav_base) return TRUE;
     return FreeLibrary(h);
 }
 static HMODULE WINAPI hk_LoadLibraryExA(LPCSTR n, HANDLE f, DWORD fl) {
@@ -1043,6 +1116,7 @@ static FARPROC WINAPI hk_GetProcAddress(HMODULE m, LPCSTR n) {
         if (GetFileAttributesA(f) != INVALID_FILE_ATTRIBUTES) { hlog("GetProcAddress(%s) -> NULL (darkrecomp_nolgvid.txt present)", n); SetLastError(ERROR_PROC_NOT_FOUND); return NULL; }
     }
     if (mod_of_handle(m) >= 0 && recomp_mods[mod_of_handle(m)]->manual) return mod_export(m, n);   /* not known to the Windows loader */
+    if (m && (uint8_t *)m == lav_base) { FARPROC p = lav_export(n); if (!p) SetLastError(ERROR_PROC_NOT_FOUND); return p; }
     FARPROC p = GetProcAddress(m, n); DWORD e = GetLastError();
     static int cnt;
     if (cnt++ < 4000) { if ((uintptr_t)n > 0xFFFF) hlog("GetProcAddress(%p, %s) = %p", m, n, p); else hlog("GetProcAddress(%p, #%u) = %p", m, (unsigned)(uintptr_t)n, p); }

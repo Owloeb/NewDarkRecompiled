@@ -71,7 +71,7 @@ def main():
     #   (file name, folder next to SS2.exe, prefix, base to lift at: None = its own preferred base)
     MODULES = [("allobjs.osm", "Data", "ao", None),
                ("Squirrel.osm", "osm", "sq", 0x30000000),   # same preferred base as allobjs.osm: mapped elsewhere by the host
-               ("lgvid.dll", ".", "lv", 0x30300000),        # cutscene player (decodes with the bundled ffmpeg.dll)
+               ("lgvid.dll", ".", "lv", 0x30300000),        # cutscene player (decodes with the built-in video/ decoder, or ffmpeg.dll)
                ("fmsel.dll", ".", "fm", 0x30400000)]        # fan-mission selector
     mods = []
     for fname, sub, pfx, rebase in ([] if a.no_osm else MODULES):
@@ -114,25 +114,30 @@ def main():
           "-DRT_IDENTITY", "-DRT_RING", "-DHOST_BUILD=\"dev\"", "-Iruntime"]
     inc = {gen: ["-I" + os.path.relpath(gen, ROOT)], os.path.dirname(modsc): []}
     for _, md in mods: inc[md] = ["-I" + os.path.relpath(md, ROOT)]
-    hostflags = ["-I" + os.path.relpath(gen, ROOT)]
+    hostflags = ["-I" + os.path.relpath(gen, ROOT), "-Ivideo"]
+    # the built-in cutscene decoder (stands in for ffmpeg.dll): our shim + FFmpeg's Indeo 5 decoder (LGPL, unmodified)
+    vidsrc = [os.path.join(ROOT, "video", "lavshim.c"), os.path.join(ROOT, "video", "ffmpeg", "compat", "ffcompat.c")] + \
+             [os.path.join(ROOT, "video", "ffmpeg", "libavcodec", f + ".c") for f in ("indeo5", "ivi", "ivi_dsp", "vlc")]
+    vidflags = ["-Ivideo", "-Ivideo/ffmpeg/compat", "-Ivideo/ffmpeg/libavcodec", "-O2"]
     zig = [PY, "-m", "ziglang", "cc"]
     jobs = []
     run(zig + ["-target", "x86-windows-gnu", "-c", os.path.join("host", "guest_region.s"), "-o", os.path.join("build", "win", "00_guest_region.o")], "guest region")
-    srcs = sorted(glob.glob(os.path.join(gen, "*.c"))) + [c for _, md in mods for c in sorted(glob.glob(os.path.join(md, "*.c")))] + [modsc, os.path.join(ROOT, "host", "win_host.c")] + extra
+    srcs = sorted(glob.glob(os.path.join(gen, "*.c"))) + [c for _, md in mods for c in sorted(glob.glob(os.path.join(md, "*.c")))] + [modsc, os.path.join(ROOT, "host", "win_host.c")] + vidsrc + extra
     deps = os.path.getmtime(os.path.join(ROOT, "runtime", "rt.h"))
     stamp = os.path.join(objd, "host_flags.txt"); hf = " ".join(hostflags)
     host_changed = not os.path.exists(stamp) or open(stamp).read() != hf
     for s in srcs:
-        o = os.path.join(objd, ("extra_" if s in extra else "") + os.path.basename(s)[:-2] + ".o")
+        o = os.path.join(objd, ("extra_" if s in extra else "vid_" if s in vidsrc else "") + os.path.basename(s)[:-2] + ".o")
         dep = deps
         if s.endswith(("_moddata.c", "win_host.c")) or s == modsc: dep = max(deps, os.path.getmtime(os.path.join(ROOT, "runtime", "recomp_mod.h")))
+        if s in vidsrc or s.endswith("win_host.c"): dep = max([dep] + [os.path.getmtime(h) for h in glob.glob(os.path.join(ROOT, "video", "**", "*.h"), recursive=True)])
         need = not os.path.exists(o) or os.path.getmtime(o) < max(os.path.getmtime(s), dep) or (s.endswith("win_host.c") and host_changed)
         if need: jobs.append((s, o))
     done = [0]
     def comp(j):
         s, o = j
-        fl = hostflags if s.endswith("win_host.c") or s in extra else inc[os.path.dirname(s)]
-        run(zig + cf + fl + ["-c", s if s in extra else os.path.relpath(s, ROOT), "-o", os.path.relpath(o, ROOT)], "compile " + os.path.basename(s))
+        fl = hostflags if s.endswith("win_host.c") or s in extra else vidflags if s in vidsrc else inc[os.path.dirname(s)]
+        run(zig + cf + fl + ["-c", s if s in extra else os.path.relpath(s, ROOT), "-o", os.path.relpath(o, ROOT)], "compile " + os.path.basename(s))   # a later -O2 overrides -O1
         done[0] += 1; print(f"  compiled {done[0]}/{len(jobs)}: {os.path.basename(s)}", flush=True)
     print(f"  {len(jobs)} of {len(srcs)} files to compile with {a.jobs} jobs")
     with ThreadPoolExecutor(a.jobs) as ex: list(ex.map(comp, jobs))
