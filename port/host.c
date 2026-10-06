@@ -171,6 +171,7 @@ void rt_longjmp(CPU *c) {
 
 /* ---------------------------------------------------------------- files: Windows paths on a case-sensitive host */
 char *host_path(const char *w, char *out, size_t n) {
+    const char *w0 = w;
     char buf[1024]; size_t k = 0;
     if (w[0] && w[1] == ':') { w += 2; while (*w == '\\' || *w == '/') w++; }   /* drive letter: everything is relative to the game folder */
     for (; *w && k < sizeof buf - 1; w++) buf[k++] = *w == '\\' ? '/' : *w;
@@ -191,7 +192,9 @@ char *host_path(const char *w, char *out, size_t n) {
         }
         snprintf(cur, sizeof cur, "%s", try_); cl = strlen(cur);
     }
-    snprintf(out, n, "%s", cur); return out;
+    snprintf(out, n, "%s", cur);
+    { static int on = -1; if (on < 0) on = getenv("PORT_FILES") != NULL; if (on) port_log("path: \"%s\" -> %s", w0, cur); }
+    return out;
 }
 
 /* ---------------------------------------------------------------- PE loading */
