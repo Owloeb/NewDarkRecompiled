@@ -920,7 +920,17 @@ static HMODULE WINAPI hk_LoadLibraryW(LPCWSTR n) {
     HMODULE h = LoadLibraryW(n); DWORD e = GetLastError();
     hlog("LoadLibraryW(%ls) = %p%s", n, h, h ? "" : " FAILED"); SetLastError(e); return h;
 }
+/* The engine picks SSE/SSE2/SSE3 code paths from IsProcessorFeaturePresent (looked up with GetProcAddress), not from CPUID.
+   The recompiler does not translate SSE instructions (CPUID already reports a baseline x87 CPU), so report SSE as absent
+   here too; the engine then uses its x87/integer fallbacks, exactly as on an old CPU. */
+static BOOL WINAPI hk_IsProcessorFeaturePresent(DWORD f) {
+    switch (f) {
+    case 6: case 10: case 13: case 17: case 36: case 37: case 38: case 39: case 40: case 41: return FALSE;   /* SSE, SSE2, SSE3, XSAVE, SSSE3, SSE4.1/4.2, AVX, AVX2, AVX-512 */
+    }
+    return IsProcessorFeaturePresent(f);
+}
 static FARPROC WINAPI hk_GetProcAddress(HMODULE m, LPCSTR n) {
+    if ((uintptr_t)n > 0xFFFF && !strcmp(n, "IsProcessorFeaturePresent")) return (FARPROC)hk_IsProcessorFeaturePresent;
     FARPROC p = GetProcAddress(m, n); DWORD e = GetLastError();
     static int cnt;
     if ((uintptr_t)n > 0xFFFF && !strncmp(n, "CreateLGVideoDecoder", 20)) {      /* experiment: a file named darkrecomp_nolgvid.txt next to the exe hides the video decoder */
