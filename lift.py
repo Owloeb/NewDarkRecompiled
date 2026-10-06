@@ -95,6 +95,7 @@ class Image:
                 nm = i.name.decode() if i.name else f'ord{i.ordinal}'
                 self.iat[i.address] = len(self.imports)
                 self.imports.append((d.dll.decode(), nm))
+        self.jt_ranges = set()   # (lo, hi) byte ranges of jump tables found so far
         self.relocs = []
         if hasattr(pe, 'DIRECTORY_ENTRY_BASERELOC'):
             for blk in pe.DIRECTORY_ENTRY_BASERELOC:
@@ -152,6 +153,7 @@ def jump_table(img, i):
                 continue
             gap = 0
             ents.append(v)
+        len_fwd = k - gap   # slots up to the last code pointer
         # negative indices (e.g. MSVC memcpy: jmp [ecx*4 + vec + 16] with ecx in -4..-1)
         k = 1
         while k <= 16:
@@ -163,6 +165,7 @@ def jump_table(img, i):
                 break
             ents.append(v)
             k += 1
+        img.jt_ranges.add((t - 4 * (k - 1), t + 4 * len_fwd))   # the table's own bytes: data, never a function
         return t, ents
     return None
 
@@ -280,6 +283,10 @@ def discover(img):
         if v in seen and v not in jt_targets:
             entries.add(v)
     entries = {e for e in entries if img.decode(e) is not None}
+    # a jump table embedded in code can look like a function when a stray pointer lands on it; it is data
+    in_table = [e for e in entries if any(lo <= e < hi for lo, hi in img.jt_ranges)]
+    if in_table: print(f'discover: dropped {len(in_table)} "functions" that are jump-table data: ' + ' '.join(f'{e:x}' for e in sorted(in_table)[:12]))
+    entries -= set(in_table)
     return entries, jt_targets
 
 
@@ -954,6 +961,7 @@ class SynthImage(Image):
         self.entry = entries[0]
         self.exports = {e: f'snip{k}' for k, e in enumerate(entries)}
         self.imports, self.iat, self.relocs = [], {}, []
+        self.jt_ranges = set()
         self.md = Cs(CS_ARCH_X86, CS_MODE_32)
         self.md.detail = True
         self._cache = {}
