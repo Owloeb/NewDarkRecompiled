@@ -375,7 +375,7 @@ const ShimDef crt_shims[] = {
     SA("??0exception@std@@QAE@ABQBD@Z", exc_ctor_str, STD(1)), SA("??0exception@std@@QAE@ABV01@@Z", exc_ctor_str, STD(1)), SA("??1exception@std@@UAE@XZ", exc_dtor, 0), SA("?what@exception@std@@UBEPBDXZ", exc_what, 0),
     SA("??$?MDU?$char_traits@D@std@@V?$allocator@D@1@@std@@YA_NABV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@0@0@Z", ss_lt, CDECL),
     SA("??0exception@std@@QAE@XZ", exc_ctor0, 0), SA("_except_handler4_common", die_seh, CDECL), SA("__CxxFrameHandler3", die_seh, CDECL),
-    SA("_beginthreadex", beginthreadex_, STD(6)), SA("_setjmp3", die_seh, CDECL), SA("longjmp", die_seh, CDECL),
+    SA("_beginthreadex", beginthreadex_, CDECL), SA("_setjmp3", die_seh, CDECL), SA("longjmp", die_seh, CDECL),
     SA("?_type_info_dtor_internal_method@type_info@@QAEXXZ", typeinfo_dtor, 0),
     /* std::string members (thiscall: this in ecx, callee pops its arguments) */
     SA("?begin@?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@QAE?AV?$_String_iterator@DU?$char_traits@D@std@@V?$allocator@D@2@@2@XZ", ss_begin, 0),
