@@ -4,7 +4,7 @@
     python host/build_win.py "C:\\Games\\System Shock 2\\SS2.exe"
     python host/build_win.py "C:\\Games\\System Shock 2\\SS2.exe" --install     # also copy the result next to SS2.exe
 
-Steps: (1) lift SS2.exe (and the script modules Data\\allobjs.osm and osm\\Squirrel.osm, if present) to C (about 8 min, skipped if already done), (2) compile everything with Zig (about 10 min,
+Steps: (1) lift SS2.exe (and, if present, Data\\allobjs.osm, osm\\Squirrel.osm, lgvid.dll and fmsel.dll) to C (about 8 min, skipped if already done), (2) compile everything with Zig (about 10 min,
 only changed files are rebuilt next time), (3) link and fix up the exe.
 Needs:  python -m pip install pefile capstone ziglang
 """
@@ -31,7 +31,7 @@ def main():
     ap.add_argument("--out", default=os.path.join("build", "win", "ss2_native.exe"), help="where to put the result")
     ap.add_argument("--jobs", type=int, default=os.cpu_count() or 2, help="parallel compile jobs")
     ap.add_argument("--install", action="store_true", help="copy the built exe into the folder that contains SS2.exe")
-    ap.add_argument("--no-osm", action="store_true", help="don't recompile the script modules (the game then uses the original DLLs)")
+    ap.add_argument("--no-osm", action="store_true", help="don't recompile the game's DLLs (allobjs.osm, Squirrel.osm, lgvid.dll, fmsel.dll); the originals are used")
     ap.add_argument("--hooks", help="hooks file for tools/apply_hooks.py: call your own C functions at the entry of recompiled functions (for mods)")
     ap.add_argument("--extra-src", nargs="*", default=[], help="extra C files to compile and link into the exe (for mods; they see runtime/rt.h)")
     ap.add_argument("--named-sources", action="store_true", help="also write out/nd_named: a copy of the generated C with function names and notes, for reading")
@@ -70,7 +70,9 @@ def main():
     # script modules: recompiled too when present; the host swaps them in at runtime (runtime/recomp_mod.h)
     #   (file name, folder next to SS2.exe, prefix, base to lift at: None = its own preferred base)
     MODULES = [("allobjs.osm", "Data", "ao", None),
-               ("Squirrel.osm", "osm", "sq", 0x30000000)]   # same preferred base as allobjs.osm: mapped elsewhere by the host
+               ("Squirrel.osm", "osm", "sq", 0x30000000),   # same preferred base as allobjs.osm: mapped elsewhere by the host
+               ("lgvid.dll", ".", "lv", 0x30300000),        # cutscene player (decodes with the bundled ffmpeg.dll)
+               ("fmsel.dll", ".", "fm", 0x30400000)]        # fan-mission selector
     mods = []
     for fname, sub, pfx, rebase in ([] if a.no_osm else MODULES):
         src = os.path.join(os.path.dirname(exe), sub, fname); md = os.path.join(ROOT, "out", pfx)
@@ -82,7 +84,7 @@ def main():
         if os.path.exists(os.path.join(md, f"{pfx}_meta.json")) and os.path.exists(sigf) and open(sigf).read().strip() == sig:
             print(f"  {fname}: already lifted")
         else:
-            print(f"  lifting {fname} ({'about 15 seconds' if pfx == 'ao' else 'about 4 minutes'})")
+            print(f"  lifting {fname} ({'about 4 minutes' if pfx == 'sq' else 'under a minute'})")
             shutil.rmtree(md, ignore_errors=True)
             for o in glob.glob(os.path.join(objd, f"{pfx}_*.o")): os.remove(o)
             run([PY, "lift.py", "--iat-indirect"] + (["--rebase", hex(rebase)] if rebase else []) + [src, pfx, md], f"lift {fname}")

@@ -26,8 +26,9 @@ that call into the engine land in recompiled code too. The script modules (`allo
 `Squirrel.osm`, NewDark's Squirrel scripting) are recompiled the same way: when the engine loads one, the host loads the
 file itself, checks it is the exact file that was recompiled, and runs the recompiled code instead (falling back to the
 original if a mod ships its own copy). Both modules want the same address, so `Squirrel.osm` is lifted as if loaded at
-0x30000000 and the host maps and relocates it there. The other Looking Glass DLLs the game uses (`lgvid.dll`, the
-cutscene player, and `fmsel.dll`, the fan-mission selector) still run as the original binaries for now.
+0x30000000 and the host maps and relocates it there. The same goes for the other Looking Glass DLLs the game uses:
+`lgvid.dll` (the cutscene player) and `fmsel.dll` (the fan-mission selector). What still runs as an original binary is
+third-party: the 2011 `ffmpeg.dll` that `lgvid.dll` decodes the (Indeo 5) cutscenes with, and Windows itself.
 
 ## Legal and ground rules
 
@@ -53,8 +54,8 @@ The tools here are MIT-licensed (see LICENSE). The game, its engine and anything
         python host\build_win.py "C:\Games\System Shock 2\SS2.exe" --install
 
    The first build takes about 20 minutes (about 8 to convert the game to C, about 10 to compile). It prints progress as it
-   goes. Later builds only redo what changed. `Data\allobjs.osm` and `osm\Squirrel.osm` next to your `SS2.exe` are found
-   and recompiled automatically (`--no-osm` skips them).
+   goes. Later builds only redo what changed. `Data\allobjs.osm`, `osm\Squirrel.osm`, `lgvid.dll` and `fmsel.dll` next to
+   your `SS2.exe` are found and recompiled automatically (`--no-osm` skips them).
 
 4. Run `ss2_native.exe` from your System Shock 2 folder instead of `SS2.exe`. Leave everything else in that folder where it
    is: the game's data, `lgvid.dll`, `ffmpeg.dll`, `fmsel.dll`, `allobjs.osm`, `Squirrel.osm` and the config
@@ -77,7 +78,7 @@ Empty text files placed next to the exe change its behaviour:
 | `darkrecomp_nomsaa.txt` | force multisampling off |
 | `darkrecomp_novsync.txt` | present without vsync |
 | `darkrecomp_nolgvid.txt` | hide the video decoder (skips cutscenes) |
-| `darkrecomp_native_osm.txt` | use the original `allobjs.osm` and `Squirrel.osm` instead of the recompiled ones |
+| `darkrecomp_native_osm.txt` | use the original `allobjs.osm`, `Squirrel.osm`, `lgvid.dll` and `fmsel.dll` instead of the recompiled ones |
 | `darkrecomp_heapcheck.txt` | validate all heaps after every native call (slow; for tracking corruption) |
 | `darkrecomp_realquery.txt` | use the real D3D frame-limiter query instead of the shortcut |
 
@@ -105,7 +106,7 @@ Empty text files placed next to the exe change its behaviour:
 - The game's log (`SS2.log`) shows `Failed to load script module ...` lines for `baseelev.osm`, `traps.osm` and one
   with an unreadable name (`+x?A.osm`, error 126). All three appear in logs from the retail game too: they are harmless
   leftovers in the engine's default script list and are safely skipped.
-- `lgvid.dll` and `fmsel.dll` still run as the original DLLs, so this is not yet a fully recompiled program.
+- `ffmpeg.dll` (third-party video decoding) still runs as the original DLL.
 - C++ exceptions inside recompiled code are not supported (a `throw` would stop the game). `setjmp`/`longjmp` are
   supported (the Squirrel compiler uses them to report script syntax errors), but unlike MSVC's `longjmp` they don't run
   C++ destructors of the frames they skip, so such an error may leak a little memory.
@@ -146,7 +147,7 @@ repository itself stays vanilla; mods live in their own repositories.
 1. Shakedown on more machines (AMD and Intel GPUs, other Windows versions) and with popular mods.
 2. More names: globals and structure layouts, and hand-named functions for the main systems (render, input, physics,
    AI, save/load), in `symbols/manual.sym`.
-3. Recompile the remaining Looking Glass modules (`lgvid.dll`, `fmsel.dll`) and replace
+3. Replace
    the bundled `ffmpeg.dll` with a modern open-source decoder.
 4. A platform layer (graphics, audio, input, Windows API) so the recompiled game can run beyond 32-bit Windows.
 

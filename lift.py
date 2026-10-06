@@ -96,6 +96,7 @@ class Image:
                 self.iat[i.address] = len(self.imports)
                 self.imports.append((d.dll.decode(), nm))
         self.jt_ranges = set()   # (lo, hi) byte ranges of jump tables found so far
+        self.iat_indirect = False   # set for DLLs whose imports Windows/the host binds (--iat-indirect)
         self.relocs = []
         if hasattr(pe, 'DIRECTORY_ENTRY_BASERELOC'):
             for blk in pe.DIRECTORY_ENTRY_BASERELOC:
@@ -743,7 +744,7 @@ class Fn:
         if op.type == X86_OP_IMM:
             if self.patched(i, 'imm'): return self.dyn_branch(i)
             return [self.target(op.imm & 0xFFFFFFFF)]
-        if op.type == X86_OP_MEM and op.mem.base == 0 and op.mem.index == 0 and (op.mem.disp & 0xFFFFFFFF) in self.img.iat:
+        if op.type == X86_OP_MEM and op.mem.base == 0 and op.mem.index == 0 and (op.mem.disp & 0xFFFFFFFF) in self.img.iat and not self.img.iat_indirect:
             return [f'rt_call_import(c, {self.img.iat[op.mem.disp & 0xFFFFFFFF]}); return; /* {self.L.impname(op.mem.disp & 0xFFFFFFFF)} */']
         jt = jump_table(self.img, i)
         if jt:
@@ -776,7 +777,8 @@ class Fn:
             kind = SJ_IMPORTS.get(self.img.imports[self.img.iat[s]][1])
             if kind == 'set': return [f'CALLPUSH(c, 0x{n:x}u); RT_SETJMP(c); /* {self.L.impname(s)} */']
             if kind == 'long': return [f'CALLPUSH(c, 0x{n:x}u); rt_longjmp(c); return; /* {self.L.impname(s)} */']
-            return [f'CALLPUSH(c, 0x{n:x}u); rt_call_import(c, {self.img.iat[s]}); /* {self.L.impname(s)} */']
+            if not self.img.iat_indirect:
+                return [f'CALLPUSH(c, 0x{n:x}u); rt_call_import(c, {self.img.iat[s]}); /* {self.L.impname(s)} */']
         return [f'uint32_t t = {self.rd(i, op, 4)};',
                 f'CALLPUSH(c, 0x{n:x}u); {self.fl_store(self.L.fl_ind_in)}{self.L.prefix}_call(c, t); {self.fl_load(self.L.fl_ind_out)}']
 
@@ -962,6 +964,7 @@ class SynthImage(Image):
         self.exports = {e: f'snip{k}' for k, e in enumerate(entries)}
         self.imports, self.iat, self.relocs = [], {}, []
         self.jt_ranges = set()
+        self.iat_indirect = False
         self.md = Cs(CS_ARCH_X86, CS_MODE_32)
         self.md.detail = True
         self._cache = {}
@@ -1114,7 +1117,7 @@ class Lifter:
                 if m == 'call':
                     op = i.operands[0]
                     if op.type == X86_OP_IMM: kind, tgt = 'call', op.imm & 0xFFFFFFFF
-                    elif op.type == X86_OP_MEM and op.mem.base == 0 and op.mem.index == 0 and (op.mem.disp & 0xFFFFFFFF) in img.iat:
+                    elif op.type == X86_OP_MEM and op.mem.base == 0 and op.mem.index == 0 and (op.mem.disp & 0xFFFFFFFF) in img.iat and not img.iat_indirect:
                         kind = 'import'
                     else: kind = 'icall'
                 elif m in ('ret', 'retf'):
@@ -1246,7 +1249,7 @@ if __name__ == '__main__':
     ap.add_argument('--iat-indirect', action='store_true', help='for DLLs loaded by Windows: call imports through their IAT slot as plain indirect calls (the slot holds the real address)')
     a = ap.parse_args()
     img = Image(a.pe, a.rebase)
-    if a.iat_indirect: img.iat = {}
+    img.iat_indirect = a.iat_indirect   # imports stay known by name (setjmp/longjmp), but are called through the IAT
     L = Lifter(a.pe, a.prefix, img)
     if a.smc:
         w = L.smc_analyze()

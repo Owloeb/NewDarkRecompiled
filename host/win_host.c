@@ -717,6 +717,15 @@ static void scene_note(int k, const uint32_t *a, CPU *c) {
 }
 /* MSVC x87 intrinsics (_CIsqrt, _CIsin ...): arguments arrive in st(0)/st(1) of the *guest* FPU, result replaces them. Emulated here so the arguments are not lost. */
 
+static void ci_register(const char *name, void *p) {
+    static const char *const cin[] = { "", "_CIsqrt", "_CIsin", "_CIcos", "_CItan", "_CIasin", "_CIacos", "_CIatan", "_CIexp", "_CIlog", "_CIlog10", "_CIatan2", "_CIpow", "_CIfmod", 0 };
+    if (!p) return;
+    for (int q = 1; cin[q]; q++) if (!strcmp(name, cin[q])) {
+        for (int k = 0; k < n_ci; k++) if (ci_fn[k] == p) return;
+        if (n_ci < 16) { ci_fn[n_ci] = p; ci_code[n_ci++] = (unsigned char)q; }
+        return;
+    }
+}
 static int ci_lookup(void *fn) { for (int k = 0; k < n_ci; k++) if (ci_fn[k] == fn) return ci_code[k]; return 0; }
 static void ci_exec(CPU *c, int code) {
     ci_calls++;
@@ -989,10 +998,11 @@ static void patch_msvcrt_alloc(HMODULE m, const char *tag) {
     hlog("FFMEM: redirected %d msvcrt allocator imports in %s", np, tag);
 }
 static int ff_patched;
-static void ff_patch_video(void) {
-    if (ff_patched) return; HMODULE a = GetModuleHandleA("lgvid.dll"); if (!a) return;
-    HMODULE f = GetModuleHandleA("ffmpeg.dll"); if (!f) f = LoadLibraryA("ffmpeg.dll");
-    ff_patched = 1; patch_msvcrt_alloc(a, "lgvid.dll"); if (f) patch_msvcrt_alloc(f, "ffmpeg.dll"); else hlog("FFMEM: ffmpeg.dll not loadable");
+static void ff_patch_video(void) {   /* once ffmpeg.dll is loaded (by lgvid.dll, original or recompiled) */
+    if (ff_patched) return;
+    HMODULE f = GetModuleHandleA("ffmpeg.dll"); if (!f) return;
+    ff_patched = 1; patch_msvcrt_alloc(f, "ffmpeg.dll");
+    HMODULE a = GetModuleHandleA("lgvid.dll"); if (a) patch_msvcrt_alloc(a, "lgvid.dll");   /* the original lgvid, if that is what runs */
 }
 static HMODULE mod_try_load(LPCSTR n);
 static int mod_try_free(HMODULE h);
@@ -1001,7 +1011,7 @@ static HMODULE WINAPI hk_LoadLibraryA(LPCSTR n) {
     { HMODULE r = mod_try_load(n); if (r) return r; }
     HMODULE h = LoadLibraryA(n); DWORD e = GetLastError();
     hlog("LoadLibraryA(%s) = %p%s", n, h, h ? "" : " FAILED"); if (!h) hlog("   GetLastError=%lu", e);
-    vid_ranges(); if (h && strstr(n, "lgvid")) ff_patch_video();
+    vid_ranges(); if (h && (strstr(n, "lgvid") || strstr(n, "ffmpeg"))) ff_patch_video();
     SetLastError(e); return h;
 }
 static BOOL WINAPI hk_FreeLibrary(HMODULE h) {
@@ -1028,13 +1038,13 @@ static BOOL WINAPI hk_IsProcessorFeaturePresent(DWORD f) {
 }
 static FARPROC WINAPI hk_GetProcAddress(HMODULE m, LPCSTR n) {
     if ((uintptr_t)n > 0xFFFF && !strcmp(n, "IsProcessorFeaturePresent")) return (FARPROC)hk_IsProcessorFeaturePresent;
-    if (mod_of_handle(m) >= 0 && recomp_mods[mod_of_handle(m)]->manual) return mod_export(m, n);   /* not known to the Windows loader */
-    FARPROC p = GetProcAddress(m, n); DWORD e = GetLastError();
-    static int cnt;
-    if ((uintptr_t)n > 0xFFFF && !strncmp(n, "CreateLGVideoDecoder", 20)) {      /* experiment: a file named darkrecomp_nolgvid.txt next to the exe hides the video decoder */
+    if ((uintptr_t)n > 0xFFFF && !strncmp(n, "CreateLGVideoDecoder", 20)) {      /* a file named darkrecomp_nolgvid.txt next to the exe hides the video decoder */
         char f[MAX_PATH]; snprintf(f, sizeof f, "%s\\darkrecomp_nolgvid.txt", exe_dir);
         if (GetFileAttributesA(f) != INVALID_FILE_ATTRIBUTES) { hlog("GetProcAddress(%s) -> NULL (darkrecomp_nolgvid.txt present)", n); SetLastError(ERROR_PROC_NOT_FOUND); return NULL; }
     }
+    if (mod_of_handle(m) >= 0 && recomp_mods[mod_of_handle(m)]->manual) return mod_export(m, n);   /* not known to the Windows loader */
+    FARPROC p = GetProcAddress(m, n); DWORD e = GetLastError();
+    static int cnt;
     if (cnt++ < 4000) { if ((uintptr_t)n > 0xFFFF) hlog("GetProcAddress(%p, %s) = %p", m, n, p); else hlog("GetProcAddress(%p, #%u) = %p", m, (unsigned)(uintptr_t)n, p); }
     SetLastError(e); return p;
 }
@@ -1251,7 +1261,11 @@ static void bind_imports(uint8_t *base, int *nbound) {   /* like the Windows loa
         for (; ot->u1.AddressOfData; ot++, ft++) {
             void *p;
             if (ot->u1.Ordinal & 0x80000000u) p = dm ? (void *)GetProcAddress(dm, (LPCSTR)(uintptr_t)(ot->u1.Ordinal & 0xFFFF)) : NULL;
-            else { const char *fn = (const char *)((IMAGE_IMPORT_BY_NAME *)(base + ot->u1.AddressOfData))->Name; p = dm ? (void *)GetProcAddress(dm, fn) : NULL; void *hk = hook_for(fn); if (hk && p) p = hk; }
+            else {
+                const char *fn = (const char *)((IMAGE_IMPORT_BY_NAME *)(base + ot->u1.AddressOfData))->Name; p = dm ? (void *)GetProcAddress(dm, fn) : NULL;
+                void *hk = hook_for(fn); if (hk && p) p = hk;
+                ci_register(fn, p);   /* MSVC x87 intrinsics (_CIsin, ...) take their argument on the x87 stack: emulated */
+            }
             if (!p) p = (void *)missing_import;
             DWORD op; VirtualProtect(&ft->u1.Function, 4, PAGE_READWRITE, &op); ft->u1.Function = (DWORD)(uintptr_t)p; VirtualProtect(&ft->u1.Function, 4, op, &op); nb++;
         }
