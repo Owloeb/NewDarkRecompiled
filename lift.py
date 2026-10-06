@@ -913,8 +913,9 @@ class Fn:
                 0xF1: ['ST(1) = ST(1) * log2(ST(0)); FPOP(c);'],
                 0xF2: [R + '{ ST(0) = tan(ST(0)); FPUSH(c, 1.0); c->sw &= ~0x400; }'],
                 0xF3: ['ST(1) = atan2(ST(1), ST(0)); FPOP(c);'],
-                0xF8: ['ST(0) = fmod(ST(0), ST(1)); c->sw &= ~0x400;'],
-                0xF5: ['ST(0) = remainder(ST(0), ST(1)); c->sw &= ~0x400;'],   # fprem1: IEEE remainder (quotient bits not modelled, as for fprem)
+                # fprem/fprem1 reduce completely (C2 = 0) and report the low 3 quotient bits in C0/C3/C1 like the CPU
+                0xF8: ['{ double a_ = ST(0), b_ = ST(1), r_ = fmod(a_, b_); unsigned q_ = isfinite(a_) && isfinite(b_) && b_ != 0 ? (unsigned)(uint64_t)fabs(trunc((a_ - r_) / b_)) : 0; ST(0) = r_; c->sw = (uint16_t)((c->sw & ~0x4700) | ((q_ & 1) ? 0x4000 : 0) | ((q_ & 2) ? 0x200 : 0) | ((q_ & 4) ? 0x100 : 0)); }'],
+                0xF5: ['{ int qi_ = 0; double r_ = remquo(ST(0), ST(1), &qi_); unsigned q_ = (unsigned)(qi_ < 0 ? -qi_ : qi_); ST(0) = r_; c->sw = (uint16_t)((c->sw & ~0x4700) | ((q_ & 1) ? 0x4000 : 0) | ((q_ & 2) ? 0x200 : 0) | ((q_ & 4) ? 0x100 : 0)); }'],
                 0xFA: ['ST(0) = sqrt(ST(0));'],
                 0xFB: [R + '{ double v = ST(0); ST(0) = sin(v); FPUSH(c, cos(v)); c->sw &= ~0x400; }'],
                 0xFC: ['ST(0) = FROUND(c, ST(0));'],
