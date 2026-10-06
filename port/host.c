@@ -120,7 +120,13 @@ void rt_call_external(CPU *c, uint32_t t) {
     if (mod_call(c, t)) return;
     port_die("indirect call/jump to %08x, which is neither a recompiled function nor a host function", t);
 }
+static void dump_gs_frame(CPU *c) {     /* __report_gsfailure entry: [ebp+4] is the call site of __security_check_cookie in the damaged function */
+    uint32_t top = c->ebp + 8, cookie = RD32(0x7dd400);
+    fprintf(stderr, "[port]   stack cookie value %08x; the damaged frame starts at guest %08x (dumping 0x180 bytes, 16 per line, '*' = the word the cookie check compares)\n", cookie, top);
+    for (uint32_t o = 0; o < 0x180; o += 16) { fprintf(stderr, "[port]   %08x:", top + o); for (int k = 0; k < 4; k++) fprintf(stderr, " %08x", RD32(top + o + 4 * (uint32_t)k)); fputc(10, stderr); }
+}
 void rt_fault(CPU *c, uint32_t addr, int kind) {
+    if (addr == 0x6f7376u) { fprintf(stderr, "[port] the game's stack-overrun check (security cookie) failed\n"); dump_gs_frame(c); }
     static const char *names[] = { "?", "unimplemented instruction", "divide error", "trap", "bad jump", "bad return" };
     (void)c; port_die("guest fault: %s at %08x", kind >= 0 && kind <= 5 ? names[kind] : "?", addr);
 }
