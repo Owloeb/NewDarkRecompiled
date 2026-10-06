@@ -741,6 +741,7 @@ static void ci_exec(CPU *c, int code) {
     }
 }
 static int cd_done, query_wait_real; static uint32_t cd_pending; static void **g_pdev;
+#include "api_usage.inc"
 static void call_native(CPU *c, void *fn, int idx) {
     NRes r;
     LONG n = InterlockedIncrement(&ncalls);
@@ -805,9 +806,11 @@ static void call_native(CPU *c, void *fn, int idx) {
         }
     }
     if (cd_pending) { g_pdev = (void **)(uintptr_t)cd_pending; }
+    if (g_apistats) au_pre(fn, (const uint32_t *)(uintptr_t)(c->esp + 4));
     InterlockedIncrement(&g_in_native);
     native_call(fn, (const uint32_t *)(uintptr_t)(c->esp + 4), NATIVE_K, c->ecx, c->edx, &r);
     InterlockedDecrement(&g_in_native);
+    if (g_apistats) { au_post((const uint32_t *)(uintptr_t)(c->esp + 4), r.eax); au_entry(fn, (const uint32_t *)(uintptr_t)(c->esp + 4), r.eax); }
     if (cd_pending) { if (!r.eax && g_pdev && *g_pdev) { g_dev = *g_pdev; hlog("device captured at CreateDevice: %p", g_dev); } cd_pending = 0; }
     if (idx >= 0 && imp_fileop[idx]) {
         static int nfo; const uint32_t *a = (const uint32_t *)(uintptr_t)(c->esp + 4);
@@ -1501,6 +1504,7 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPSTR cmd, int show) {
     { char f[MAX_PATH]; snprintf(f, sizeof f, "%s\\darkrecomp_native_osm.txt", exe_dir); mods_disabled = GetFileAttributesA(f) != INVALID_FILE_ATTRIBUTES; }
     for (int i = 0; i < MAX_MODS && recomp_mods[i]; i++) mod_reserve(i);
     AddVectoredExceptionHandler(1, veh);
+    { char f[MAX_PATH]; snprintf(f, sizeof f, "%s\\darkrecomp_apistats.txt", exe_dir); if (GetFileAttributesA(f) != INVALID_FILE_ATTRIBUTES) { g_apistats = 1; hlog("RECOMP API usage recording ON (darkrecomp_apistats.txt present): darkrecomp_api_usage.txt"); } }
     { char f[MAX_PATH]; snprintf(f, sizeof f, "%s\\darkrecomp_debug.txt", exe_dir); if (GetFileAttributesA(f) != INVALID_FILE_ATTRIBUTES) { g_debug = 1; hlog("debug mode ON (darkrecomp_debug.txt present)"); } }
     if (g_debug) CreateThread(NULL, 0, heartbeat, NULL, 0, NULL);
     SetUnhandledExceptionFilter(unhandled);

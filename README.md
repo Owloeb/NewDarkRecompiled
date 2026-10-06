@@ -81,6 +81,7 @@ Empty text files placed next to the exe change its behaviour:
 | `darkrecomp_novsync.txt` | present without vsync |
 | `darkrecomp_nolgvid.txt` | hide the video decoder (skips cutscenes) |
 | `darkrecomp_native_osm.txt` | use the original `allobjs.osm`, `Squirrel.osm`, `lgvid.dll` and `fmsel.dll` instead of the recompiled ones |
+| `darkrecomp_apistats.txt` | record which Direct3D / DirectSound / DirectInput calls the game makes (counts, formats, pools) into `darkrecomp_api_usage.txt`; input for the platform layer (`port/`) |
 | `darkrecomp_native_ffmpeg.txt` | decode cutscenes with the original `ffmpeg.dll` instead of the built-in decoder (needed only for movies in formats the built-in one doesn't play; see *Known issues*) |
 | `darkrecomp_heapcheck.txt` | validate all heaps after every native call (slow; for tracking corruption) |
 | `darkrecomp_realquery.txt` | use the real D3D frame-limiter query instead of the shortcut |
@@ -155,6 +156,9 @@ repository itself stays vanilla; mods live in their own repositories.
 2. More names: globals and structure layouts, and hand-named functions for the main systems (render, input, physics,
    AI, save/load), in `symbols/manual.sym`.
 3. A platform layer (graphics, audio, input, Windows API) so the recompiled game can run beyond 32-bit Windows.
+   The shared part exists as a first cut in [`port/`](port/README.md): a portable host (no Windows, no x86) that loads the
+   game's files, implements the Windows API and C runtime the engine imports, and provides null Direct3D 9 / DirectSound /
+   DirectInput back ends. A real port supplies those back ends (rendering, audio, input, a window).
 
 ## Technical notes: the recompiler
 

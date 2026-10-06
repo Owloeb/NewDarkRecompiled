@@ -130,7 +130,7 @@ def main():
         o = os.path.join(objd, ("extra_" if s in extra else "vid_" if s in vidsrc else "") + os.path.basename(s)[:-2] + ".o")
         dep = deps
         if s.endswith(("_moddata.c", "win_host.c")) or s == modsc: dep = max(deps, os.path.getmtime(os.path.join(ROOT, "runtime", "recomp_mod.h")))
-        if s in vidsrc or s.endswith("win_host.c"): dep = max([dep] + [os.path.getmtime(h) for h in glob.glob(os.path.join(ROOT, "video", "**", "*.h"), recursive=True)])
+        if s in vidsrc or s.endswith("win_host.c"): dep = max([dep] + [os.path.getmtime(h) for h in glob.glob(os.path.join(ROOT, "video", "**", "*.h"), recursive=True) + glob.glob(os.path.join(ROOT, "host", "*.inc"))])
         need = not os.path.exists(o) or os.path.getmtime(o) < max(os.path.getmtime(s), dep) or (s.endswith("win_host.c") and host_changed)
         if need: jobs.append((s, o))
     done = [0]
