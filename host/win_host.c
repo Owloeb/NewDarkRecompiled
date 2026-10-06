@@ -39,7 +39,20 @@ extern const char ao_mod_name[];
 extern const uint32_t ao_mod_base, ao_mod_size, ao_mod_entry, ao_mod_crc, ao_mod_code_lo[], ao_mod_code_hi[];
 extern const unsigned ao_mod_ncode;
 #endif
-static volatile int ao_active;    /* recompiled allobjs.osm is mapped and in use */
+static volatile int ao_active;
+typedef struct { uint32_t va; const char *name; } SymEnt;   /* names from symbols/*.sym (host/gen_symtab.py) */
+extern const SymEnt nd_symtab[];
+extern const unsigned nd_symtab_n;
+static const char *sym_name(uint32_t va) {
+    unsigned lo = 0, hi = nd_symtab_n;
+    while (lo < hi) { unsigned mid = (lo + hi) / 2; if (nd_symtab[mid].va < va) lo = mid + 1; else hi = mid; }
+    return lo < nd_symtab_n && nd_symtab[lo].va == va ? nd_symtab[lo].name : NULL;
+}
+static uint32_t fn_start(uint32_t va) {   /* recompiled exe function containing va (0 if none) */
+    unsigned lo = 0, hi = nd_table_n;
+    while (lo < hi) { unsigned mid = (lo + hi) / 2; if (nd_table[mid].va <= va) lo = mid + 1; else hi = mid; }
+    return lo ? nd_table[lo - 1].va : 0;
+}    /* recompiled allobjs.osm is mapped and in use */
 typedef struct { const char *dll, *name; } ImpDef;
 extern const ImpDef hd_imports[];
 extern const unsigned hd_nimports;
@@ -138,6 +151,18 @@ static void dump_state(CPU *c, const char *why) {
         if (++shown % 8 == 0) { hlog("  %s", line); len = 0; }
     }
     if (len) hlog("  %s", line);
+    {   /* the same, newest first, with names where known */
+        const char *seen[12]; int ns = 0;
+        for (unsigned k = n; k-- > (n > 4095 ? n - 4095 : 0) && ns < 12;) {
+            const char *f = rt_ring[k & 4095]; int dup = 0;
+            if (!f || strlen(f) < 11) continue;
+            for (int q = 0; q < ns; q++) if (seen[q] == f) dup = 1;
+            if (dup) continue;
+            seen[ns++] = f;
+            const char *nm = !strncmp(f, "nd_", 3) ? sym_name((uint32_t)strtoul(f + 3, NULL, 16)) : NULL;
+            if (nm) hlog("    %s  %s", f + 3, nm);
+        }
+    }
     unsigned m = imp_ring_i; hlog("last native calls (oldest first; 'open' = entered, not yet returned), %ld call_native frames open:", (long)g_in_native);
     for (unsigned k = (m > 48 ? m - 48 : 0); k < m; k++) {
         ImpRec *r = &imp_ring[k % IMPRING]; char d[160];
@@ -297,6 +322,10 @@ static void describe(char *out, size_t n, void *p) {
         const char *b = strrchr(path, '\\');
         unsigned off = (unsigned)((char *)p - (char *)m);
         int len = snprintf(out, n, "%s+0x%x", b ? b + 1 : path, off);
+        if ((uintptr_t)m == hd_base) {   /* game code: add the function's name if we have one */
+            uint32_t st = fn_start((uint32_t)(uintptr_t)p); const char *nm = st ? sym_name(st) : NULL;
+            if (nm && len > 0 && len < (int)n) len += snprintf(out + len, n - len, " (%s+0x%x)", nm, (unsigned)((uint32_t)(uintptr_t)p - st));
+        }
         /* nearest named export at or below the address, if one is close */
         const IMAGE_DOS_HEADER *dh = (const IMAGE_DOS_HEADER *)m;
         const IMAGE_NT_HEADERS *nt = (const IMAGE_NT_HEADERS *)((const char *)m + dh->e_lfanew);

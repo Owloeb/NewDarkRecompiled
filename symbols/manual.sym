@@ -1,0 +1,19 @@
+# Hand-written names for NewDark 2.48 SS2.exe (crc32 c8f2d1e4). These override the names tools/annotate.py generates.
+# <address> <kind> <name>  # notes   (addresses of function entry points, as in the original exe)
+0x006017d0 func render_frame_world        # builds the render camera from the player camera object (*0xa3acb8) and draws the 3D frame
+0x00601430 func render_scene_from_camera  # eax -> {float x,y,z; u32 cell; u16 bank,pitch; u16 heading}; copies it to 0xa57e00
+0x006a8750 func detect_simd_features      # IsProcessorFeaturePresent -> 0xa46a04 (SSE level), 0xa46a08 (MMX), 0xa46a0c (3DNow)
+0x00519930 func blend_pixels_simd         # has an SSE2 path used when *0xa46a04 >= 2
+0x006c6700 func memset_large              # SSE2 non-temporal path for >= 3 MB when *0xa46a04 >= 2
+0x006a1380 func res_fopen                 # ecx -> mode string; opens a file through the resource search path
+0x006dae90 func movie_io_open             # lgvid callback: open (returns a 32-byte handle)
+0x006daed0 func movie_io_size             # lgvid callback: file length
+0x006daf30 func movie_io_read             # lgvid callback: fread(buf, 1, size, handle->fp)
+0x006daf70 func movie_io_seek             # lgvid callback: fseek(handle->fp, off, whence)
+0x006c8600 func d3d_display_flip          # D3D display device vtable (0x787820) slot 0x14
+0x006c8bb0 func d3d_display_lock          # slot 0x18
+0x006c8e10 func d3d_display_unlock        # slot 0x1c
+0x006c8700 func d3d_display_end_frame     # slot 0x20
+0x006c9e30 func d3d_display_set_overlay   # slot 0x3c
+0x006c9ee0 func d3d_display_end_overlay   # slot 0x40
+0x006f6b98 func security_check_cookie     # MSVC /GS check

@@ -33,6 +33,7 @@ def main():
     ap.add_argument("--install", action="store_true", help="copy the built exe into the folder that contains SS2.exe")
     ap.add_argument("--osm", help="allobjs.osm to recompile as well (default: Data\\allobjs.osm next to SS2.exe, if present)")
     ap.add_argument("--no-osm", action="store_true", help="don't recompile allobjs.osm (the game then uses the original DLL)")
+    ap.add_argument("--named-sources", action="store_true", help="also write out/nd_named: a copy of the generated C with function names and notes, for reading")
     a = ap.parse_args()
     exe = os.path.abspath(a.ss2exe)
     if not os.path.isfile(exe): sys.exit(f"SS2.exe not found: {exe}")
@@ -46,6 +47,17 @@ def main():
     if os.path.exists(os.path.join(gen, "nd_meta.json")): print("  already done, skipping")
     else: run([PY, "lift.py", "--smc", exe, "nd", gen], "lift")
     run([PY, os.path.join("host", "gen_hostdata.py"), os.path.join(gen, "nd_meta.json"), exe, os.path.join(gen, "nd_hostdata.c")], "host data")
+
+    # names: harvested from your exe (RTTI, vtables, strings) + symbols/manual.sym; used in crash reports
+    auto = os.path.join(gen, "auto.sym")
+    if not os.path.exists(auto) or os.path.getmtime(auto) < os.path.getmtime(os.path.join(ROOT, "tools", "annotate.py")):
+        print("  harvesting function names (about 20 seconds)")
+        run([PY, os.path.join("tools", "annotate.py"), exe, gen, auto], "annotate")
+    syms = [auto, os.path.join(ROOT, "symbols", "manual.sym")]
+    run([PY, os.path.join("host", "gen_symtab.py"), exe, os.path.join(gen, "nd_symtab.c")] + syms, "symbol table")
+    if a.named_sources:
+        run([PY, os.path.join("tools", "name_sources.py"), gen, os.path.join(ROOT, "out", "nd_named"), *syms], "named sources")
+        print("  readable copy with names: out/nd_named (functions.txt is the index)")
 
     # allobjs.osm (the game's object scripts): recompiled too when available; the host swaps it in at runtime
     osm = None if a.no_osm else os.path.abspath(a.osm) if a.osm else os.path.join(os.path.dirname(exe), "Data", "allobjs.osm")

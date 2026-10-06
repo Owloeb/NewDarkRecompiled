@@ -112,11 +112,29 @@ Empty text files placed next to the exe change its behaviour:
 - Many diagnostic hooks from the bring-up are still in `host/win_host.c`; they are inactive unless
   `darkrecomp_debug.txt` exists.
 
+## Names for the recompiled code (symbols)
+
+The generated C names every function by its original address (`nd_00601430`). The build also harvests names from your
+own `SS2.exe` (`tools/annotate.py`, about 20 seconds):
+
+- **RTTI:** the engine is C++ with runtime type information, so every polymorphic class and its vtable can be found;
+  each virtual method becomes `Class::vfN` (COM-style classes get `QueryInterface`/`AddRef`/`Release`).
+- **Constructors/destructors:** functions that store a class's vtable into an object.
+- **Import thunks** and the **string literals** each function uses (log messages, config variable names), as notes.
+
+That names about a third of the roughly 21,000 functions automatically. `symbols/manual.sym` holds names found by hand
+(the render camera, the movie I/O callbacks, the SIMD detection, ...) and overrides the generated ones. Crash reports in
+`ss2_native.log` print these names. `--named-sources` also writes `out/nd_named/`: a copy of the generated C with each
+function's name and notes above it, plus `functions.txt`, an index, for reading.
+
+The generated names stay on your machine; only `symbols/manual.sym` (our own findings, keyed by address) is in the
+repository. Contributions to it are welcome: one line per function, `0x<address> func <name>  # what it does`.
+
 ## Roadmap
 
 1. Shakedown on more machines (AMD and Intel GPUs, other Windows versions) and with popular mods.
-2. A symbol file: names for functions, globals and structures (from RTTI, strings and observation), applied by the
-   lifter so the generated C is readable.
+2. More names: globals and structure layouts, and hand-named functions for the main systems (render, input, physics,
+   AI, save/load), in `symbols/manual.sym`.
 3. Recompile the remaining Looking Glass modules (`Squirrel.osm`, `lgvid.dll`, `fmsel.dll`, `darkdlgs.dll`) and replace
    the bundled `ffmpeg.dll` with a modern open-source decoder.
 4. A platform layer (graphics, audio, input, Windows API) so the recompiled game can run beyond 32-bit Windows.
