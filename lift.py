@@ -71,8 +71,10 @@ class Unsupported(Exception):
 
 
 class Image:
-    def __init__(self, path):
+    def __init__(self, path, rebase=None):
         self.pe = pe = pefile.PE(path)
+        if rebase is not None and rebase != pe.OPTIONAL_HEADER.ImageBase:
+            pe.relocate_image(rebase)   # lift as if loaded at `rebase` (the host maps the DLL there itself)
         self.base = pe.OPTIONAL_HEADER.ImageBase
         self.img = bytes(pe.get_memory_mapped_image())
         self.sections = []
@@ -844,12 +846,16 @@ class Fn:
                 if reg == 0: return L + ['FPUSH(c, LDF32(ea));']
                 if reg == 2: return L + ['STF32(ea, ST(0));']
                 if reg == 3: return L + ['STF32(ea, ST(0)); FPOP(c);']
+                if reg == 4: return L + ['c->cw = RD16(ea); { uint16_t sw_ = RD16(ea + 4); c->sw = sw_ & ~0x3800; c->top = (sw_ >> 11) & 7; }']                          # fldenv (28-byte env)
                 if reg == 5: return L + ['c->cw = RD16(ea);']
+                if reg == 6: return L + ['WR32(ea, 0xFFFF0000u | c->cw); WR32(ea + 4, 0xFFFF0000u | FSW(c)); WR32(ea + 8, 0xFFFF0000u); WR32(ea + 12, 0); WR32(ea + 16, 0); WR32(ea + 20, 0); WR32(ea + 24, 0); c->cw |= 0x3F;']   # fnstenv (masks exceptions, like the CPU)
                 if reg == 7: return L + ['WR16(ea, c->cw);']
             if op == 0xDD:
                 if reg == 0: return L + ['FPUSH(c, LDF64(ea));']
                 if reg == 2: return L + ['STF64(ea, ST(0));']
                 if reg == 3: return L + ['STF64(ea, ST(0)); FPOP(c);']
+                if reg == 4: return L + ['c->cw = RD16(ea); { uint16_t sw_ = RD16(ea + 4); c->sw = sw_ & ~0x3800; c->top = (sw_ >> 11) & 7; } for (int r_ = 0; r_ < 8; r_++) ST(r_) = LDF80(ea + 28 + 10 * r_);']   # frstor
+                if reg == 6: return L + ['WR32(ea, 0xFFFF0000u | c->cw); WR32(ea + 4, 0xFFFF0000u | FSW(c)); WR32(ea + 8, 0xFFFF0000u); WR32(ea + 12, 0); WR32(ea + 16, 0); WR32(ea + 20, 0); WR32(ea + 24, 0); for (int r_ = 0; r_ < 8; r_++) STF80(ea + 28 + 10 * r_, ST(r_)); c->cw = 0x37F; c->sw = 0; c->top = 0;']   # fnsave
                 if reg == 7: return L + ['WR16(ea, FSW(c));']
             if op == 0xDB:
                 if reg == 0: return L + ['FPUSH(c, (double)(int32_t)RD32(ea));']
@@ -903,6 +909,7 @@ class Fn:
                 0xF2: [R + '{ ST(0) = tan(ST(0)); FPUSH(c, 1.0); c->sw &= ~0x400; }'],
                 0xF3: ['ST(1) = atan2(ST(1), ST(0)); FPOP(c);'],
                 0xF8: ['ST(0) = fmod(ST(0), ST(1)); c->sw &= ~0x400;'],
+                0xF5: ['ST(0) = remainder(ST(0), ST(1)); c->sw &= ~0x400;'],   # fprem1: IEEE remainder (quotient bits not modelled, as for fprem)
                 0xFA: ['ST(0) = sqrt(ST(0));'],
                 0xFB: [R + '{ double v = ST(0); ST(0) = sin(v); FPUSH(c, cos(v)); c->sw &= ~0x400; }'],
                 0xFC: ['ST(0) = FROUND(c, ST(0));'],
@@ -1193,9 +1200,10 @@ if __name__ == '__main__':
     ap.add_argument('pe'); ap.add_argument('prefix'); ap.add_argument('outdir')
     ap.add_argument('--funcs-per-file', type=int, default=150)
     ap.add_argument('--smc', action='store_true', help='analyse and translate self-modifying code')
+    ap.add_argument('--rebase', type=lambda v: int(v, 0), help='lift a DLL as if loaded at this base (applies its relocations first)')
     ap.add_argument('--iat-indirect', action='store_true', help='for DLLs loaded by Windows: call imports through their IAT slot as plain indirect calls (the slot holds the real address)')
     a = ap.parse_args()
-    img = Image(a.pe)
+    img = Image(a.pe, a.rebase)
     if a.iat_indirect: img.iat = {}
     L = Lifter(a.pe, a.prefix, img)
     if a.smc:

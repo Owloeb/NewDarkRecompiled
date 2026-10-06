@@ -22,10 +22,12 @@ This repository stays vanilla: it reproduces the original game and adds nothing 
 The Windows host (`host/win_host.c`) is linked at the game's original address (0x400000). At start-up it loads your
 `SS2.exe` sections into that range, wires the import table to the real Windows API, and redirects every original function
 to its recompiled version. Window procedures, DirectX callbacks, the C runtime's static constructors and script modules
-that call into the engine land in recompiled code too. The game's object scripts (`allobjs.osm`) are recompiled the same way:
-when the engine loads that module, the host maps it itself, checks it is the exact file that was recompiled, and runs the
-recompiled code instead (falling back to the original if a mod ships its own copy). The other Looking Glass DLLs
-(`lgvid.dll`, `fmsel.dll`, `darkdlgs.dll`, `Squirrel.osm`) still run as the original binaries for now.
+that call into the engine land in recompiled code too. The script modules (`allobjs.osm`, the game's object scripts, and
+`Squirrel.osm`, NewDark's Squirrel scripting) are recompiled the same way: when the engine loads one, the host loads the
+file itself, checks it is the exact file that was recompiled, and runs the recompiled code instead (falling back to the
+original if a mod ships its own copy). Both modules want the same address, so `Squirrel.osm` is lifted as if loaded at
+0x30000000 and the host maps and relocates it there. The other Looking Glass DLLs (`lgvid.dll`, `fmsel.dll`,
+`darkdlgs.dll`) still run as the original binaries for now.
 
 ## Legal and ground rules
 
@@ -51,8 +53,8 @@ The tools here are MIT-licensed (see LICENSE). The game, its engine and anything
         python host\build_win.py "C:\Games\System Shock 2\SS2.exe" --install
 
    The first build takes about 20 minutes (about 8 to convert the game to C, about 10 to compile). It prints progress as it
-   goes. Later builds only redo what changed. `Data\allobjs.osm` next to your `SS2.exe` is found and recompiled
-   automatically (`--no-osm` skips it).
+   goes. Later builds only redo what changed. `Data\allobjs.osm` and `osm\Squirrel.osm` next to your `SS2.exe` are found
+   and recompiled automatically (`--no-osm` skips them).
 
 4. Run `ss2_native.exe` from your System Shock 2 folder instead of `SS2.exe`. Leave everything else in that folder where it
    is: the game's data, `lgvid.dll`, `ffmpeg.dll`, `fmsel.dll`, `darkdlgs.dll`, `allobjs.osm`, `Squirrel.osm` and the config
@@ -75,7 +77,7 @@ Empty text files placed next to the exe change its behaviour:
 | `darkrecomp_nomsaa.txt` | force multisampling off |
 | `darkrecomp_novsync.txt` | present without vsync |
 | `darkrecomp_nolgvid.txt` | hide the video decoder (skips cutscenes) |
-| `darkrecomp_native_osm.txt` | use the original `allobjs.osm` instead of the recompiled one |
+| `darkrecomp_native_osm.txt` | use the original `allobjs.osm` and `Squirrel.osm` instead of the recompiled ones |
 | `darkrecomp_heapcheck.txt` | validate all heaps after every native call (slow; for tracking corruption) |
 | `darkrecomp_realquery.txt` | use the real D3D frame-limiter query instead of the shortcut |
 
@@ -103,8 +105,10 @@ Empty text files placed next to the exe change its behaviour:
 - The game's log (`SS2.log`) shows `Failed to load script module ...` lines for `baseelev.osm`, `traps.osm` and one
   with an unreadable name (`+x?A.osm`, error 126). All three appear in logs from the retail game too: they are harmless
   leftovers in the engine's default script list and are safely skipped.
-- `Squirrel.osm`, `lgvid.dll`, `fmsel.dll` and `darkdlgs.dll` still run as the original DLLs, so this is not yet a fully
-  recompiled program.
+- `lgvid.dll`, `fmsel.dll` and `darkdlgs.dll` still run as the original DLLs, so this is not yet a fully recompiled
+  program.
+- C++ exceptions and `longjmp` inside recompiled code are not supported. The Squirrel compiler uses `longjmp` to report
+  syntax errors, so a script with a syntax error will stop the game instead of logging the error.
 - The engine's SSE code paths are disabled (the recompiler doesn't translate SSE), so it uses its x87 fallbacks, as it
   would on an old CPU.
 - Windows only (the host is a 32-bit Windows executable; 64-bit Windows 10/11 run it fine). Only tested with NewDark
@@ -135,7 +139,7 @@ repository. Contributions to it are welcome: one line per function, `0x<address>
 1. Shakedown on more machines (AMD and Intel GPUs, other Windows versions) and with popular mods.
 2. More names: globals and structure layouts, and hand-named functions for the main systems (render, input, physics,
    AI, save/load), in `symbols/manual.sym`.
-3. Recompile the remaining Looking Glass modules (`Squirrel.osm`, `lgvid.dll`, `fmsel.dll`, `darkdlgs.dll`) and replace
+3. Recompile the remaining Looking Glass modules (`lgvid.dll`, `fmsel.dll`, `darkdlgs.dll`) and replace
    the bundled `ffmpeg.dll` with a modern open-source decoder.
 4. A platform layer (graphics, audio, input, Windows API) so the recompiled game can run beyond 32-bit Windows.
 
