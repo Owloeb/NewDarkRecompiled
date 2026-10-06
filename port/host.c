@@ -31,7 +31,7 @@ extern guest_fn nd_lookup(uint32_t va);
 uint8_t *M;
 int port_trace;
 uint32_t g_frames, g_max_frames;
-static const char *ring_names[16]; static unsigned ring_n;
+static const char *ring_names[16]; static uint32_t ring_ret[16]; static unsigned ring_n;
 static CPU g_cpu; CPU *g_cpup = &g_cpu;
 
 void port_log(const char *fmt, ...) { va_list ap; va_start(ap, fmt); fputs("[port] ", stderr); vfprintf(stderr, fmt, ap); fputc('\n', stderr); va_end(ap); }
@@ -39,7 +39,8 @@ void port_exit(int code) { fflush(stdout); fflush(stderr); _exit(code); }
 void port_die(const char *fmt, ...) {
     va_list ap; va_start(ap, fmt); fputs("[port] FATAL: ", stderr); vfprintf(stderr, fmt, ap); fputc('\n', stderr); va_end(ap);
     fprintf(stderr, "[port]   guest esp=%08x ebp=%08x eax=%08x ecx=%08x edx=%08x ebx=%08x esi=%08x edi=%08x\n", g_cpu.esp, g_cpu.ebp, g_cpu.eax, g_cpu.ecx, g_cpu.edx, g_cpu.ebx, g_cpu.esi, g_cpu.edi);
-    fprintf(stderr, "[port]   last host calls:"); for (unsigned i = ring_n > 12 ? ring_n - 12 : 0; i < ring_n; i++) fprintf(stderr, " %s", ring_names[i & 15]); fputc(10, stderr);
+    fprintf(stderr, "[port]   last host calls:"); for (unsigned i = ring_n > 12 ? ring_n - 12 : 0; i < ring_n; i++) fprintf(stderr, " %s@%x", ring_names[i & 15], ring_ret[i & 15]); fputc(10, stderr);
+    { fprintf(stderr, "[port]   frames (ebp chain, return addresses):"); uint32_t bp = g_cpu.ebp; for (int i = 0; i < 12 && bp > 0x1000 && bp < 0x08400000u; i++) { fprintf(stderr, " %08x", RD32(bp + 4)); uint32_t nb = RD32(bp); if (nb <= bp) break; bp = nb; } fputc(10, stderr); }
     fprintf(stderr, "[port]   guest stack:"); for (int i = 0; i < 12; i++) fprintf(stderr, " %08x", RD32(g_cpu.esp + 4 * i)); fputc(10, stderr);
     port_exit(2);
 }
@@ -106,7 +107,7 @@ static void thunk_run(CPU *c, unsigned i) {
         for (int i = 0; i < 4; i++) { uint32_t a = A(i); if (a < 0x10000 || a >= 0x7F000000u) continue; const uint8_t *p = GP(a); int n = 0; while (n < 44 && p[n] >= 32 && p[n] < 127) n++; if (n >= 3 && (p[n] == 0 || n == 44)) { memcpy(ss[i], p, (size_t)n); ss[i][n] = 0; } }
         port_log("call %s(%08x, %08x, %08x, %08x)%s%s%s%s%s%s%s%s", t->name, A(0), A(1), A(2), A(3), ss[0][0] ? " 0=\"" : "", ss[0], ss[0][0] ? "\"" : "", ss[1][0] ? " 1=\"" : "", ss[1], ss[1][0] ? "\"" : "", ss[2][0] ? " 2=\"" : "", ss[2]);
     }
-    ring_names[ring_n++ & 15] = t->name; g_targ = t->arg;
+    ring_ret[ring_n & 15] = RD32(c->esp); ring_names[ring_n++ & 15] = t->name; g_targ = t->arg;
     t->fn(c);
     c->esp += 4 + t->pop;     /* return address + the arguments the real function pops */
 }
