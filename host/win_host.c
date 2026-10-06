@@ -1093,6 +1093,12 @@ static LONG CALLBACK veh(EXCEPTION_POINTERS *ep) {
     HMODULE host = GetModuleHandleA(NULL);
     if (a >= (uintptr_t)host && a < (uintptr_t)host + 0x4000000) where = "host/recompiled code";
     if (code == 0xC00000FDu || code == 0xC0000374u || code == 0xC0000409u || code == 0xC000001Du || code == 0xC0000096u || code == 0xC0000094u || strcmp(where, "other")) g_crash = 1;
+    if (code == EXCEPTION_ACCESS_VIOLATION && !g_crash) {   /* in quiet mode, still report access violations outside the benign IsBadReadPtr probes in KERNELBASE/ntdll */
+        HMODULE m = NULL; char mn[MAX_PATH] = "";
+        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)a, &m)) GetModuleFileNameA(m, mn, sizeof mn);
+        const char *b = strrchr(mn, '\\'); b = b ? b + 1 : mn;
+        if (_stricmp(b, "KERNELBASE.dll") && _stricmp(b, "ntdll.dll")) g_crash = 1;
+    }
     char buf[300];
     snprintf(buf, sizeof buf, "first-chance exception %08lx at %p (%s)", code, (void *)a, where);
     dump_state(cur_cpu(), buf);
