@@ -7,7 +7,7 @@
 #include <time.h>
 #include "port.h"
 
-enum { C_D3D9, C_DEV, C_TEX, C_CUBE, C_SURF, C_BUF, C_SWAP, C_QUERY, C_GEN, C_DS, C_DSB, C_DS3B, C_DS3L, C_DI, C_DID, C_DD, C_NCLASS };
+enum { C_D3D9, C_DEV, C_TEX, C_CUBE, C_SURF, C_BUF, C_SWAP, C_QUERY, C_GEN, C_DS, C_DSB, C_DS3B, C_DS3L, C_DI, C_DID, C_DD, C_KSP, C_NCLASS };
 typedef void (*mfn)(CPU *c, uint32_t self);
 typedef struct { const char *name; const char *spec; } IfaceDef;
 #define UNK "QueryInterface:2 AddRef:0 Release:0 "
@@ -28,6 +28,7 @@ static const IfaceDef ifaces[C_NCLASS] = {
  [C_DS3L] = { "IDirectSound3DListener", UNK "GetAllParameters:1 GetDistanceFactor:1 GetDopplerFactor:1 GetOrientation:2 GetPosition:1 GetRolloffFactor:1 SetAllParameters:2 SetDistanceFactor:2 SetDopplerFactor:2 SetOrientation:7 SetPosition:4 SetRolloffFactor:2 CommitDeferredSettings:0" },
  [C_DI] = { "IDirectInput", UNK "CreateDevice:3 EnumDevices:4 GetDeviceStatus:1 RunControlPanel:2 Initialize:3" },
  [C_DD] = { "IDirectDraw", UNK "Compact:0 CreateClipper:3 CreatePalette:4 CreateSurface:3 DuplicateSurface:2 EnumDisplayModes:4 EnumSurfaces:4 FlipToGDISurface:0 GetCaps:2 GetDisplayMode:1 GetFourCCCodes:2 GetGDISurface:1 GetMonitorFrequency:1 GetScanLine:1 GetVerticalBlankStatus:1 Initialize:1 RestoreDisplayMode:0 SetCooperativeLevel:2 SetDisplayMode:3 WaitForVerticalBlank:2" },
+ [C_KSP] = { "IKsPropertySet", UNK "Get:7 Set:6 QuerySupport:3" },
  [C_DID] = { "IDirectInputDevice", UNK "GetCapabilities:1 EnumObjects:3 GetProperty:2 SetProperty:2 Acquire:0 Unacquire:0 GetDeviceState:2 GetDeviceData:4 SetDataFormat:1 SetEventNotification:1 SetCooperativeLevel:2 GetObjectInfo:3 GetDeviceInfo:1 RunControlPanel:2 Initialize:3" },
 };
 typedef struct { int cls; const char *name; mfn fn; } Handler;
@@ -70,10 +71,17 @@ static void h_addref(CPU *c, uint32_t s) { WR32(s + 4, RD32(s + 4) + 1); c->eax 
 static void h_release(CPU *c, uint32_t s) { uint32_t r = RD32(s + 4); if (r) WR32(s + 4, --r); c->eax = r; }
 static void h_qi(CPU *c, uint32_t s) {
     uint32_t iid0 = A(1) ? RD32(A(1)) : 0; int cls = (int)RD32(s + 8); uint32_t r = s;
-    if (cls == C_DSB && iid0 == 0x279AFA86u) r = make(C_DS3B); else if (cls == C_DSB && iid0 == 0x279AFA84u) r = make(C_DS3L);
-    else WR32(s + 4, RD32(s + 4) + 1);
+    if (cls == C_DSB || cls == C_DS3B || cls == C_DS3L || cls == C_DS || cls == C_KSP) {
+        /* only the interfaces we really implement; anything else (IDirectSoundBuffer8, EAX property sets, ...) is refused, so the
+           game falls back instead of calling a vtable of the wrong shape */
+        if (iid0 == 0x279AFA86u) r = make(C_DS3B); else if (iid0 == 0x279AFA84u) r = make(C_DS3L); else if (iid0 == 0x31EFAC30u) r = make(C_KSP);
+        else if (iid0 == 0x279AFA85u || iid0 == 0x279AFA83u || iid0 == 0) WR32(s + 4, RD32(s + 4) + 1);
+        else { OUT(2, 0); c->eax = 0x80004002u; return; }
+    } else WR32(s + 4, RD32(s + 4) + 1);
     OUT(2, r); c->eax = 0;
 }
+static void ksp_query(CPU *c, uint32_t s) { (void)s; OUT(3, 0); }       /* no EAX/property support */
+static void ksp_fail(CPU *c, uint32_t s) { (void)s; c->eax = 0x80070490u; }
 
 /* ---------------------------------------------------------------- Direct3D 9 */
 static void fill_caps(uint32_t p) {
@@ -221,6 +229,7 @@ static const Handler hlist[] = {
     { C_DS, "CreateSoundBuffer", ds_createbuf }, { C_DS, "DuplicateSoundBuffer", ds_dup }, { C_DS, "GetCaps", ds_getcaps }, { C_DS, "GetSpeakerConfig", ds_speaker },
     { C_DSB, "GetCurrentPosition", dsb_getpos }, { C_DSB, "GetStatus", dsb_status }, { C_DSB, "Play", dsb_play }, { C_DSB, "Stop", dsb_stop }, { C_DSB, "Lock", dsb_lock },
     { C_DSB, "GetCaps", dsb_caps }, { C_DSB, "GetVolume", dsb_zero1 }, { C_DSB, "GetPan", dsb_zero1 }, { C_DSB, "GetFrequency", dsb_zero1 },
+    { C_KSP, "QuerySupport", ksp_query }, { C_KSP, "Get", ksp_fail }, { C_KSP, "Set", ksp_fail },
     { C_DD, "GetCaps", dd_caps }, { C_DI, "CreateDevice", di_createdev }, { C_DID, "GetDeviceState", did_state }, { C_DID, "GetDeviceData", did_data }, { C_DID, "GetCapabilities", did_caps },
 };
 static void install_unknown(void) {
