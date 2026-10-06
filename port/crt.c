@@ -174,7 +174,7 @@ static FILE *F(uint32_t g) { uint32_t i = g ? RD32(g) : 0; return i && i < MAXF 
 SHIM(fopen_) {
     char hp[1400]; host_path(gs(A(0)), hp, sizeof hp); char m[16]; snprintf(m, sizeof m, "%s", gs(A(1)));
     char *t = strchr(m, 't'); if (t) memmove(t, t + 1, strlen(t)); char *b = strchr(m, 'b'); (void)b;
-    FILE *f = fopen(hp, m); if (!f) { RET(0); return; } RET(file_new(f));
+    FILE *f = fopen(hp, m); if (!f) { if (errno == ENOENT) port_miss("fopen", gs(A(0)), hp); RET(0); return; } RET(file_new(f));
 }
 SHIM(fclose_) { FILE *f = F(A(0)); if (!f) { RET((uint32_t)-1); return; } ftab[RD32(A(0))] = NULL; g_free(A(0)); RET((uint32_t)fclose(f)); }
 SHIM(fread_) { FILE *f = F(A(3)); RET(f ? (uint32_t)fread(GP(A(0)), A(1), A(2), f) : 0); }
@@ -204,7 +204,7 @@ SHIM(getdrive_) { RET(3); }
 SHIM(open_) {
     char hp[1400]; host_path(gs(A(0)), hp, sizeof hp); uint32_t fl = A(1); int of = (int)(fl & 3);
     if (fl & 0x8) of |= O_APPEND; if (fl & 0x100) of |= O_CREAT; if (fl & 0x200) of |= O_TRUNC; if (fl & 0x400) of |= O_EXCL;
-    RET((uint32_t)open(hp, of, 0644));
+    int r = open(hp, of, 0644); if (r < 0 && errno == ENOENT) port_miss("_open", gs(A(0)), hp); RET((uint32_t)r);
 }
 SHIM(close_) { RET((uint32_t)close((int)A(0))); }
 SHIM(read_) { RET((uint32_t)read((int)A(0), GP(A(1)), A(2))); }
@@ -216,7 +216,7 @@ static void put_stat(uint32_t p, const struct stat *st) {   /* struct _stat64i32
     memset(GP(p), 0, 48); WR16(p + 6, (uint16_t)((S_ISDIR(st->st_mode) ? 0x4000 : 0x8000) | 0x1B6)); WR16(p + 8, 1); WR32(p + 20, (uint32_t)st->st_size);
     WR64(p + 24, (uint64_t)st->st_atime); WR64(p + 32, (uint64_t)st->st_mtime); WR64(p + 40, (uint64_t)st->st_ctime);
 }
-SHIM(stat64i32_) { char hp[1400]; struct stat st; host_path(gs(A(0)), hp, sizeof hp); if (stat(hp, &st)) { RET((uint32_t)-1); return; } put_stat(A(1), &st); RET(0); }
+SHIM(stat64i32_) { char hp[1400]; struct stat st; host_path(gs(A(0)), hp, sizeof hp); if (stat(hp, &st)) { port_miss("stat", gs(A(0)), hp); RET((uint32_t)-1); return; } put_stat(A(1), &st); RET(0); }
 SHIM(fstat64i32_) { struct stat st; if (fstat((int)A(0), &st)) { RET((uint32_t)-1); return; } put_stat(A(1), &st); RET(0); }
 
 /* _findfirst / _findnext: handle = index into a table of open directories */

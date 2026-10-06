@@ -26,7 +26,7 @@ SHIM(FlushFileBuffers) { RET(1); }
 SHIM(GetFileType) { uint32_t h = A(0); RET(h >= 0x10 && h <= 0x12 ? 2 : 1); }
 SHIM(SetHandleCount) { RET(A(0)); }
 SHIM(SetStdHandle) { RET(1); }
-SHIM(GetFileAttributesA) { char hp[1400]; struct stat st; host_path(gs(A(0)), hp, sizeof hp); if (stat(hp, &st)) { set_last_error(2); RET(0xFFFFFFFFu); return; } RET(S_ISDIR(st.st_mode) ? 0x10 : 0x80); }
+SHIM(GetFileAttributesA) { char hp[1400]; struct stat st; host_path(gs(A(0)), hp, sizeof hp); if (stat(hp, &st)) { port_miss("attr", gs(A(0)), hp); set_last_error(2); RET(0xFFFFFFFFu); return; } RET(S_ISDIR(st.st_mode) ? 0x10 : 0x80); }
 SHIM(DeleteFileA) { char hp[1400]; host_path(gs(A(0)), hp, sizeof hp); RET(unlink(hp) == 0); }
 SHIM(MoveFileA) { char a[1400], b[1400]; host_path(gs(A(0)), a, sizeof a); host_path(gs(A(1)), b, sizeof b); RET(rename(a, b) == 0); }
 SHIM(GetCurrentDirectoryA) { const char *w = "C:\\"; if (A(0) < 4) { RET(4); return; } memcpy(GP(A(1)), w, 4); RET(3); }
@@ -51,7 +51,7 @@ SHIM(FindFirstFileA) {
     char hp[1400]; host_path(gs(A(0)), hp, sizeof hp); char *sl = strrchr(hp, '/'); char dir[1400]; const char *pat;
     if (sl) { *sl = 0; snprintf(dir, sizeof dir, "%s", hp[0] ? hp : "/"); pat = sl + 1; } else { snprintf(dir, sizeof dir, "."); pat = hp; }
     int i; for (i = 0; i < 16 && fhs[i].used; i++) ; if (i == 16) { RET(0xFFFFFFFFu); return; }
-    DIR *d = opendir(dir); if (!d) { set_last_error(3); RET(0xFFFFFFFFu); return; }
+    DIR *d = opendir(dir); if (!d) { port_miss("find", gs(A(0)), dir); set_last_error(3); RET(0xFFFFFFFFu); return; }
     fhs[i].d = d; fhs[i].used = 1; snprintf(fhs[i].pat, sizeof fhs[i].pat, "%s", pat); snprintf(fhs[i].dir, sizeof fhs[i].dir, "%s", dir);
     if (!ff_fill(&fhs[i], A(1))) { closedir(d); fhs[i].used = 0; set_last_error(2); RET(0xFFFFFFFFu); return; } RET(0x6000 + (uint32_t)i);
 }

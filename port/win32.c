@@ -129,7 +129,7 @@ SHIM(CreateFileA) {
     char hp[1400]; host_path(gs(A(0)), hp, sizeof hp); uint32_t acc = A(1), disp = A(4); int fl = (acc & 0x40000000u) ? ((acc & 0x80000000u) ? O_RDWR : O_WRONLY) : O_RDONLY;
     if (disp == 1) fl |= O_CREAT | O_EXCL; else if (disp == 2) fl |= O_CREAT | O_TRUNC; else if (disp == 4) fl |= O_CREAT; else if (disp == 5) fl |= O_TRUNC;
     int fd = open(hp, fl, 0644);
-    if (fd < 0) { SETERR(errno == ENOENT ? 2 : 5); RET(0xFFFFFFFFu); return; }
+    if (fd < 0) { if (errno == ENOENT) port_miss("open", gs(A(0)), hp); SETERR(errno == ENOENT ? 2 : 5); RET(0xFFFFFFFFu); return; }
     RET(0x2000 + 4 * fd);
 }
 SHIM(GetFileTime) {

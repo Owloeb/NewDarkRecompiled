@@ -48,6 +48,7 @@ uint32_t g_call(CPU *c, uint32_t fn, int nargs, ...);
 /* files (Windows paths -> host paths, case-insensitive) */
 char *host_path(const char *win, char *out, size_t n);
 
+void port_miss(const char *what, const char *guest, const char *host); /* log a failed file lookup (first 60) */
 extern int port_trace;                     /* PORT_TRACE=1: log every import call */
 void port_log(const char *fmt, ...);
 void port_die(const char *fmt, ...) __attribute__((noreturn));

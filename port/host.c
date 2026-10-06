@@ -34,6 +34,7 @@ uint32_t g_frames, g_max_frames;
 static const char *ring_names[16]; static uint32_t ring_ret[16]; static unsigned ring_n;
 static CPU g_cpu; CPU *g_cpup = &g_cpu;
 
+void port_miss(const char *what, const char *guest, const char *host) { static int n; if (n++ < 60) port_log("not found (%s): \"%s\" -> %s", what, guest, host); }
 void port_log(const char *fmt, ...) { va_list ap; va_start(ap, fmt); fputs("[port] ", stderr); vfprintf(stderr, fmt, ap); fputc('\n', stderr); va_end(ap); }
 void port_exit(int code) { fflush(stdout); fflush(stderr); _exit(code); }
 void port_die(const char *fmt, ...) {
