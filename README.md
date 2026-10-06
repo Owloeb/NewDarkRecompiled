@@ -3,7 +3,7 @@
 A static recompiler that turns the 32-bit x86 binary of **System Shock 2 (NewDark 2.48)** into portable C, plus a small
 Windows host that builds that C into a native executable you run in place of `SS2.exe`.
 
-**Status: playable on flat screen.** Boot, main menu, character creation, the Von Braun levels, level changes, save/load,
+**Status: playable on flat screen.** Boot, main menu, character creation, all levels, level changes, save/load,
 in-game UI (HUD, inventory), audio, input, fullscreen and cutscenes all run through recompiled code.
 This is a work in progress, not a finished product (see *Known issues*).
 
