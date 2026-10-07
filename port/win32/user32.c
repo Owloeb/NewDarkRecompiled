@@ -49,6 +49,7 @@ static int di_acquired, di_exclusive, captured;   /* pointer capture: see apply_
 static int cursor_null;                            /* SetCursor(NULL) also hides the pointer */
 static int32_t clip_l, clip_t, clip_r, clip_b;     /* ClipCursor rectangle (screen coordinates, right/bottom exclusive) */
 static int32_t vcur_x, vcur_y;                     /* while captured: the cursor the game sees, in screen coordinates */
+static int mouse_dbg(void) { static int d = -1; if (d < 0) d = getenv("SS2PORT_MOUSE_DEBUG") != NULL; return d; }   /* in time order with the backend's motion lines */
 static void vcur_clamp(void) {
     if (clip_on && clip_r > clip_l && clip_b > clip_t) {
         if (vcur_x < clip_l) vcur_x = clip_l; if (vcur_x >= clip_r) vcur_x = clip_r - 1;
@@ -311,8 +312,12 @@ SHIM(GetKeyNameTextA) {
 SHIM(GetKeyboardType) { RET(A(0) == 0 ? 4 : A(0) == 2 ? 12 : 0); }
 SHIM(GetKeyboardLayout) { RET(0x04090409u); }
 SHIM(VkKeyScanA) { int ch = (int)(A(0) & 0xFF); RET(isalpha(ch) ? (uint32_t)(toupper(ch) | (isupper(ch) ? 0x100 : 0)) : isdigit(ch) ? (uint32_t)ch : ch == ' ' ? 0x20 : 0xFFFFFFFFu); }
-SHIM(GetCursorPos) { input_pump(); if (captured) { WR32(A(0), (uint32_t)vcur_x); WR32(A(0) + 4, (uint32_t)vcur_y); RET(1); return; } Wnd *w = W(g_input.hwnd); WR32(A(0), (uint32_t)(g_input.mouse_x + (w ? w->x : 0))); WR32(A(0) + 4, (uint32_t)(g_input.mouse_y + (w ? w->y : 0))); RET(1); }
+SHIM(GetCursorPos) { input_pump();
+    if (mouse_dbg()) { static int lx = -99999, ly; Wnd *w0 = W(g_input.hwnd); int x = captured ? vcur_x : g_input.mouse_x + (w0 ? w0->x : 0), y = captured ? vcur_y : g_input.mouse_y + (w0 ? w0->y : 0);
+        if (x != lx || y != ly) { port_log("cursor: GetCursorPos -> %d,%d (from %08x)", x, y, RD32(c->esp)); lx = x; ly = y; } }
+    if (captured) { WR32(A(0), (uint32_t)vcur_x); WR32(A(0) + 4, (uint32_t)vcur_y); RET(1); return; } Wnd *w = W(g_input.hwnd); WR32(A(0), (uint32_t)(g_input.mouse_x + (w ? w->x : 0))); WR32(A(0) + 4, (uint32_t)(g_input.mouse_y + (w ? w->y : 0))); RET(1); }
 SHIM(SetCursorPos) {
+    if (mouse_dbg()) port_log("cursor: SetCursorPos %d,%d (from %08x)%s", (int32_t)A(0), (int32_t)A(1), RD32(c->esp), captured ? " [captured]" : "");
     Wnd *w = W(g_input.hwnd);
     if (captured) { vcur_x = (int32_t)A(0); vcur_y = (int32_t)A(1); vcur_clamp(); g_input.mouse_x = vcur_x - (w ? w->x : 0); g_input.mouse_y = vcur_y - (w ? w->y : 0); RET(1); return; }   /* no real pointer move */
     int x = (int32_t)A(0) - (w ? w->x : 0), y = (int32_t)A(1) - (w ? w->y : 0);

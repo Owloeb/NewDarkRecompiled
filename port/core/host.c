@@ -59,7 +59,7 @@ static void trace_put(const char *fmt, ...) {
     va_list ap; va_start(ap, fmt); vsnprintf(d, sizeof trace_ring[0], fmt, ap); va_end(ap);
 }
 static void trace_dump(void) {
-    unsigned n = __atomic_load_n(&trace_n, __ATOMIC_RELAXED); if (!port_trace || !n) return;
+    static int done; unsigned n = __atomic_load_n(&trace_n, __ATOMIC_RELAXED); if (!port_trace || !n || done) return; done = 1;
     unsigned h = n < TRACE_HEAD ? n : TRACE_HEAD;
     port_log("---- first %u traced calls ----", h);
     for (unsigned i = 0; i < h; i++) plat_log_write(PLAT_LOG_INFO, trace_head[i]);

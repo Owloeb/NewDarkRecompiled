@@ -57,12 +57,12 @@ void plat_video_display_size(int *w, int *h) {
 void plat_video_set_title(const char *t) { if (win) SDL_SetWindowTitle(win, t); }
 #include <stdarg.h>
 static void port_log_plat(const char *fmt, ...) { char b[300]; int n = snprintf(b, sizeof b, "[sdl] "); va_list ap; va_start(ap, fmt); vsnprintf(b + n, sizeof b - (size_t)n, fmt, ap); va_end(ap); plat_log_write(PLAT_LOG_INFO, b); }
-static int warp_pending, warp_x, warp_y;      /* the motion event our own warp produces is not player movement */
+static int warp_pending, warp_x, warp_y, skip_first_rel;   /* entering relative mode can report one huge jump (seen under WSLg: -2477,-638) */      /* the motion event our own warp produces is not player movement */
 static float mouse_scale = 1.0f, frac_x, frac_y;
 void plat_video_mouse_mode(int relative, int visible) {
-    static int last = -1; rel_mode = relative;
+    static int last = -1, rel_was; rel_mode = relative;
     if (!win) return;
-    int r = SDL_SetRelativeMouseMode(relative ? SDL_TRUE : SDL_FALSE); SDL_ShowCursor(visible && !relative ? SDL_ENABLE : SDL_DISABLE);
+    int r = SDL_SetRelativeMouseMode(relative ? SDL_TRUE : SDL_FALSE); if (relative && !rel_was) skip_first_rel = 1; rel_was = relative; SDL_ShowCursor(visible && !relative ? SDL_ENABLE : SDL_DISABLE);
     if (relative != last) { last = relative; port_log_plat("mouse: %s%s%s", relative ? "captured (relative motion)" : "free", r ? " - SDL refused: " : "", r ? SDL_GetError() : ""); }
 }
 void plat_video_warp_mouse(int x, int y) {
@@ -121,6 +121,7 @@ void plat_video_poll(void (*sink)(const PlatEvent *, void *), void *user) {
             if (warp_pending && e.motion.x == warp_x && e.motion.y == warp_y) { warp_pending = 0; p.dx = p.dy = 0; sink(&p, user); break; }
             { static int dbg = -1; if (dbg < 0) dbg = getenv("SS2PORT_MOUSE_DEBUG") != NULL; static unsigned n;
               if (dbg && n++ < 3000) port_log_plat("motion x=%d y=%d xrel=%d yrel=%d %s", e.motion.x, e.motion.y, e.motion.xrel, e.motion.yrel, rel_mode ? "captured" : "free"); }
+            if (rel_mode && skip_first_rel) { skip_first_rel = 0; p.dx = p.dy = 0; sink(&p, user); break; }
             float fx = e.motion.xrel * mouse_scale + frac_x, fy = e.motion.yrel * mouse_scale + frac_y;
             p.dx = (int)fx; p.dy = (int)fy; frac_x = fx - (float)p.dx; frac_y = fy - (float)p.dy;
             sink(&p, user); break; }
