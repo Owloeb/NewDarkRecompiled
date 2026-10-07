@@ -44,11 +44,9 @@ int64_t  plat_wall_time_ns(void);             /* nanoseconds since 1970-01-01 UT
 int      plat_utc_offset_minutes(void);       /* local time = UTC + this; may return 0 */
 void     plat_sleep_ns(uint64_t ns);          /* any thread */
 
-typedef struct PlatThread PlatThread;
 typedef struct PlatMutex PlatMutex;           /* non-recursive */
 typedef struct PlatCond PlatCond;
-PlatThread *plat_thread_start(void (*fn)(void *), void *arg, const char *name);   /* any thread */
-void        plat_thread_join(PlatThread *t);
+int         plat_thread_start(void (*fn)(void *), void *arg, const char *name);   /* detached; 0 on success; any thread */
 void        plat_thread_yield(void);
 PlatMutex  *plat_mutex_new(void);
 void        plat_mutex_free(PlatMutex *m);

@@ -58,7 +58,7 @@ def main():
     ap.add_argument("--skip", action="append", default=[]); ap.add_argument("--cc"); ap.add_argument("--cflags")
     ap.add_argument("--config", default="RelWithDebInfo"); ap.add_argument("--no-rebuild-guest", action="store_true")
     ap.add_argument("--wrap", help="run the host under this command (e.g. 'valgrind -q', 'xvfb-run -a')")
-    a = ap.parse_args()
+    a = ap.parse_args(); a.build = os.path.abspath(a.build)
     os.makedirs(a.build, exist_ok=True)
     exe = os.path.join(a.build, "guest", "conformance.exe")
     if not (a.no_rebuild_guest and os.path.exists(exe)): exe = build_guest(a.build)

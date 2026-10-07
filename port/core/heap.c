@@ -66,8 +66,11 @@ static void bad(uint32_t p, const char *what) {
     port_die("guest heap: %s (block %08x). The game freed something twice or wrote past the end of a block.", what, p);
 }
 static int add_arena(uint32_t min) {
-    uint32_t sz = ARENA; while (sz < min + 2 * HDR) sz *= 2;
-    uint32_t a = vm_alloc(sz, 0, "heap arena"); if (!a || narenas >= 256) return 0;
+    if (narenas >= 256) return 0;
+    uint32_t need = (min + 2 * HDR + 0xFFFFu) & ~0xFFFFu, sz = ARENA, a = 0;
+    while (sz < need) sz *= 2;
+    for (; sz >= need && !(a = vm_alloc_quiet(sz)); sz /= 2) ;     /* small guest spaces: take smaller arenas */
+    if (!a) { port_warn("guest heap: out of memory (%u bytes requested)", min); return 0; }
     arenas[narenas++] = a;
     uint32_t end = a + sz - HDR;                            /* sentinel: size 0, never free */
     WR32(B_PREV(a), 0); set_hdr(a, end - a, F_FREE); WR32(B_REQ(a), 0);

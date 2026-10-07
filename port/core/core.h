@@ -58,6 +58,7 @@ static inline int g_valid(uint32_t a, uint32_t n) { return a >= 0x10000u && (uin
 static inline const char *gs(uint32_t a) { return a && g_valid(a, 1) ? (const char *)GP(a) : ""; }
 /* address-space regions, 64 KB granularity (VirtualAlloc, stacks, heap arenas). want = 0: anywhere. 0 on failure. */
 uint32_t vm_alloc(uint32_t size, uint32_t want, const char *what);
+uint32_t vm_alloc_quiet(uint32_t size);     /* the same, anywhere, without a warning when it fails */
 void     vm_free(uint32_t addr);
 uint32_t vm_region_size(uint32_t addr);     /* size of the region starting at addr, 0 if none */
 int      vm_mark(uint32_t lo, uint32_t hi, const char *what);    /* reserve a fixed range (images); 0 if it overlaps */

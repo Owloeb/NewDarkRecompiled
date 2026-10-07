@@ -62,6 +62,8 @@ static uint8_t *vm_used;       /* per page: in use */
 static uint32_t vm_pages;
 static int vm_free_range(uint32_t p, uint32_t n) { if (p + n > vm_pages) return 0; for (uint32_t i = 0; i < n; i++) if (vm_used[p + i]) return 0; return 1; }
 static void vm_take(uint32_t p, uint32_t n) { memset(vm_used + p, 1, n); vm_len[p] = n; }
+static int vm_quiet;
+uint32_t vm_alloc_quiet(uint32_t size) { vm_quiet = 1; uint32_t a = vm_alloc(size, 0, "heap arena"); vm_quiet = 0; return a; }
 uint32_t vm_alloc(uint32_t size, uint32_t want, const char *what) {
     uint32_t n = (uint32_t)(((uint64_t)size + VM_GRAN - 1) / VM_GRAN); if (!n) n = 1;
     if (want) { uint32_t p = want / VM_GRAN; if (want % VM_GRAN == 0 && vm_free_range(p, n)) { vm_take(p, n); return want; } return 0; }
@@ -71,7 +73,8 @@ uint32_t vm_alloc(uint32_t size, uint32_t want, const char *what) {
         if (k == n) { vm_take(p, n); memset(GP(p * VM_GRAN), 0, (size_t)n * VM_GRAN); port_debug("vm: %s %08x +%x", what, p * VM_GRAN, n * VM_GRAN); return p * VM_GRAN; }
         p += k;
     }
-    port_warn("guest address space exhausted (%s, %u KB)", what, size >> 10); return 0;
+    if (!vm_quiet) port_warn("guest address space exhausted (%s, %u KB)", what, size >> 10);
+    return 0;
 }
 void vm_free(uint32_t a) {
     uint32_t p = a / VM_GRAN; if (a % VM_GRAN || p >= vm_pages || !vm_len[p]) return;

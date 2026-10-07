@@ -50,23 +50,22 @@ int plat_utc_offset_minutes(void) { time_t now = time(NULL); struct tm l; localt
 void plat_sleep_ns(uint64_t ns) { struct timespec t = { (time_t)(ns / 1000000000u), (long)(ns % 1000000000u) }; while (nanosleep(&t, &t) && errno == EINTR) ; }
 
 /* ---------------------------------------------------------------- threads */
-struct PlatThread { pthread_t t; void (*fn)(void *); void *arg; };
+typedef struct { void (*fn)(void *); void *arg; } Start;
 struct PlatMutex { pthread_mutex_t m; };
 struct PlatCond { pthread_cond_t c; };
-static void *thread_main(void *p) { PlatThread *t = p; t->fn(t->arg); return NULL; }
-PlatThread *plat_thread_start(void (*fn)(void *), void *arg, const char *name) {
-    PlatThread *t = calloc(1, sizeof *t); t->fn = fn; t->arg = arg;
-    pthread_attr_t a; pthread_attr_init(&a); pthread_attr_setstacksize(&a, 8u << 20);
-    if (pthread_create(&t->t, &a, thread_main, t)) { pthread_attr_destroy(&a); free(t); return NULL; }
-    pthread_attr_destroy(&a);
+static void *thread_main(void *p) { Start s = *(Start *)p; free(p); s.fn(s.arg); return NULL; }
+int plat_thread_start(void (*fn)(void *), void *arg, const char *name) {
+    Start *s = malloc(sizeof *s); s->fn = fn; s->arg = arg; pthread_t t;
+    pthread_attr_t a; pthread_attr_init(&a); pthread_attr_setstacksize(&a, 8u << 20); pthread_attr_setdetachstate(&a, PTHREAD_CREATE_DETACHED);
+    int r = pthread_create(&t, &a, thread_main, s); pthread_attr_destroy(&a);
+    if (r) { free(s); return -1; }
 #if defined(__linux__)
-    if (name) { char n[16]; snprintf(n, sizeof n, "%s", name); pthread_setname_np(t->t, n); }
+    if (name) { char n[16]; snprintf(n, sizeof n, "%s", name); pthread_setname_np(t, n); }
 #else
     (void)name;
 #endif
-    return t;
+    return 0;
 }
-void plat_thread_join(PlatThread *t) { pthread_join(t->t, NULL); free(t); }
 void plat_thread_yield(void) { sched_yield(); }
 PlatMutex *plat_mutex_new(void) { PlatMutex *m = calloc(1, sizeof *m); pthread_mutex_init(&m->m, NULL); return m; }
 void plat_mutex_free(PlatMutex *m) { pthread_mutex_destroy(&m->m); free(m); }

@@ -11,7 +11,6 @@
 struct GuestThread {
     CPU cpu;
     uint32_t id, teb, region, stack_lo, stack_hi;
-    PlatThread *pt;
     struct KThread *obj;
     uint32_t start, arg; int crt_style;     /* _beginthreadex threads return their code; CreateThread the same */
     char name[32];
@@ -19,7 +18,7 @@ struct GuestThread {
 typedef struct KThread { KObj k; GuestThread *t; int done; uint32_t code; } KThread;
 
 GuestThread *g_cur;
-volatile int rt_preempt_req;
+int rt_preempt_req;
 static PlatMutex *gil_m; static PlatCond *gil_cv;
 static uint64_t gil_next, gil_serving;
 static uint64_t slice_start; static unsigned slice_tick;
@@ -40,8 +39,8 @@ static void gil_init(void) { if (!gil_m) { gil_m = plat_mutex_new(); gil_cv = pl
 void gil_acquire(GuestThread *t) {
     plat_mutex_lock(gil_m);
     uint64_t my = gil_next++;
-    if (my != gil_serving) { rt_preempt_req = 1; while (my != gil_serving) plat_cond_wait(gil_cv, gil_m); }
-    rt_preempt_req = gil_next != gil_serving + 1;          /* someone is still queued behind us */
+    if (my != gil_serving) { __atomic_store_n(&rt_preempt_req, 1, __ATOMIC_RELAXED); while (my != gil_serving) plat_cond_wait(gil_cv, gil_m); }
+    __atomic_store_n(&rt_preempt_req, gil_next != gil_serving + 1, __ATOMIC_RELAXED);   /* someone is still queued behind us */
     plat_mutex_unlock(gil_m);
     g_cur = t; slice_start = plat_time_ns(); slice_tick = 0;
 }
@@ -55,7 +54,7 @@ static void maybe_yield(void) {
     GuestThread *t = g_cur; gil_release(); plat_thread_yield(); gil_acquire(t);
 }
 void rt_preempt(CPU *c) { (void)c; maybe_yield(); }
-void thread_preempt_tick(void) { if (rt_preempt_req) maybe_yield(); }
+void thread_preempt_tick(void) { if (__atomic_load_n(&rt_preempt_req, __ATOMIC_RELAXED)) maybe_yield(); }
 
 /* ---------------------------------------------------------------- thread environment blocks */
 static uint32_t peb(void) {
@@ -171,15 +170,20 @@ uint32_t kwait(KObj **objs, int n, int all, uint32_t timeout_ms, int msgs) {
 }
 
 /* ---------------------------------------------------------------- creating and ending threads */
-static void th_destroy(KObj *o) { (void)o; /* the GuestThread may still be running; it frees itself */ }
+static void th_destroy(KObj *o) {      /* the last reference: the handle is closed and the thread has ended */
+    KThread *k = (KThread *)o;
+    if (k->t && k->done && k->t != g_cur) { vm_free(k->t->region); free(k->t); }
+    free(k);
+}
 static void thread_entry(void *p) {
     GuestThread *t = p;
     gil_acquire(t);
     CPU *c = &t->cpu;
     uint32_t code = g_call(c, t->start, 1, t->arg);
     extern void thread_exit_cleanup(GuestThread *t);
-    t->obj->code = code; t->obj->done = 1; kobj_changed();
     port_debug("thread %u (%s) ended with %u", t->id, t->name, code);
+    t->obj->code = code; t->obj->done = 1; kobj_changed();
+    g_cur = NULL;                          /* t may be freed by the unref below */
     kobj_unref(&t->obj->k);
     gil_release();
 }
@@ -192,8 +196,7 @@ uint32_t thread_create(uint32_t fn, uint32_t arg, uint32_t stack, int suspended,
     t->start = fn; t->arg = arg;
     if (tid) *tid = t->id;
     if (suspended) port_warn("CreateThread: CREATE_SUSPENDED is not supported; the thread starts at once");
-    t->pt = plat_thread_start(thread_entry, t, name);
-    if (!t->pt) { port_warn("could not start a host thread"); return 0; }
+    if (plat_thread_start(thread_entry, t, name)) { port_warn("could not start a host thread"); return 0; }
     port_debug("thread %u (%s) started at %08x", t->id, name, fn);
     return handle_new(&k->k);
 }

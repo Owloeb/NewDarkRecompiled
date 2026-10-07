@@ -36,7 +36,7 @@ static void timer_main(void *arg) {
 }
 SHIM(timeSetEvent) {
     if (!tm_m) { tm_m = plat_mutex_new(); tm_cv = plat_cond_new(); }
-    if (!tm_thread) { tm_thread = thread_new_host_side("winmm timer"); if (!tm_thread || !plat_thread_start(timer_main, NULL, "winmm timer")) { RET(0); return; } }
+    if (!tm_thread) { tm_thread = thread_new_host_side("winmm timer"); if (!tm_thread || plat_thread_start(timer_main, NULL, "winmm timer")) { RET(0); return; } }
     plat_mutex_lock(tm_m);
     MmTimer *t = NULL; for (int i = 0; i < NTIMERS; i++) if (!timers[i].active) { t = &timers[i]; break; }
     if (!t) { plat_mutex_unlock(tm_m); RET(0); return; }
