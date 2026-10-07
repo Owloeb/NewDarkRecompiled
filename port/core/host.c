@@ -6,6 +6,7 @@
  * point. It is the same on every platform: plat.h is its only window to the outside. */
 #include <stdio.h>
 #include <stdlib.h>
+#include <signal.h>
 #include "core.h"
 
 /* ---------------------------------------------------------------- generated tables (lifter output, host/gen_hostdata.py) */
@@ -37,6 +38,19 @@ const char *guest_symbol(uint32_t va) {
     while (lo < hi) { unsigned mid = (lo + hi) / 2; if (nd_symtab[mid].va < va) lo = mid + 1; else hi = mid; }
     return lo < nd_symtab_n && nd_symtab[lo].va == va ? nd_symtab[lo].name : NULL;
 }
+/* --trace keeps the last TRACE_N calls in memory (never streams: a spinning game would fill the disk) and prints them on a
+   crash, on SIGINT / SIGTERM (Ctrl-C, `timeout`), or at exit. */
+#define TRACE_N 4096
+static char trace_ring[TRACE_N][200]; static unsigned trace_n;
+static void trace_put(const char *fmt, ...) {
+    unsigned i = __atomic_fetch_add(&trace_n, 1, __ATOMIC_RELAXED) % TRACE_N;
+    va_list ap; va_start(ap, fmt); vsnprintf(trace_ring[i], sizeof trace_ring[i], fmt, ap); va_end(ap);
+}
+static void trace_dump(void) {
+    unsigned n = __atomic_load_n(&trace_n, __ATOMIC_RELAXED); if (!port_trace || !n) return;
+    port_log("---- last %u traced calls (oldest first) ----", n < TRACE_N ? n : TRACE_N);
+    for (unsigned i = n > TRACE_N ? n - TRACE_N : 0; i < n; i++) plat_log_write(PLAT_LOG_INFO, trace_ring[i % TRACE_N]);
+}
 static void dump_state(void) {
     CPU *c = cur_cpu(); if (!c) return;
     char b[1024]; int n;
@@ -47,13 +61,16 @@ static void dump_state(void) {
     port_log("%s", b);
     if (g_valid(c->esp, 48)) { n = snprintf(b, sizeof b, "  guest stack:"); for (int i = 0; i < 12; i++) n += snprintf(b + n, sizeof b - (size_t)n, " %08x", RD32(c->esp + 4 * (uint32_t)i)); port_log("%s", b); }
 }
-void port_exit(int code) { plat_audio_close(); plat_video_close(); exit(code); }
+static void on_signal(int sig) {          /* Ctrl-C or timeout: show where the game was, then stop */
+    port_log("stopped by signal %d", sig); dump_state(); trace_dump(); _Exit(3);
+}
+void port_exit(int code) { trace_dump(); plat_audio_close(); plat_video_close(); exit(code); }
 void port_die(const char *fmt, ...) {
     char b[1024]; va_list ap; va_start(ap, fmt); vsnprintf(b, sizeof b, fmt, ap); va_end(ap);
     plat_log_write(PLAT_LOG_ERROR, "[port] FATAL: "); plat_log_write(PLAT_LOG_ERROR, b);
-    dump_state(); plat_alert("System Shock 2", b); port_exit(2);
+    dump_state(); trace_dump(); plat_alert("System Shock 2", b); port_exit(2);
 }
-void port_miss(const char *what, const char *guest) { static int n; if (port_verbose || n++ < 60) port_log("not found (%s): \"%s\"", what, guest); }
+void port_miss(const char *what, const char *guest) { static int n; if (n++ < (port_verbose ? 400 : 60)) port_log("not found (%s): \"%s\"", what, guest); }
 
 /* ---------------------------------------------------------------- guest address space: 64 KB regions */
 #define VM_GRAN 0x10000u
@@ -136,7 +153,7 @@ static void thunk_run(CPU *c, unsigned i) {
     if (port_trace) {
         char ss[3][48] = { "", "", "" };
         for (int k = 0; k < 3; k++) { uint32_t a = A(k); if (!g_valid(a, 48) || a >= THUNK_BASE) continue; const uint8_t *p = GP(a); int n = 0; while (n < 44 && p[n] >= 32 && p[n] < 127) n++; if (n >= 3 && (p[n] == 0 || n == 44)) { memcpy(ss[k], p, (size_t)n); ss[k][n] = 0; } }
-        port_log("[t%u] %s(%08x, %08x, %08x, %08x)%s%s%s%s%s%s", cur_thread_id(), t->name, A(0), A(1), A(2), A(3), ss[0][0] ? " \"" : "", ss[0], ss[0][0] ? "\"" : "", ss[1][0] ? " \"" : "", ss[1], ss[1][0] ? "\"" : "");
+        trace_put("[t%u] %s(%08x, %08x, %08x, %08x)%s%s%s%s%s%s", cur_thread_id(), t->name, A(0), A(1), A(2), A(3), ss[0][0] ? " \"" : "", ss[0], ss[0][0] ? "\"" : "", ss[1][0] ? " \"" : "", ss[1], ss[1][0] ? "\"" : "");
     }
     ring_ret[ring_n & 15] = RD32(c->esp); ring_names[ring_n++ & 15] = t->name;
     g_targ = t->arg;
@@ -257,6 +274,7 @@ static void usage(void) {
     exit(1);
 }
 int port_main(int argc, char **argv) {
+    signal(SIGINT, on_signal); signal(SIGTERM, on_signal);
     int list_missing = 0; const char *exe = NULL; int i;
     for (i = 1; i < argc && !exe; i++) {
         const char *a = argv[i];
