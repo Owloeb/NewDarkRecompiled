@@ -74,10 +74,12 @@ The only requirements on the platform: a little-endian CPU, a C99 compiler with 
 
 ## Status and limitations
 
-* Not yet run against the real `SS2.exe` (the development machine had no game data). Expect faults to find and fix; the
-  shim tables and conformance tests are meant to make those small.
-* Rendering is fixed-function only: `D3DXCreateEffect` fails (the game falls back), cube and volume textures are not drawn,
-  `ProcessVertices` is not implemented.
+* Plays: start-up, menus, cutscenes with sound, in-game sound, saves (tested by loading Rickenbacker and Body of the Many),
+  on Linux (WSL, Mesa software OpenGL) and as a 64-bit Windows build. Mouselook verified on the Windows build; under WSLg
+  it cannot be judged (no pointer lock), and native Linux has not been tried yet.
+* Rendering is fixed-function only: the game asks for shaders, is told there are none, and uses its fixed-function path.
+  Cube and volume textures are not drawn; `ProcessVertices` is not implemented.
 * Not done: C++ exceptions and structured exception handling, the SSE and lock-prefixed instructions in the lifter,
   `fmsel.dll` (intentionally refused), a size-optimised build for small devices.
-* SDL2 audio and window code is only exercised headless in tests (xvfb, no sound device).
+* Reviewed by four independent passes before release (core, Win32/CRT, DirectX, backends and tooling); the findings
+  are fixed and have regression checks in the conformance suite.

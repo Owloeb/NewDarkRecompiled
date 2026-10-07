@@ -155,11 +155,26 @@ repository itself stays vanilla; mods live in their own repositories.
 1. Shakedown on more machines (AMD and Intel GPUs, other Windows versions) and with popular mods.
 2. More names: globals and structure layouts, and hand-named functions for the main systems (render, input, physics,
    AI, save/load), in `symbols/manual.sym`.
-3. A platform layer (graphics, audio, input, Windows API) so the recompiled game can run beyond 32-bit Windows.
-   Implemented in [`port/`](port/README.md) as a backend-agnostic layer: shared Win32 / C runtime / DirectX front ends on
-   top of a small interface (`port/include/plat.h`), with POSIX, SDL2 (OpenGL / OpenGL ES) and headless backends. Porting to
-   another platform means writing a `plat.h` backend. Verified with a game-free conformance suite; not yet run on the real
-   game.
+3. ~~A platform layer (graphics, audio, input, Windows API) so the recompiled game can run beyond 32-bit Windows.~~
+   Done (on the `platform-layer` branch): see [Other platforms](#other-platforms-the-portable-host) below.
+
+## Other platforms: the portable host
+
+[`port/`](port/README.md) runs the same recompiled game without Windows and without an x86 CPU. Shared Win32, C runtime
+and DirectX front ends sit on one small interface, [`port/include/plat.h`](port/include/plat.h); a port to a new platform
+writes a backend for that interface and nothing else. Included backends: POSIX (memory, threads, files), Windows (the
+same, as a development and test target), SDL2 (window, input, audio, OpenGL 2.1 / OpenGL ES 2.0) and a headless one.
+
+```
+python3 -m pip install pefile capstone          # plus cmake, a C compiler and libsdl2-dev
+python3 port/build.py "/path/to/System Shock 2/SS2.exe"                     # Linux (and other POSIX systems)
+python3 port/build.py "/path/to/System Shock 2/SS2.exe" --target windows    # 64-bit Windows exe, cross-built with Zig
+```
+
+Status: the game plays (tested through Rickenbacker and Body of the Many) on Linux under WSL and as a 64-bit Windows
+build; mouselook verified on Windows (WSLg cannot capture the pointer). Known gaps: shaders and cube/volume textures
+(the game falls back to its fixed-function path), C++ exceptions, `fmsel.dll`; native Linux mouselook not yet tested.
+Details, the porting guide and the test suite: [`port/README.md`](port/README.md).
 
 ## Technical notes: the recompiler
 
