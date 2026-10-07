@@ -96,6 +96,10 @@ void rt_trace(CPU *c, uint32_t va);
 extern const char *rt_ring[4096]; extern volatile unsigned rt_ring_i;
 extern unsigned char rt_cov[1u << 22]; extern const char *rt_seq[32768]; extern volatile unsigned rt_nseq;
 #define BUDGET() do { const char *f_ = __func__; rt_ring[rt_ring_i++ & 4095] = f_; unsigned h_ = (unsigned)(uintptr_t)f_ & 0x3FFFFFu; if (!rt_cov[h_]) { rt_cov[h_] = 1; rt_seq[rt_nseq++ & 32767] = f_; } } while (0)
+#elif defined(RT_PREEMPT)   /* portable host: lets another guest thread run when it has waited a time slice (one load per loop head) */
+extern volatile int rt_preempt_req;
+void rt_preempt(CPU *c);
+#define BUDGET() do { if (__builtin_expect(rt_preempt_req, 0)) rt_preempt(c); } while (0)
 #else
 #define BUDGET() do {} while (0)
 #endif
