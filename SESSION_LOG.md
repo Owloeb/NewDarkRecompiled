@@ -223,3 +223,18 @@ fixes, rebuilds and ships a new zip (or the trace build as `.xz`, the zip exceed
 ### Next
 Run the latest zip, fix each fault Owen reports until the game reaches the main menu with null graphics/audio,
 then update `port/README.md`, produce the D3D9 usage list, and try the Windows API recorder.
+
+## Session: platform-layer branch (restart of portable-host)
+
+Decision: the old `portable-host` branch was audited, not trusted. Its null COM objects had real bugs (wrong pop counts,
+shared generic COM classes, handle collisions, missing IDirectSound3DListener methods). `platform-layer` is a rewrite
+branched from main (portable-host untouched). Goal: roadmap item 3, platform-agnostic, not tied to one console.
+
+Done: `port/include/plat.h` interface; shared core/win32/crt/dx front ends; backends posix, null, sdl2 (GL 2.1 / ES 2.0);
+real guest threads with loop-head preemption (`RT_PREEMPT` in `runtime/rt.h`); D3D9, DirectSound mixer, DirectInput
+front ends; built-in cutscene decoder wired in (`dx/video.c`, `PORT_VIDEO`); static checkers and a game-free
+conformance suite (`port/tests/run_conformance.py`: 370 null / 397 sdl2 checks, ASan/UBSan/TSan clean).
+
+Not verified: the real SS2.exe (no game data in the sandbox). Next step is Owen running it on his game folder and sending
+the log of the first fault. Rules still in force: do not merge to main until Owen confirms; generated C is never
+distributed; stay vanilla.

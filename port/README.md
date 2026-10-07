@@ -1,59 +1,75 @@
-# port/: the portable host (platform layer, shared part)
+# port/: the portable host (a platform layer for the recompiled game)
 
 The recompiled game is plain C that only touches memory (`M + address`) and calls out for everything the operating system
-used to do. This directory is the other half: a host that runs it **without Windows and without x86** and gives it the
-operating system it expects.
+used to do. This directory is the other half: a host that runs it **without Windows and without x86**. It is split so
+that a port to a new platform only writes the small bottom layer.
 
 ```
-generated C (out/nd, out/ao, out/sq, out/lv, out/fm)      <- the game, vanilla, unchanged
-  |  rt_call_import / rt_call_external
-host.c      guest memory (one 4 GB block), heap, thunks, PE loading, setjmp/longjmp, start-up
-win32.c     KERNEL32 / USER32 / GDI32 / ADVAPI32 / WINMM timers: files, time, memory, a fake window
-crt.c       MSVCR90 (printf/scanf/stdio/string/math/_CI*) and the few std::string members the game imports
-mmio.c      WINMM mmio* (RIFF reading for .wav)
-modules.c   loader for the recompiled DLLs (allobjs.osm, Squirrel.osm, lgvid.dll, fmsel.dll)
-com.c       Direct3D 9, DirectSound, DirectInput, DirectDraw (detection only) as null back ends
+generated C (nd/, ao/, sq/, lv/, fm/, mods/)   the game, vanilla, identical on every platform
+   | rt_call_import / rt_call_external
+core/    address space, heap (TLSF), thunks, PE loading, guest threads, kernel objects, virtual file system
+win32/   KERNEL32 / USER32 / GDI32 / ADVAPI32 / WINMM: files, time, memory, windows, messages, input mapping
+crt/     MSVCR90: MSVC-exact printf/scanf, stdio, string, math, qsort/bsearch/rand, std::string, exceptions stubs
+dx/      Direct3D 9 (state, vertex processing, formats, render targets), DirectSound (software mixer), DirectInput 7,
+         DirectDraw (detection), the built-in cutscene decoder (video.c, stands in for ffmpeg.dll)
+   | include/plat.h        <- the only interface a port implements
+backends/posix/   system part: memory, time, threads, files   (any POSIX system)
+backends/sdl2/    window, input, audio, OpenGL 2.1 / OpenGL ES 2.0 renderer
+backends/null/    headless (everything accepted, nothing shown); used for tests
 ```
 
-Nothing in the generated code changes between platforms. A port replaces the *back ends* below the line; everything above
-it is shared.
+Everything above `plat.h` is shared and contains no operating-system calls. `plat.h` is documented in the header itself
+(coordinate conventions: Direct3D clip space with the half-pixel offset already applied, top-left texture origin,
+`0xAARRGGBB` colours, DIK scan codes for keys).
 
-## Status
-
-* Builds and runs on Linux x86-64 (any POSIX system with a C compiler should work; the host only assumes a little-endian
-  CPU and 4 GB of address space to reserve, `mmap` with `MAP_NORESERVE`).
-* All 364 imports of `SS2.exe` have an implementation (`ss2port --list-missing` lists any that do not).
-* `ss2port --selftest` drives the null Direct3D 9 / DirectSound / DirectInput objects through their vtables and checks the
-  stack bookkeeping of each call.
-* With the game's `SS2.exe` it runs the C runtime start-up, reads the configuration, detects DirectDraw/DirectX, and goes on
-  into engine initialisation (see below for how far it gets with real game data).
-* Not done yet: C++ exceptions and structured exception handling, threads (`_beginthreadex` reports failure; the game
-  continues single-threaded), WINMM timer callbacks (they would fire on another thread), real windowing/input, real
-  rendering and sound.
-
-## Build and run
+## Building
 
 ```
-sh port/build.sh out/nd ss2port     # after lifting; compiles out/nd/*.c (+ the modules, see build.sh) and links the host
-./ss2port --frames 600 /path/to/SS2.exe
+python3 lift.py SS2.exe nd out/nd            # as usual; plus the DLL/mod steps if you use them (see the top-level README)
+python3 host/gen_hostdata.py out/nd/nd_meta.json SS2.exe out/nd/nd_hostdata.c
+cmake -S port -B build/port -DPORT_GENERATED=out [-DPORT_BACKEND=sdl2|null] [-DPORT_SYSTEM=posix]
+cmake --build build/port
+build/port/ss2port /path/to/SS2.exe          # run from the game folder
 ```
 
-Options: `--list-missing` (imports without an implementation), `--trace` (every import call, with string arguments),
-`--frames N` (stop after N presented frames), `--selftest`.
+Options: `PORT_PREEMPT` (default ON: other guest threads may run at loop heads; needed for games that spin-wait),
+`PORT_VIDEO` (default ON: built-in Indeo 5 cutscene decoder, LGPL code from `video/`). Needs GCC or Clang.
+Command line: `--frames N --windowed --guest-space MB --verbose --trace --list-missing --list-shims`.
+Environment: `SS2PORT_FULLSCREEN`, `SS2PORT_GLES` (force OpenGL ES), `SS2PORT_NOVSYNC`, `SS2PORT_NOSOUND`,
+`SS2PORT_NOALERT` (log instead of message boxes), `SS2PORT_WRITE_DIR` (where saves and configuration are written; the game
+folder stays read-only).
 
-`SS2.exe` must be the retail 2.48 executable the C was generated from (the host checks its CRC). The game folder is the
-folder of the exe; Windows paths (`Data\res`) are resolved case-insensitively.
+## Porting to a new platform
 
-## Writing a back end
+1. Copy `backends/null/` to `backends/<yours>/` and select it with `-DPORT_BACKEND=<yours>`. It builds and runs headless.
+2. System part (`backends/posix/` is the reference): `plat_mem_*` (reserve address space, commit, discard), time, threads
+   (`plat_thread_start`, mutex, condition variable) and file/directory operations. If your platform is POSIX-like you can
+   reuse it unchanged with `-DPORT_SYSTEM=posix`.
+3. Video and input: open a window or display, deliver key, mouse and quit events as DIK scan codes in `plat_video_poll`.
+4. Renderer: `plat_tex_*` and `plat_gfx_*`. You receive clip-space vertices and a fully resolved draw state (blend, depth,
+   stencil, up to eight texture stages already reduced to what the front end could not do on the CPU). `sdl2/gl_render.c`
+   generates GLSL from that state and is a good template for other APIs.
+5. Audio: `plat_audio_*` pulls 16-bit stereo from the shared software mixer.
+6. Run `python3 port/tests/run_conformance.py --backend <yours>`; it needs no game files.
 
-* **Graphics**: `com.c`, class `C_DEV` and friends. The null device keeps real memory behind `LockRect`/`Lock` so the game's
-  texture and vertex uploads work; `Present` counts frames. A real back end implements `CreateTexture`, `SetTexture`,
-  `SetRenderState`, `SetSamplerState`, `SetStreamSource`, `SetIndices`, `Draw*`, `Clear`, `Present`, ... on its own API
-  (the engine uses the Direct3D 9 fixed-function pipeline plus optional effects that can be switched off in the config).
-* **Audio**: class `C_DSB` (DirectSound buffers). Today positions are simulated from the wall clock.
-* **Input / window**: `PeekMessageA`/`GetMessageA`, `GetCursorPos`, `GetKeyState`/`GetAsyncKeyState` in `win32.c`, and
-  the DirectInput device (`C_DID`, `GetDeviceState`).
-* **A different CPU or ABI** needs nothing here: the host is C.
+The only requirements on the platform: a little-endian CPU, a C99 compiler with GCC extensions (the generated code uses
+`__builtin_setjmp`), and enough address space for the guest (by default a compact layout, configurable with
+`--guest-space`; 32-bit hosts work with a small guest space).
 
-A measured list of the Direct3D calls the game really makes comes from the recorder in the Windows host
-(`darkrecomp_apistats.txt`, see the main README): it writes `darkrecomp_api_usage.txt` with call counts, formats and pools.
+## Verification
+
+* `tools/check_shims.py`: compares every shim's declared stack-pop count with the MinGW headers/.def files; a wrong count
+  corrupts the guest stack. `tools/check_com.py` does the same for COM vtables (generated by `tools/gen_ifaces.py`).
+* `tests/run_conformance.py`: builds a game-free 32-bit Windows test program, lifts it with `lift.py` (so it goes through the
+  same recompiler as the game) and runs it on the chosen backend: 370 checks on `null`, 397 on `sdl2` (which adds pixel-exact
+  rendering checks). Also run clean under ASan, UBSan and TSan, and as a 32-bit build with a small guest space.
+
+## Status and limitations
+
+* Not yet run against the real `SS2.exe` (the development machine had no game data). Expect faults to find and fix; the
+  shim tables and conformance tests are meant to make those small.
+* Rendering is fixed-function only: `D3DXCreateEffect` fails (the game falls back), cube and volume textures are not drawn,
+  `ProcessVertices` is not implemented.
+* Not done: C++ exceptions and structured exception handling, the SSE and lock-prefixed instructions in the lifter,
+  `fmsel.dll` (intentionally refused), a size-optimised build for small devices.
+* SDL2 audio and window code is only exercised headless in tests (xvfb, no sound device).

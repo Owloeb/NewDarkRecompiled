@@ -34,10 +34,25 @@ target_compile_options(game PRIVATE -w -fwrapv -fno-strict-aliasing)
 
 # ---- the shared platform layer: Win32, the C runtime and DirectX on top of plat.h
 file(GLOB CORE_SRC ${CMAKE_CURRENT_SOURCE_DIR}/core/*.c ${CMAKE_CURRENT_SOURCE_DIR}/win32/*.c ${CMAKE_CURRENT_SOURCE_DIR}/crt/*.c ${CMAKE_CURRENT_SOURCE_DIR}/dx/*.c)
+option(PORT_VIDEO "built-in cutscene decoder (AVI, Indeo 5, PCM)" ON)
+set(VIDEO_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../video)
+if(NOT PORT_VIDEO)
+  list(REMOVE_ITEM CORE_SRC ${CMAKE_CURRENT_SOURCE_DIR}/dx/video.c)
+endif()
 add_library(portcore STATIC ${CORE_SRC})
 target_include_directories(portcore PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/core ${CMAKE_CURRENT_SOURCE_DIR}/../runtime)
 target_compile_definitions(portcore PRIVATE ${GEN_DEFS})
 target_compile_options(portcore PRIVATE -Wall -Wno-unused-parameter -Wno-misleading-indentation -Wno-format-truncation -fwrapv -fno-strict-aliasing)
+
+# ---- the built-in cutscene decoder (stands in for ffmpeg.dll; video/README.md). FFmpeg's Indeo 5 decoder is LGPL.
+if(PORT_VIDEO)
+  add_library(lavshim STATIC ${VIDEO_DIR}/lavshim.c ${VIDEO_DIR}/ffmpeg/compat/ffcompat.c ${VIDEO_DIR}/ffmpeg/libavcodec/indeo5.c
+              ${VIDEO_DIR}/ffmpeg/libavcodec/ivi.c ${VIDEO_DIR}/ffmpeg/libavcodec/ivi_dsp.c ${VIDEO_DIR}/ffmpeg/libavcodec/vlc.c)
+  target_include_directories(lavshim PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../runtime ${VIDEO_DIR} ${VIDEO_DIR}/ffmpeg/compat ${VIDEO_DIR}/ffmpeg/libavcodec)
+  target_compile_options(lavshim PRIVATE -O2 -w -fwrapv -fno-strict-aliasing)
+  target_include_directories(portcore PRIVATE ${VIDEO_DIR})
+  target_compile_definitions(portcore PRIVATE PORT_VIDEO=1)
+endif()
 
 # ---- the backend
 file(GLOB SYS_SRC ${CMAKE_CURRENT_SOURCE_DIR}/backends/${PORT_SYSTEM}/*.c)
@@ -48,6 +63,9 @@ endif()
 add_executable(ss2port ${SYS_SRC} ${BACKEND_SRC} $<TARGET_OBJECTS:game>)
 target_include_directories(ss2port PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(ss2port PRIVATE portcore m)
+if(PORT_VIDEO)
+  target_link_libraries(ss2port PRIVATE lavshim portcore)
+endif()
 find_package(Threads REQUIRED)
 target_link_libraries(ss2port PRIVATE Threads::Threads)
 if(PORT_BACKEND STREQUAL "sdl2")

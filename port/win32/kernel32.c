@@ -306,7 +306,12 @@ SHIM(lstrcmpiA) { const char *a = gs(A(0)), *b = gs(A(1)); int r; do { r = tolow
 
 /* ---------------------------------------------------------------- modules: the DirectX and system DLLs are built in */
 static const char *const dll_names[] = { "kernel32", "user32", "gdi32", "advapi32", "winmm", "shell32", "ole32", "version", "msvcrt", "msvcr90", "msvcp90",
-                                         "d3d9", "d3dx9_43", "d3dx9_42", "d3dx9_41", "d3dx9_40", "dsound", "dinput", "dinput8", "ddraw", "ntdll", 0 };
+                                         "d3d9", "d3dx9_43", "d3dx9_42", "d3dx9_41", "d3dx9_40", "dsound", "dinput", "dinput8", "ddraw", "ntdll", "ffmpeg", 0 };
+#ifdef PORT_VIDEO
+uint32_t video_export(const char *name);      /* dx/video.c: the built-in replacement for ffmpeg.dll */
+#else
+static uint32_t video_export(const char *name) { (void)name; return 0; }   /* built without the cutscene decoder */
+#endif
 #define DLL_HANDLE(i) (0xFF000000u + 0x10000u * (uint32_t)(i))
 static int dll_index(const char *n) {
     const char *b = strrchr(n, '\\'), *b2 = strrchr(n, '/'); if (b2 > b) b = b2; b = b ? b + 1 : n;
@@ -340,6 +345,7 @@ SHIM(GetProcAddress) {
     uint32_t np = A(1);
     { int ism = 0; uint32_t e = mod_export(A(0), np < 0x10000 ? NULL : gs(np), &ism); if (ism) { if (!e) set_last_error(127); RET(e); return; } }
     if (np < 0x10000) { set_last_error(127); RET(0); return; }
+    if (A(0) == DLL_HANDLE(dll_index("ffmpeg.dll"))) { uint32_t v = video_export(gs(np)); if (!v) set_last_error(127); RET(v); return; }
     uint32_t a = port_proc(gs(np));
     if (!a) { port_debug("GetProcAddress(%s): not available", gs(np)); set_last_error(127); }
     RET(a);

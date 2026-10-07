@@ -156,9 +156,10 @@ repository itself stays vanilla; mods live in their own repositories.
 2. More names: globals and structure layouts, and hand-named functions for the main systems (render, input, physics,
    AI, save/load), in `symbols/manual.sym`.
 3. A platform layer (graphics, audio, input, Windows API) so the recompiled game can run beyond 32-bit Windows.
-   The shared part exists as a first cut in [`port/`](port/README.md): a portable host (no Windows, no x86) that loads the
-   game's files, implements the Windows API and C runtime the engine imports, and provides null Direct3D 9 / DirectSound /
-   DirectInput back ends. A real port supplies those back ends (rendering, audio, input, a window).
+   Implemented in [`port/`](port/README.md) as a backend-agnostic layer: shared Win32 / C runtime / DirectX front ends on
+   top of a small interface (`port/include/plat.h`), with POSIX, SDL2 (OpenGL / OpenGL ES) and headless backends. Porting to
+   another platform means writing a `plat.h` backend. Verified with a game-free conformance suite; not yet run on the real
+   game.
 
 ## Technical notes: the recompiler
 
