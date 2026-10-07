@@ -99,8 +99,9 @@ uint32_t mod_load(CPU *c, const char *name) {
 }
 int mod_free(CPU *c, uint32_t h) {
     int k = find_by_handle(h); if (k < 0) return 0;
-    if (--st[k].refs > 0) return 1;
-    g_call(c, recomp_mods[k]->entry, 3, h, 0u, 0u); memset(GP(recomp_mods[k]->base), 0, recomp_mods[k]->size); return 1;
+    if (st[k].refs > 1) { st[k].refs--; return 1; }
+    g_call(c, recomp_mods[k]->entry, 3, h, 0u, 0u);       /* DllMain(DLL_PROCESS_DETACH) while the module still counts as loaded: its code must stay callable */
+    st[k].refs = 0; memset(GP(recomp_mods[k]->base), 0, recomp_mods[k]->size); return 1;
 }
 uint32_t mod_export(uint32_t h, const char *name, int *is_mod) {
     int k = find_by_handle(h); *is_mod = k >= 0; if (k < 0) return 0;

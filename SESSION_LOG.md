@@ -264,3 +264,10 @@ distributed; stay vanilla.
   exclusive, or hidden + DirectInput), the pointer is captured and the game gets a virtual cursor moved by raw motion,
   set by SetCursorPos without moving the real pointer, clamped to the ClipCursor rectangle. SetCursor(NULL) counts
   as hidden. Conformance check for the recentre/clamp behaviour.
+- Mouse debug run (SS2PORT_MOUSE_DEBUG): motion reaches the game with the right sign (right = +x, the virtual cursor
+  follows). The damage is WSLg's: no pointer lock, so the Windows pointer leaves the window, after which SDL receives a
+  steady stream of xrel=-1 while the mouse is still (hundreds of events, x pinned at 0), plus a -2400 px jump when
+  capture starts (now dropped). SDL's warp mode is worse there. Conclusion: mouselook can't be judged under WSLg; test
+  on native Linux or a native Windows build of the portable host.
+- Exit crash: mod_free dropped the module's reference before calling DllMain(DETACH), so mod_call refused the call into
+  lgvid.dll (call to 30303d97). Now calls DllMain first.
