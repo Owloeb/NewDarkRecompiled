@@ -154,3 +154,72 @@ See NEWDARK.md "Verification". Lifter changes: fcomi family, cpuid (no SSE2), re
 images (phantom patch-field entries). Harness: SMC_GEN honoured by tracecmp; fuzzer checks fcomi OF/SF against the SDM,
 masks AF for lahf, adds NaN/inf inputs for compare shapes. `triage.sh <verdict> <outfile>` lockstep-traces every function
 with a given verdict. Next: step 2 (Windows identity-mapped host, boot with real D3D9).
+
+## Update 2026-10-06 → 2026-10-07: portable host (branch `portable-host`, not merged)
+
+Scope: roadmap item 3, a platform layer so the recompiled game runs beyond 32-bit Windows. The repo stays a **purely
+vanilla recompilation**; VR/mods live in a separate repo and are paused. Goals: a complete recompile and maximum
+portability (Android, ARM, consoles; eventually a PS Vita homebrew port, later Thief Gold/Thief 2). Back ends for
+specific platforms are the porter's job; this repo ships the shared layer (`port/`), a Linux build and a measured
+D3D9 usage list.
+
+### Already on main before this work
+- Built-in cutscene decoder (`video/`), replacing `ffmpeg.dll` (15535b2). Release v0.2.0 is for Owen to publish
+  (the session's token gets HTTP 403 on release creation). Stale branches `squirrel-osm`, `lgvid-fmsel`,
+  `builtin-video` can be deleted by Owen.
+
+### What `port/` is
+- `host.c` entry/loader/fault reporting, `win32.c` + `win32b.c` Win32 API, `crt.c` MSVC CRT, `com.c` null D3D9 /
+  DirectSound / DirectInput / DirectDraw back ends, `mmio.c`, `modules.c` (recompiled-module loader), `build.sh`,
+  `README.md`.
+- Non-identity guest memory: `GP(a) = M + (uint32_t)a`. Guest map: exe 0x400000.., stack top 0x08400000, modules
+  ao 0x10000000 / sq 0x30000000 / lv 0x30300000 / fm 0x30400000, heap 0x40000000.., VirtualAlloc 0x80000000..,
+  fake DLL handles 0xEE000000+, thunks 0xF0000000+.
+- Shim convention: args from guest stack `A(i)`, return in eax (`RET`) or x87 (`RETF`); callee pop is declared per
+  shim (`STD(n)` / `CDECL`). A wrong pop count shifts the guest stack and usually surfaces later as a security
+  cookie failure or a nonsense value.
+- COM objects are 16-byte guest structs `[vtable, refcount, class, host Obj index]`; vtables are built from
+  "Method:nargs" spec strings (nargs excludes `this`).
+- Options: `--list-missing --list-shims --selftest --trace --frames N`; env `PORT_FILES=1` (log path resolution),
+  `PORT_TRACE=1`. Debug build (`-DRT_TRACE`): `PORT_COV=file`, `PORT_AT=addr,..`, `PORT_MEM=addr,..`, `PORT_HEX=1`,
+  `PORT_WATCH=addr` (who changes a guest word). Faults print registers, last host calls, an ebp-chain backtrace
+  and stack words.
+- Also: opt-in D3D9/API usage recorder for the Windows host (`darkrecomp_apistats.txt`, `host/api_usage.inc`);
+  compile-checked only, not yet run on Windows.
+
+### Working loop
+Owen runs the static Linux binary in WSL2 against his real game folder and sends the log; the session diagnoses,
+fixes, rebuilds and ships a new zip (or the trace build as `.xz`, the zip exceeded the 30 MiB upload limit).
+
+### Bugs found and fixed (in order)
+1. Stack cookie failure: `_beginthreadex` was declared `STD(6)` but the guest cleans its own arguments. Now `CDECL`.
+2. All resource folders rejected: `_getdcwd(3, NULL, n)` / `_getcwd(NULL, n)` must allocate the buffer when it is
+   NULL. Fixed; resource search paths (`osm`, `patch`, `Data`, `Data\res`, `.crf`/`.zip` probes) now register.
+3. File names with a trailing `\r`: `fopen("r")` emulates Windows text mode (CRLF to LF) for config files.
+4. Missing files are now logged (`port_miss`) so absent game data is visible.
+5. Divide error at 006c999d in the 2D overlay draw (`6c9800`): not a rect problem. The two
+   `IDirect3DStateBlock9` objects (`Capture` / `Apply`, vtable slots 4 and 5) were created from the generic class
+   whose slots 4/5 are `GetDeclaration:2` / `GetFunction:2`, so each call popped 8 bytes too many. Added a
+   dedicated `C_SB` class (`GetDevice:1 Capture:0 Apply:0`) used by `CreateStateBlock` and `EndStateBlock`.
+   Lesson: generic COM classes must not share slot layouts across different interfaces.
+6. `operator new(2374864012)` after `IDirectSoundBuffer::GetFormat`: the game asks for the format size first
+   (NULL buffer, size out in the 4th argument) then allocates it. Implemented `GetFormat` / `SetFormat`; a buffer
+   with no format reports a default 44.1 kHz 16-bit stereo PCM record. Shipped, awaiting Owen's next run.
+
+### State at end of session
+- The game boots to `CreateDevice 640x480` and the first `Present` with the null renderer (no window, picture,
+  sound or input yet), then continues into sound setup.
+- Not done: fmsel.dll loading (intentionally refused), C++ exceptions/SEH, threads (`_beginthreadex` returns 0;
+  sound mixer/timer threads are skipped), WinMM timer callbacks, WinSock ordinals imported by Squirrel.osm,
+  real rendering/audio/input back ends, a size-optimised build for the Vita (the Linux binary is about 69 MB;
+  the Vita has a 444 MHz CPU and little RAM), the measured D3D9 usage list, updating `port/README.md`.
+- Annotating addresses (naming functions/globals) is separate from the platform layer.
+
+### Rules still in force
+- Do not merge `portable-host` to main until Owen confirms.
+- Generated C is not distributed; ship tools only.
+- Debugging aid: the sandbox has no game data, so faults can only be reproduced from Owen's logs.
+
+### Next
+Run the latest zip, fix each fault Owen reports until the game reaches the main menu with null graphics/audio,
+then update `port/README.md`, produce the D3D9 usage list, and try the Windows API recorder.
