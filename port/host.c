@@ -59,6 +59,9 @@ static void at_dump(CPU *c, uint32_t va) {
 void rt_trace(CPU *c, uint32_t va) {
     if (at_n < 0) { at_n = 0; const char *e = getenv("PORT_AT"); while (e && *e && at_n < 32) { at_list[at_n++] = (uint32_t)strtoul(e, (char **)&e, 16); while (*e == ',') e++; } }
     for (int k = 0; k < at_n; k++) if (at_list[k] == va) at_dump(c, va);
+    { static uint32_t wa; static int won = -1; static uint32_t wv, last_va;
+      if (won < 0) { const char *e = getenv("PORT_WATCH"); wa = e ? (uint32_t)strtoul(e, NULL, 16) : 0; won = wa != 0; if (won) wv = RD32(wa); }
+      if (won) { uint32_t nv = RD32(wa); if (nv != wv) { fprintf(stderr, "[watch %08x] %08x -> %08x written by the instruction at %08x (now at %08x)\n", wa, wv, nv, last_va, va); at_dump(c, last_va); wv = nv; } last_va = va; } }
     tr_ring[tr_pos++ & 63] = va; uint32_t i = va - COV_LO; if (i >= COV_N) return;
     if (cov_bits[i >> 3] & (1u << (i & 7))) return; cov_bits[i >> 3] |= (uint8_t)(1u << (i & 7));
     if (!cov_ord) cov_ord = malloc(sizeof(uint32_t) * COV_N); cov_ord[cov_cnt++] = va;
