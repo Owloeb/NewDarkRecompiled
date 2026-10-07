@@ -203,6 +203,18 @@ static void dsb_lock(CPU *c, uint32_t s) {
     OUT(3, o->data + off); OUT(4, c1); OUT(5, c2 ? o->data : 0); OUT(6, c2);
 }
 static void dsb_caps(CPU *c, uint32_t s) { Obj *o = O(s); uint32_t p = A(1); WR32(p + 4, o->flags); WR32(p + 8, o->size); }
+static uint32_t dsb_fmtsize(Obj *o) { return o->wfx ? 18 + (RD32(o->wfx + 16) & 0xffff) : 18; }
+static void dsb_getformat(CPU *c, uint32_t s) {
+    Obj *o = O(s);
+    if (!o->wfx) { o->wfx = g_alloc(32); memset(GP(o->wfx), 0, 32); WR32(o->wfx, 1 | (2 << 16)); WR32(o->wfx + 4, 44100); WR32(o->wfx + 8, 44100 * 4); WR32(o->wfx + 12, 4 | (16 << 16)); }
+    uint32_t n = dsb_fmtsize(o), p = A(1), cb = A(2);
+    if (p && cb) memcpy(GP(p), GP(o->wfx), cb < n ? cb : n);
+    OUT(3, n);
+}
+static void dsb_setformat(CPU *c, uint32_t s) {
+    Obj *o = O(s); uint32_t p = A(1);
+    if (p) { uint32_t n = 18 + (RD32(p + 16) & 0xffff); uint32_t b = g_alloc(n + 4); memcpy(GP(b), GP(p), n); o->wfx = b; o->avg = RD32(p + 8) ? RD32(p + 8) : o->avg; }
+}
 static void dsb_zero1(CPU *c, uint32_t s) { (void)s; OUT(1, 0); }
 
 /* ---------------------------------------------------------------- DirectInput */
@@ -230,7 +242,7 @@ static const Handler hlist[] = {
     { C_QUERY, "GetData", q_getdata }, { C_QUERY, "GetDataSize", q_size }, { C_SWAP, "Present", dev_present },
     { C_DS, "CreateSoundBuffer", ds_createbuf }, { C_DS, "DuplicateSoundBuffer", ds_dup }, { C_DS, "GetCaps", ds_getcaps }, { C_DS, "GetSpeakerConfig", ds_speaker },
     { C_DSB, "GetCurrentPosition", dsb_getpos }, { C_DSB, "GetStatus", dsb_status }, { C_DSB, "Play", dsb_play }, { C_DSB, "Stop", dsb_stop }, { C_DSB, "Lock", dsb_lock },
-    { C_DSB, "GetCaps", dsb_caps }, { C_DSB, "GetVolume", dsb_zero1 }, { C_DSB, "GetPan", dsb_zero1 }, { C_DSB, "GetFrequency", dsb_zero1 },
+    { C_DSB, "GetCaps", dsb_caps }, { C_DSB, "GetFormat", dsb_getformat }, { C_DSB, "SetFormat", dsb_setformat }, { C_DSB, "GetVolume", dsb_zero1 }, { C_DSB, "GetPan", dsb_zero1 }, { C_DSB, "GetFrequency", dsb_zero1 },
     { C_KSP, "QuerySupport", ksp_query }, { C_KSP, "Get", ksp_fail }, { C_KSP, "Set", ksp_fail },
     { C_DD, "GetCaps", dd_caps }, { C_DI, "CreateDevice", di_createdev }, { C_DID, "GetDeviceState", did_state }, { C_DID, "GetDeviceData", did_data }, { C_DID, "GetCapabilities", did_caps },
 };
