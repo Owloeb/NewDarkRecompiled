@@ -47,6 +47,7 @@ static uint32_t at_list[32]; static int at_n = -1;
 static void at_dump(CPU *c, uint32_t va) {
     fprintf(stderr, "[at %08x] eax=%08x ecx=%08x edx=%08x ebx=%08x esi=%08x edi=%08x ebp=%08x esp=%08x\n  stack:", va, c->eax, c->ecx, c->edx, c->ebx, c->esi, c->edi, c->ebp, c->esp);
     for (int i = 0; i < 10; i++) fprintf(stderr, " %08x", RD32(c->esp + 4 * i)); fputc(10, stderr);
+    { const char *m = getenv("PORT_MEM"); while (m && *m) { uint32_t ad = (uint32_t)strtoul(m, (char **)&m, 16); while (*m == ',') m++; uint32_t p = RD32(ad); fprintf(stderr, "  [%08x] = %08x ->", ad, p); for (int i = 0; i < 24 && p; i++) fprintf(stderr, " %02x", *(uint8_t *)GP(p + i)); fputc(10, stderr); } }
     uint32_t v[16] = { c->eax, c->ecx, c->edx, c->ebx, c->esi, c->edi }; for (int i = 0; i < 10; i++) v[6 + i] = RD32(c->esp + 4 * i);
     for (int i = 0; i < 16; i++) { uint32_t p = v[i]; if (p < 0x1000 || p > 0xF0000000u) continue; const unsigned char *s = (const unsigned char *)GP(p); int k = 0; while (k < 60 && s[k] >= 32 && s[k] < 127) k++; if (k >= 3 && !s[k]) fprintf(stderr, "  %08x = \"%s\"\n", p, s); }
 }

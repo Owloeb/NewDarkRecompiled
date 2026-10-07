@@ -207,8 +207,10 @@ SHIM(remove_) { char hp[1400]; host_path(gs(A(0)), hp, sizeof hp); RET((uint32_t
 SHIM(rename_) { char a[1400], b[1400]; host_path(gs(A(0)), a, sizeof a); host_path(gs(A(1)), b, sizeof b); RET((uint32_t)rename(a, b)); }
 SHIM(mkdir_) { char hp[1400]; host_path(gs(A(0)), hp, sizeof hp); RET((uint32_t)mkdir(hp, 0755)); }
 SHIM(chdir_) { char hp[1400]; host_path(gs(A(0)), hp, sizeof hp); RET((uint32_t)chdir(hp)); }
-SHIM(getcwd_) { const char *w = "C:\\"; if (!A(0) || A(1) < 4) { RET(0); return; } memcpy(GP(A(0)), w, 4); RET(A(0)); }
-SHIM(getdcwd_) { const char *w = "C:\\"; if (!A(1) || A(2) < 4) { RET(0); return; } memcpy(GP(A(1)), w, 4); RET(A(1)); }
+SHIM(getcwd_) { const char *w = "C:\\"; uint32_t b = A(0); if (A(1) && A(1) < 4) { RET(0); return; } if (!b) b = g_alloc(A(1) > 4 ? A(1) : 4);   /* NULL buffer: the CRT allocates one */
+    memcpy(GP(b), w, 4); RET(b); }
+SHIM(getdcwd_) { const char *w = "C:\\"; uint32_t b = A(1); if (A(2) && A(2) < 4) { RET(0); return; } if (!b) b = g_alloc(A(2) > 4 ? A(2) : 4);
+    memcpy(GP(b), w, 4); RET(b); }
 SHIM(getdrive_) { RET(3); }
 
 /* low-level descriptors (the game's own file system code uses these) */
