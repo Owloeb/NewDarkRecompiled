@@ -66,6 +66,7 @@ static void gains_3d(const Buf *b, float *gl, float *gr) {
     V3 f = lis.front, t = lis.top, right = { t.y * f.z - t.z * f.y, t.z * f.x - t.x * f.z, t.x * f.y - t.y * f.x };
     float rl = sqrtf(right.x * right.x + right.y * right.y + right.z * right.z), pan = 0;
     if (dist > 1e-4f && rl > 0) { pan = (rel.x * right.x + rel.y * right.y + rel.z * right.z) / (rl * sqrtf(rel.x * rel.x + rel.y * rel.y + rel.z * rel.z)); }
+    if (!(pan > -1.0f)) pan = -1.0f; else if (pan > 1.0f) pan = 1.0f;          /* rounding (or a NaN position) must not reach sqrtf */
     *gl = att * sqrtf((1 - pan) / 2) * 1.41421356f; *gr = att * sqrtf((1 + pan) / 2) * 1.41421356f;
 }
 static void mix(int16_t *out, int frames, void *user) {

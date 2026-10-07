@@ -55,11 +55,21 @@ void plat_video_display_size(int *w, int *h) {
     *w = 1920; *h = 1080;
 }
 void plat_video_set_title(const char *t) { if (win) SDL_SetWindowTitle(win, t); }
-void plat_video_mouse_mode(int relative, int visible) { rel_mode = relative; if (win) { SDL_SetRelativeMouseMode(relative ? SDL_TRUE : SDL_FALSE); SDL_ShowCursor(visible && !relative ? SDL_ENABLE : SDL_DISABLE); } }
+#include <stdarg.h>
+static void port_log_plat(const char *fmt, ...) { char b[300]; int n = snprintf(b, sizeof b, "[sdl] "); va_list ap; va_start(ap, fmt); vsnprintf(b + n, sizeof b - (size_t)n, fmt, ap); va_end(ap); plat_log_write(PLAT_LOG_INFO, b); }
+static int warp_pending, warp_x, warp_y;      /* the motion event our own warp produces is not player movement */
+static float mouse_scale = 1.0f, frac_x, frac_y;
+void plat_video_mouse_mode(int relative, int visible) {
+    static int last = -1; rel_mode = relative;
+    if (!win) return;
+    int r = SDL_SetRelativeMouseMode(relative ? SDL_TRUE : SDL_FALSE); SDL_ShowCursor(visible && !relative ? SDL_ENABLE : SDL_DISABLE);
+    if (relative != last) { last = relative; port_log_plat("mouse: %s%s%s", relative ? "captured (relative motion)" : "free", r ? " - SDL refused: " : "", r ? SDL_GetError() : ""); }
+}
 void plat_video_warp_mouse(int x, int y) {
     if (!win || rel_mode) return; int bx, by, bw, bh; letterbox(&bx, &by, &bw, &bh);
     int ww, wh, dw, dh; SDL_GetWindowSize(win, &ww, &wh); SDL_GL_GetDrawableSize(win, &dw, &dh);
-    SDL_WarpMouseInWindow(win, (int)((bx + (double)x * bw / surf_w) * ww / dw), (int)((by + (double)y * bh / surf_h) * wh / dh));
+    warp_x = (int)((bx + (double)x * bw / surf_w) * ww / dw); warp_y = (int)((by + (double)y * bh / surf_h) * wh / dh); warp_pending = 1;
+    SDL_WarpMouseInWindow(win, warp_x, warp_y);
 }
 
 /* ---------------------------------------------------------------- input: SDL scan codes (USB HID) to DirectInput scan codes */
@@ -106,7 +116,12 @@ void plat_video_poll(void (*sink)(const PlatEvent *, void *), void *user) {
             if (e.type == SDL_KEYDOWN && e.key.keysym.scancode == SDL_SCANCODE_RETURN && (e.key.keysym.mod & KMOD_ALT)) { want_fullscreen = !want_fullscreen; SDL_SetWindowFullscreen(win, want_fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0); break; }
             p.type = PLAT_EV_KEY; p.down = e.type == SDL_KEYDOWN; p.repeat = e.key.repeat; p.key = dik_of(e.key.keysym.scancode); if (p.key) sink(&p, user); break;
         case SDL_TEXTINPUT: { const char *t = e.text.text; while (*t) { p.type = PLAT_EV_TEXT; p.text = utf8_next(&t); sink(&p, user); } break; }
-        case SDL_MOUSEMOTION: p.type = PLAT_EV_MOUSE_MOVE; to_surface(e.motion.x, e.motion.y, &p.x, &p.y); p.dx = e.motion.xrel; p.dy = e.motion.yrel; sink(&p, user); break;
+        case SDL_MOUSEMOTION: {
+            p.type = PLAT_EV_MOUSE_MOVE; to_surface(e.motion.x, e.motion.y, &p.x, &p.y);
+            if (warp_pending && e.motion.x == warp_x && e.motion.y == warp_y) { warp_pending = 0; p.dx = p.dy = 0; sink(&p, user); break; }
+            float fx = e.motion.xrel * mouse_scale + frac_x, fy = e.motion.yrel * mouse_scale + frac_y;
+            p.dx = (int)fx; p.dy = (int)fy; frac_x = fx - (float)p.dx; frac_y = fy - (float)p.dy;
+            sink(&p, user); break; }
         case SDL_MOUSEBUTTONDOWN: case SDL_MOUSEBUTTONUP: {
             static const int map[6] = { -1, 0, 2, 1, 3, 4 }; int b = e.button.button < 6 ? map[e.button.button] : -1; if (b < 0) break;
             p.type = PLAT_EV_MOUSE_BUTTON; p.down = e.type == SDL_MOUSEBUTTONDOWN; p.button = b; sink(&p, user); break; }
@@ -137,7 +152,10 @@ void plat_alert(const char *title, const char *text) { if (!getenv("SS2PORT_NOAL
 
 int port_main(int argc, char **argv);
 int main(int argc, char **argv) {
-    SDL_SetHint(SDL_HINT_MOUSE_RELATIVE_MODE_WARP, "0");
+    /* SS2PORT_MOUSE_WARP=1: emulate captured mouse by re-centring the pointer (for systems without pointer capture,
+       such as some remote desktops); SS2PORT_MOUSE_SCALE: multiply mouse motion (e.g. 0.5) */
+    const char *mw = getenv("SS2PORT_MOUSE_WARP"); SDL_SetHint(SDL_HINT_MOUSE_RELATIVE_MODE_WARP, mw && *mw == '1' ? "1" : "0");
+    const char *ms = getenv("SS2PORT_MOUSE_SCALE"); if (ms && atof(ms) > 0) mouse_scale = (float)atof(ms);
     if (SDL_Init(0)) { fprintf(stderr, "SDL: %s\n", SDL_GetError()); return 1; }
     int r = port_main(argc, argv);
     SDL_Quit(); return r;

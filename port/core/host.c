@@ -44,9 +44,14 @@ const char *guest_symbol(uint32_t va) {
 #define TRACE_HEAD 8192             /* also keep the first calls: the start of a loop matters as much as its end */
 static char trace_ring[TRACE_N][220], trace_head[TRACE_HEAD][220]; static unsigned trace_n;
 static char trace_only[512];        /* --trace-only a,b,c: trace just these functions (",name," match) */
-static int trace_wanted(const char *name) {
+static int trace_wanted(const char *name) {            /* entries are names, or prefixes ending in '*' (IDirectSound*) */
     if (!trace_only[0]) return 1;
-    char k[96]; snprintf(k, sizeof k, ",%s,", name); return strstr(trace_only, k) != NULL;
+    for (const char *p = trace_only + 1; *p; ) {
+        const char *e = strchr(p, ','); size_t n = e ? (size_t)(e - p) : strlen(p); if (!n) break;
+        if (p[n - 1] == '*' ? !strncmp(name, p, n - 1) : strlen(name) == n && !strncmp(name, p, n)) return 1;
+        if (!e) break; p = e + 1;
+    }
+    return 0;
 }
 static void trace_put(const char *fmt, ...) {
     unsigned n = __atomic_fetch_add(&trace_n, 1, __ATOMIC_RELAXED);

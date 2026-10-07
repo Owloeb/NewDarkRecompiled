@@ -18,7 +18,7 @@ int crt_default_text(void);      /* msvcrt.c: _fmode is not _O_BINARY */
 struct Stream {
     PlatFile *pf; int console;          /* console: 1 stdout, 2 stderr, 3 stdin */
     int text, rd, wr, append, eof, err;
-    uint8_t buf[4096]; int bpos, blen;  /* read buffer */
+    uint8_t buf[32768]; int bpos, blen; /* read buffer (also serves small binary freads: each file read can be slow, e.g. a Windows drive under WSL) */
     int ungot[4], nungot;
     uint32_t guest;                     /* the guest FILE */
     int fd;                             /* low-level descriptor it was opened from, or -1 */
@@ -99,6 +99,10 @@ static int64_t stream_tell(Stream *s) {
 static int stream_seek(Stream *s, int64_t off, int whence) {
     if (!s->pf) return -1;
     if (whence == PLAT_SEEK_CUR) { off += stream_tell(s); whence = PLAT_SEEK_SET; }
+    if (whence == PLAT_SEEK_SET && s->blen && !s->nungot) {           /* target inside what is buffered: no file access */
+        int64_t end = plat_fs_seek(s->pf, 0, PLAT_SEEK_CUR), start = end - s->blen;
+        if (end >= 0 && off >= start && off <= end) { s->bpos = (int)(off - start); s->eof = 0; return 0; }
+    }
     s->bpos = s->blen = 0; s->nungot = 0; s->eof = 0;
     return plat_fs_seek(s->pf, off, whence) < 0 ? -1 : 0;
 }
@@ -133,6 +137,11 @@ SHIM(fread_) {
     if (!s->text) {
         while (s->nungot && got < want) d[got++] = (uint8_t)s->ungot[--s->nungot];
         while (got < want && s->bpos < s->blen) d[got++] = s->buf[s->bpos++];
+        if (got < want && s->pf && want - got < sizeof s->buf) {           /* small read: refill the buffer and copy from it */
+            int64_t r = plat_fs_read(s->pf, s->buf, sizeof s->buf); if (r < 0) s->err = 1;
+            s->bpos = 0; s->blen = r > 0 ? (int)r : 0;
+            while (got < want && s->bpos < s->blen) d[got++] = s->buf[s->bpos++];
+        }
         if (got < want && s->pf) { int64_t r = plat_fs_read(s->pf, d + got, want - got); if (r > 0) got += (uint64_t)r; else if (r < 0) s->err = 1; }
         if (got < want) s->eof = 1;
     } else { int ch; while (got < want && (ch = stream_getc(s)) >= 0) d[got++] = (uint8_t)ch; }

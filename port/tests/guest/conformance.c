@@ -146,6 +146,15 @@ static void test_stdio(void) {
     /* the engine's ZIP reader: size from _filelength(_fileno(f)), then seek to size - 22 for the end-of-directory record */
     f = fopen("ctest_dir/text.txt", "rb"); CHECK(f != 0);
     if (f) { long len = _filelength(_fileno(f)); CHECKI(len, 26); CHECKI(fseek(f, len - 22, 0), 0); CHECKI(fread(b, 1, 22, f), 22); CHECKI(ftell(f), 26); fclose(f); }
+    /* buffered binary reads: seeks inside and outside what was read ahead, reads across the buffer, end of file */
+    f = fopen("ctest_dir/text.txt", "rb"); CHECK(f != 0);
+    if (f) { CHECKI(fread(b, 1, 4, f), 4); CHECK(!memcmp(b, "line", 4)); CHECKI(fseek(f, 2, 0), 0); CHECKI(fread(b, 1, 3, f), 3); CHECK(!memcmp(b, "ne ", 3)); CHECKI(ftell(f), 5);
+             CHECKI(fseek(f, -3, 1), 0); CHECKI(ftell(f), 2); CHECKI(fread(b, 1, 2, f), 2); CHECK(!memcmp(b, "ne", 2)); CHECKI(fseek(f, 20, 0), 0); CHECKI(fread(b, 1, 2, f), 2); CHECK(!memcmp(b, "77", 2));
+             CHECKI(fseek(f, 0, 0), 0); CHECKI(fread(b, 1, 26, f), 26); CHECK(!memcmp(b, "line one\r\nline two\r\n77 x\r\n", 26)); CHECK(!feof(f)); CHECKI(fread(b, 1, 1, f), 0); CHECK(feof(f)); fclose(f); }
+    /* read then write on an update stream: the write lands where reading stopped, not after the read-ahead */
+    f = fopen("ctest_dir/text.txt", "r+b"); CHECK(f != 0);
+    if (f) { CHECKI(fread(b, 1, 2, f), 2); CHECKI(fseek(f, 0, 1), 0); CHECKI(fwrite("XY", 1, 2, f), 2); CHECKI(fseek(f, 0, 0), 0); CHECKI(fread(b, 1, 4, f), 4); CHECK(!memcmp(b, "liXY", 4));
+             CHECKI(fseek(f, 2, 0), 0); fwrite("ne", 1, 2, f); fclose(f); }
     CHECK(fopen("ctest_dir\\missing.txt", "rb") == 0);
     struct _stat64i32 st; CHECKI(_stat64i32("ctest_dir\\TEXT.txt", &st), 0); CHECKI(st.st_size, 26); CHECK(st.st_mode & 0x8000);
     CHECKI(_stat64i32("ctest_dir\\sub", &st), 0); CHECK(st.st_mode & 0x4000); CHECKI(_stat64i32("nope", &st), -1);

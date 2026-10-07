@@ -34,7 +34,8 @@ Options: `PORT_PREEMPT` (default ON: other guest threads may run at loop heads; 
 `PORT_VIDEO` (default ON: built-in Indeo 5 cutscene decoder, LGPL code from `video/`). Needs GCC or Clang.
 Command line: `--frames N --windowed --guest-space MB --verbose --trace --list-missing --list-shims`.
 Environment: `SS2PORT_FULLSCREEN`, `SS2PORT_GLES` (force OpenGL ES), `SS2PORT_NOVSYNC`, `SS2PORT_NOSOUND`,
-`SS2PORT_NOALERT` (log instead of message boxes), `SS2PORT_WRITE_DIR` (where saves and configuration are written; the game
+`SS2PORT_NOALERT` (log instead of message boxes), `SS2PORT_MOUSE_SCALE` (multiply mouse motion, e.g. `0.5`),
+`SS2PORT_MOUSE_WARP=1` (capture the mouse by re-centring the pointer, for systems where pointer capture does not work), `SS2PORT_WRITE_DIR` (where saves and configuration are written; the game
 folder stays read-only).
 
 ## Porting to a new platform

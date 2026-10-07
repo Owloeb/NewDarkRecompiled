@@ -18,6 +18,7 @@ IMP size_t __cdecl _msize(void *);
 IMP void *__cdecl memcpy(void *, const void *, size_t);
 IMP void *__cdecl memmove(void *, const void *, size_t);
 IMP void *__cdecl memset(void *, int, size_t);
+IMP int __cdecl memcmp(const void *, const void *, size_t);
 IMP void *__cdecl memchr(const void *, int, size_t);
 IMP char *__cdecl strchr(const char *, int);
 IMP char *__cdecl strrchr(const char *, int);
