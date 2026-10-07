@@ -277,3 +277,17 @@ distributed; stay vanilla.
   Found: Clang's __builtin_setjmp loses the caller's locals on x86_64-windows (minimal repro under Wine), so rt.h uses
   the CRT's _setjmp(buf, NULL) there. Conformance under Wine: 449/449 null, 476/476 sdl2 with pixel checks.
   Purpose: a development/test target (real mouse, Windows debuggers, Windows on ARM), not a way to play on Windows.
+- Independent review (4 fresh agents: core, win32/crt, dx, backends/tooling) before merging. Fixed, each verified:
+  high: fread stale read-ahead after a large direct read (new code); Windows ReadFile/WriteFile into uncommitted
+  guest pages fail with ERROR_NOACCESS (commit first); D3D draws spanning >65535 vertices wrapped indices (32-bit
+  expansion + g_valid). Medium/low: write-dir listing cache not invalidated (saves unreadable with SS2PORT_WRITE_DIR);
+  thunk table realloc during a shim (use-after-free of pop); kwait without object references; PulseEvent/timer pulse
+  never woke waiters (pulse generations); timer callback after timeKillEvent; strncpy_s/strncat_s _TRUNCATE; %.Nd
+  stack overflow (cap 512 like MSVCR90); WM_MOUSEMOVE not coalesced; virtual cursor unclamped without ClipCursor and
+  real pointer not restored on release; freopen returned a new FILE*; CreateDIBSection wrote the wrong argument;
+  atoi wrapped on LP64; text-mode _read CR at chunk end; g_realloc size wrap; truncated module section copy; ks_init
+  before ReleaseMutex/Semaphore; Windows timer resolution (timeBeginPeriod at start) and per-thread timer handle leak;
+  macOS/BSD discard not zeroing; GLES vertex precision; zig wrappers with spaces in paths; D3D texcoord padding
+  (2D -> (u,v,1,0)); UpdateTexture level skip/size check; Reset leaking bound objects; vertex-declaration extent;
+  DirectSound rolloff 0 and SetCurrentPosition divide by zero. Regression checks added (469 null / 496 sdl2), all
+  pass on Linux, Windows (Wine) and under ASan+UBSan; the old code fails or crashes on them.

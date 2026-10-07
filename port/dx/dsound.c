@@ -62,7 +62,7 @@ static void gains_3d(const Buf *b, float *gl, float *gr) {
     V3 rel = b->p3; if (b->mode3d != 1) { rel.x -= lis.pos.x; rel.y -= lis.pos.y; rel.z -= lis.pos.z; }
     float dist = sqrtf(rel.x * rel.x + rel.y * rel.y + rel.z * rel.z) * lis.dist_f;
     float mn = b->min_d > 0 ? b->min_d : 1, mx_ = b->max_d > mn ? b->max_d : 1e9f, dd = dist < mn ? mn : dist > mx_ ? mx_ : dist;
-    float att = powf(mn / dd, lis.rolloff > 0 ? lis.rolloff : 1);
+    float att = powf(mn / dd, lis.rolloff >= 0 ? lis.rolloff : 1);       /* rolloff 0 (allowed) means no distance attenuation */
     V3 f = lis.front, t = lis.top, right = { t.y * f.z - t.z * f.y, t.z * f.x - t.x * f.z, t.x * f.y - t.y * f.x };
     float rl = sqrtf(right.x * right.x + right.y * right.y + right.z * right.z), pan = 0;
     if (dist > 1e-4f && rl > 0) { pan = (rel.x * right.x + rel.y * right.y + rel.z * right.z) / (rl * sqrtf(rel.x * rel.x + rel.y * rel.y + rel.z * rel.z)); }
@@ -190,7 +190,7 @@ static void dsb_lock(CPU *c, ComObj *s) {
 }
 static void dsb_unlock(CPU *c, ComObj *s) { (void)s; RET(0); }
 static void dsb_play(CPU *c, ComObj *s) { Buf *b = B(s); lock(); b->playing = 1; b->looping = (A(3) & 1) != 0; unlock(); RET(0); }
-static void dsb_setpos(CPU *c, ComObj *s) { Buf *b = B(s); if (!b->data || A(1) >= b->data->size) { RET(DSERR_INVALIDPARAM); return; } lock(); b->pos = (double)(A(1) / frame_bytes(b)); unlock(); RET(0); }
+static void dsb_setpos(CPU *c, ComObj *s) { Buf *b = B(s); if (!b->data || A(1) >= b->data->size || !frame_bytes(b)) { RET(DSERR_INVALIDPARAM); return; } lock(); b->pos = (double)(A(1) / frame_bytes(b)); unlock(); RET(0); }
 static void dsb_stop(CPU *c, ComObj *s) { Buf *b = B(s); lock(); int was = b->playing; b->playing = 0; if (was && b->nnotify) notify_stop(b); unlock(); RET(0); }
 static void dsb_restore(CPU *c, ComObj *s) { (void)s; RET(0); }
 static ComObj *aggregate(ComObj *main, ComClass *cls) { ComObj *o = com_create(cls, NULL); o->extra_iface_of = main; com_addref(main); return o; }

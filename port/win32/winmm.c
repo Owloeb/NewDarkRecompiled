@@ -9,11 +9,12 @@ SHIM(timeGetDevCaps) { if (A(0) && A(1) >= 8) { WR32(A(0), 1); WR32(A(0) + 4, 10
 SHIM(timeBeginEnd) { RET(0); }
 
 /* ---------------------------------------------------------------- multimedia timers */
-typedef struct { uint32_t id, delay, flags, proc, user; uint64_t due; int active; } MmTimer;
+typedef struct { uint32_t id, delay, flags, proc, user; uint64_t due; int active, pending; } MmTimer;   /* pending: a one-shot that fired, callback not run yet */
 #define NTIMERS 32
 static MmTimer timers[NTIMERS];
 static PlatMutex *tm_m; static PlatCond *tm_cv; static GuestThread *tm_thread; static uint32_t tm_next_id = 1;
 extern KObj *handle_get(uint32_t h, KType type);
+int kevent_pulse(KObj *o);
 static void timer_main(void *arg) {
     (void)arg;
     plat_mutex_lock(tm_m);
@@ -24,11 +25,16 @@ static void timer_main(void *arg) {
         if (due->due > now) { plat_cond_wait_ns(tm_cv, tm_m, due->due - now); continue; }
         MmTimer t = *due;
         if (t.flags & 1) { due->due += (uint64_t)t.delay * 1000000u; if (due->due < now) due->due = now + (uint64_t)t.delay * 1000000u; }   /* TIME_PERIODIC: no catch-up bursts */
-        else due->active = 0;
+        else { due->active = 0; due->pending = 1; }
         plat_mutex_unlock(tm_m);
         gil_acquire(tm_thread);
+        /* timeKillEvent may have run while we waited for the guest lock (the game then frees what dwUser points at) */
+        plat_mutex_lock(tm_m); int live = 0;
+        for (int i = 0; i < NTIMERS; i++) if (timers[i].id == t.id && (timers[i].active || timers[i].pending)) { live = 1; timers[i].pending = 0; }
+        plat_mutex_unlock(tm_m);
+        if (!live) { gil_release(); plat_mutex_lock(tm_m); continue; }
         if (t.flags & 0x10) { KObj *e = handle_get(t.proc, K_EVENT); if (e) kevent_set(e); }        /* TIME_CALLBACK_EVENT_SET */
-        else if (t.flags & 0x20) { KObj *e = handle_get(t.proc, K_EVENT); if (e) { kevent_set(e); kevent_reset(e); } }   /* TIME_CALLBACK_EVENT_PULSE */
+        else if (t.flags & 0x20) { KObj *e = handle_get(t.proc, K_EVENT); if (e) kevent_pulse(e); }   /* TIME_CALLBACK_EVENT_PULSE */
         else g_call(cur_cpu(), t.proc, 5, t.id, 0u, t.user, 0u, 0u);
         gil_release();
         plat_mutex_lock(tm_m);
@@ -38,16 +44,16 @@ SHIM(timeSetEvent) {
     if (!tm_m) { tm_m = plat_mutex_new(); tm_cv = plat_cond_new(); }
     if (!tm_thread) { tm_thread = thread_new_host_side("winmm timer"); if (!tm_thread || plat_thread_start(timer_main, NULL, "winmm timer")) { RET(0); return; } }
     plat_mutex_lock(tm_m);
-    MmTimer *t = NULL; for (int i = 0; i < NTIMERS; i++) if (!timers[i].active) { t = &timers[i]; break; }
+    MmTimer *t = NULL; for (int i = 0; i < NTIMERS; i++) if (!timers[i].active && !timers[i].pending) { t = &timers[i]; break; }
     if (!t) { plat_mutex_unlock(tm_m); RET(0); return; }
     uint32_t delay = A(0) ? A(0) : 1;
-    *t = (MmTimer){ tm_next_id++, delay, A(4), A(2), A(3), plat_time_ns() + (uint64_t)delay * 1000000u, 1 };
+    *t = (MmTimer){ tm_next_id++, delay, A(4), A(2), A(3), plat_time_ns() + (uint64_t)delay * 1000000u, 1, 0 };
     plat_cond_signal(tm_cv); plat_mutex_unlock(tm_m);
     RET(t->id);
 }
 SHIM(timeKillEvent) {
     if (!tm_m) { RET(97); return; }
-    plat_mutex_lock(tm_m); int found = 0; for (int i = 0; i < NTIMERS; i++) if (timers[i].active && timers[i].id == A(0)) { timers[i].active = 0; found = 1; }
+    plat_mutex_lock(tm_m); int found = 0; for (int i = 0; i < NTIMERS; i++) if ((timers[i].active || timers[i].pending) && timers[i].id == A(0)) { timers[i].active = timers[i].pending = 0; found = 1; }
     plat_cond_signal(tm_cv); plat_mutex_unlock(tm_m); RET(found ? 0 : 97);          /* TIMERR_NOCANDO */
 }
 

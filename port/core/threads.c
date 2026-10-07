@@ -91,20 +91,22 @@ void kobj_ref(KObj *o) { o->refs++; }
 void kobj_unref(KObj *o) { if (o && --o->refs <= 0) { if (o->destroy) o->destroy(o); else free(o); } }
 void kobj_changed(void) { ks_init(); plat_mutex_lock(ks_m); ks_gen++; plat_cond_broadcast(ks_cv); plat_mutex_unlock(ks_m); }
 
-typedef struct { KObj k; int manual, state; } KEvent;
+typedef struct { KObj k; int manual, state; uint64_t pulses, pulse_taken; } KEvent;   /* pulses: PulseEvent generations (see kwait) */
 static int ev_sig(KObj *o, GuestThread *t) { (void)t; return ((KEvent *)o)->state; }
 static void ev_acq(KObj *o, GuestThread *t) { (void)t; if (!((KEvent *)o)->manual) ((KEvent *)o)->state = 0; }
 KObj *kevent_new(int manual, int initial) { KEvent *e = calloc(1, sizeof *e); e->k = (KObj){ K_EVENT, 1, NULL, ev_sig, ev_acq }; e->manual = manual; e->state = initial; return &e->k; }
 void kevent_set(KObj *o) { ks_init(); plat_mutex_lock(ks_m); ((KEvent *)o)->state = 1; ks_gen++; plat_cond_broadcast(ks_cv); plat_mutex_unlock(ks_m); }
 void kevent_reset(KObj *o) { ks_init(); plat_mutex_lock(ks_m); ((KEvent *)o)->state = 0; plat_mutex_unlock(ks_m); }
-int kevent_pulse(KObj *o) { kevent_set(o); kevent_reset(o); return 1; }
+/* PulseEvent: release the threads waiting right now (one for an auto-reset event), leave the event non-signalled.
+   A set-then-reset would be lost: a woken waiter re-checks only after it gets the guest lock back. */
+int kevent_pulse(KObj *o) { ks_init(); plat_mutex_lock(ks_m); KEvent *e = (KEvent *)o; e->state = 0; e->pulses++; ks_gen++; plat_cond_broadcast(ks_cv); plat_mutex_unlock(ks_m); return 1; }
 
 typedef struct { KObj k; GuestThread *owner; int count; } KMutex;
 static int mx_sig(KObj *o, GuestThread *t) { KMutex *m = (KMutex *)o; return !m->owner || m->owner == t; }
 static void mx_acq(KObj *o, GuestThread *t) { KMutex *m = (KMutex *)o; m->owner = t; m->count++; }
 KObj *kmutex_new(int owned) { KMutex *m = calloc(1, sizeof *m); m->k = (KObj){ K_MUTEX, 1, NULL, mx_sig, mx_acq }; if (owned) { m->owner = g_cur; m->count = 1; } return &m->k; }
 int kmutex_release(KObj *o) {
-    KMutex *m = (KMutex *)o; int ok = 0; plat_mutex_lock(ks_m);
+    ks_init(); KMutex *m = (KMutex *)o; int ok = 0; plat_mutex_lock(ks_m);
     if (m->owner == g_cur && m->count > 0) { ok = 1; if (!--m->count) m->owner = NULL; ks_gen++; plat_cond_broadcast(ks_cv); }
     plat_mutex_unlock(ks_m); return ok;
 }
@@ -114,7 +116,7 @@ static int sem_sig(KObj *o, GuestThread *t) { (void)t; return ((KSem *)o)->count
 static void sem_acq(KObj *o, GuestThread *t) { (void)t; ((KSem *)o)->count--; }
 KObj *ksem_new(int32_t initial, int32_t max) { KSem *s = calloc(1, sizeof *s); s->k = (KObj){ K_SEMAPHORE, 1, NULL, sem_sig, sem_acq }; s->count = initial; s->max = max; return &s->k; }
 int ksem_release(KObj *o, int32_t n, int32_t *prev) {
-    KSem *s = (KSem *)o; int ok = 0; plat_mutex_lock(ks_m);
+    ks_init(); KSem *s = (KSem *)o; int ok = 0; plat_mutex_lock(ks_m);
     if (prev) *prev = s->count;
     if (n > 0 && s->count + n <= s->max) { s->count += n; ok = 1; ks_gen++; plat_cond_broadcast(ks_cv); }
     plat_mutex_unlock(ks_m); return ok;
@@ -146,16 +148,25 @@ int handle_close(uint32_t h) {
 /* ---------------------------------------------------------------- waits */
 static int (*msg_check)(void);
 void kwait_set_msg_check(int (*fn)(void)) { msg_check = fn; }
-uint32_t kwait(KObj **objs, int n, int all, uint32_t timeout_ms, int msgs) {
-    ks_init();
+#define KW_MAX 64
+static int kw_sig(KObj *o, GuestThread *t, uint64_t snap) {     /* signalled, or pulsed since the wait began (and, auto-reset, not yet taken) */
+    if (o->signaled(o, t)) return 1;
+    if (o->type == K_EVENT) { KEvent *e = (KEvent *)o; return e->pulses > snap && (e->manual || e->pulse_taken < e->pulses); }
+    return 0;
+}
+static void kw_acq(KObj *o, GuestThread *t) {
+    if (o->type == K_EVENT && !o->signaled(o, t)) { KEvent *e = (KEvent *)o; e->pulse_taken = e->pulses; return; }   /* satisfied by a pulse */
+    if (o->acquire) o->acquire(o, t);
+}
+static uint32_t kwait_locked(KObj **objs, int n, int all, uint32_t timeout_ms, int msgs, const uint64_t *snap) {
     uint64_t deadline = timeout_ms == 0xFFFFFFFFu ? UINT64_MAX : plat_time_ns() + (uint64_t)timeout_ms * 1000000u;
     GuestThread *t = g_cur;
     plat_mutex_lock(ks_m);
     for (;;) {
         if (all) {
-            int ok = n > 0; for (int i = 0; i < n; i++) if (!objs[i]->signaled(objs[i], t)) { ok = 0; break; }
-            if (ok) { for (int i = 0; i < n; i++) if (objs[i]->acquire) objs[i]->acquire(objs[i], t); plat_mutex_unlock(ks_m); return 0; }
-        } else for (int i = 0; i < n; i++) if (objs[i]->signaled(objs[i], t)) { if (objs[i]->acquire) objs[i]->acquire(objs[i], t); plat_mutex_unlock(ks_m); return (uint32_t)i; }
+            int ok = n > 0; for (int i = 0; i < n; i++) if (!kw_sig(objs[i], t, snap[i])) { ok = 0; break; }
+            if (ok) { for (int i = 0; i < n; i++) kw_acq(objs[i], t); plat_mutex_unlock(ks_m); return 0; }
+        } else for (int i = 0; i < n; i++) if (kw_sig(objs[i], t, snap[i])) { kw_acq(objs[i], t); plat_mutex_unlock(ks_m); return (uint32_t)i; }
         if (msgs && msg_check) { plat_mutex_unlock(ks_m); int m = msg_check(); plat_mutex_lock(ks_m); if (m) { plat_mutex_unlock(ks_m); return (uint32_t)n; } }
         uint64_t now = plat_time_ns();
         if (now >= deadline) { plat_mutex_unlock(ks_m); return 0x102; }     /* WAIT_TIMEOUT */
@@ -167,6 +178,18 @@ uint32_t kwait(KObj **objs, int n, int all, uint32_t timeout_ms, int msgs) {
         gil_acquire(t);
         plat_mutex_lock(ks_m);
     }
+}
+uint32_t kwait(KObj **objs, int n, int all, uint32_t timeout_ms, int msgs) {
+    ks_init();
+    if (n > KW_MAX) n = KW_MAX;                                         /* MAXIMUM_WAIT_OBJECTS */
+    uint64_t snap[KW_MAX];
+    plat_mutex_lock(ks_m);
+    for (int i = 0; i < n; i++) snap[i] = objs[i]->type == K_EVENT ? ((KEvent *)objs[i])->pulses : 0;
+    plat_mutex_unlock(ks_m);
+    for (int i = 0; i < n; i++) kobj_ref(objs[i]);                       /* another thread may close the handles while we wait */
+    uint32_t r = kwait_locked(objs, n, all, timeout_ms, msgs, snap);
+    for (int i = 0; i < n; i++) kobj_unref(objs[i]);
+    return r;
 }
 
 /* ---------------------------------------------------------------- creating and ending threads */

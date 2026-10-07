@@ -56,11 +56,12 @@ static void fmt_float(Buf *b, char conv, double v, int prec, int width, int left
     pad(b, body, width, left, zero);
 }
 static void fmt_int(Buf *b, char conv, uint64_t u, int is_neg, int prec, int width, int left, int zero, int plus, int space, int alt) {
-    char digits[80]; int n = 0; const char *dig = conv == 'X' ? "0123456789ABCDEF" : "0123456789abcdef";
+    char digits[600]; int n = 0; const char *dig = conv == 'X' ? "0123456789ABCDEF" : "0123456789abcdef";
+    if (prec > 512) prec = 512;                                         /* MSVCR90 caps the precision at its 512-byte buffer */
     unsigned base = conv == 'o' ? 8 : (conv == 'x' || conv == 'X') ? 16 : 10;
     while (u) { digits[n++] = dig[u % base]; u /= base; }
     if (prec < 0) { if (!n) digits[n++] = '0'; } else { zero = 0; while (n < prec) digits[n++] = '0'; }
-    char body[160]; int k = 0;
+    char body[620]; int k = 0;
     if (is_neg) body[k++] = '-'; else if ((conv == 'd' || conv == 'i') && plus) body[k++] = '+'; else if ((conv == 'd' || conv == 'i') && space) body[k++] = ' ';
     if (alt && base == 16 && n && !(n == 1 && digits[0] == '0')) { body[k++] = '0'; body[k++] = conv; }
     if (alt && base == 8 && (n == 0 || digits[n - 1] != '0')) digits[n++] = '0';

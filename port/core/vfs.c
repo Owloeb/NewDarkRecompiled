@@ -81,19 +81,24 @@ static int resolve(const char *base, const char *rel, char *out, size_t n) {
     }
     return exists;
 }
+static const char *write_dir(void) {      /* plat_fs_write_dir without a trailing separator, so cache keys match what vfs_changed computes */
+    static char w[1024]; const char *p = plat_fs_write_dir(); if (!p) return NULL;
+    snprintf(w, sizeof w, "%s", p); size_t l = strlen(w); while (l > 1 && (w[l - 1] == '/' || w[l - 1] == '\\')) w[--l] = 0;
+    return w;
+}
 char *vfs_map(const char *win, char *out, size_t n) {
     char rel[1024]; normalise(win, rel, sizeof rel);
-    const char *wd = plat_fs_write_dir();
+    const char *wd = write_dir();
     if (wd && resolve(wd, rel, out, n)) return out;
     resolve(g_cfg.game_dir, rel, out, n);
     return out;
 }
 char *vfs_map_write(const char *win, char *out, size_t n) {
     char rel[1024]; normalise(win, rel, sizeof rel);
-    const char *wd = plat_fs_write_dir();
+    const char *wd = write_dir();
     if (!wd) { resolve(g_cfg.game_dir, rel, out, n); return out; }
     if (!resolve(wd, rel, out, n)) {           /* create the folders the file needs in the write folder */
-        char p[1024]; snprintf(p, sizeof p, "%s", out); for (char *s = p + strlen(wd) + 1; (s = strchr(s, '/')); s++) { *s = 0; plat_fs_mkdir(p); *s = '/'; }
+        char p[1024]; snprintf(p, sizeof p, "%s", out); for (char *s = p + strlen(wd) + 1; (s = strchr(s, '/')); s++) { *s = 0; if (plat_fs_mkdir(p) == PLAT_OK) vfs_changed(p); *s = '/'; }   /* new folders must show up in the cached listings */
     }
     return out;
 }
@@ -140,11 +145,11 @@ PlatFile *vfs_open(const char *win, int flags, int *err, char *host, size_t hn) 
     if (!(flags & (PLAT_WRITE | PLAT_CREATE | PLAT_TRUNCATE))) {
         vfs_map(win, hp, sizeof hp); f = plat_fs_open(hp, flags, err);
     } else {
-        const char *wd = plat_fs_write_dir();
+        const char *wd = write_dir();
         vfs_map_write(win, hp, sizeof hp);
         if (wd && !(flags & PLAT_TRUNCATE)) {
             PlatStat st; char src[1200]; resolve(g_cfg.game_dir, "", src, sizeof src); { char rel[1024]; normalise(win, rel, sizeof rel); resolve(g_cfg.game_dir, rel, src, sizeof src); }
-            if (plat_fs_stat(hp, &st) && !plat_fs_stat(src, &st) && !st.is_dir) copy_file(src, hp);
+            if (plat_fs_stat(hp, &st) && !plat_fs_stat(src, &st) && !st.is_dir) { copy_file(src, hp); vfs_changed(hp); }   /* reads must now find the copy */
         }
         f = plat_fs_open(hp, flags, err);
         if (f && (flags & PLAT_CREATE)) vfs_changed(hp);

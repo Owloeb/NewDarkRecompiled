@@ -44,7 +44,23 @@ static LONG CALLBACK on_fault(EXCEPTION_POINTERS *ep) {
     }
     return EXCEPTION_CONTINUE_SEARCH;
 }
+/* The kernel does not raise our fault for a ReadFile/WriteFile buffer that was never touched (it fails with
+ * ERROR_NOACCESS), so file I/O commits guest ranges first. */
+static void commit_range(const void *p, uint64_t n) {
+    const uint8_t *a = p, *e = a + n;
+    for (int i = 0; i < 8 && n; i++) {
+        Region r = regions[i]; if (!r.base || e <= r.base || a >= r.base + r.size) continue;
+        const uint8_t *lo = a < r.base ? r.base : a, *hi = e > r.base + r.size ? r.base + r.size : e;
+        uint8_t *clo = r.base + (((uint64_t)(lo - r.base)) & ~(uint64_t)(COMMIT_CHUNK - 1));
+        VirtualAlloc(clo, (SIZE_T)(hi - clo), MEM_COMMIT, PAGE_READWRITE);
+    }
+}
+static void win_init(void) {               /* once: 1 ms timer resolution for timed waits (SleepConditionVariableSRW, Sleep) */
+    static LONG done; if (InterlockedExchange(&done, 1)) return;
+    typedef UINT (WINAPI *TBP)(UINT); HMODULE w = LoadLibraryW(L"winmm.dll"); TBP tbp = w ? (TBP)(void (*)(void))GetProcAddress(w, "timeBeginPeriod") : NULL; if (tbp) tbp(1);
+}
 void *plat_mem_reserve(uint64_t size) {
+    win_init();
     void *p = VirtualAlloc(NULL, (SIZE_T)size, MEM_RESERVE, PAGE_NOACCESS);
     if (!p) return NULL;
     AcquireSRWLockExclusive(&region_lock);
@@ -91,16 +107,16 @@ int plat_utc_offset_minutes(void) {
     LONG bias = tz.Bias + (r == TIME_ZONE_ID_DAYLIGHT ? tz.DaylightBias : r == TIME_ZONE_ID_STANDARD ? tz.StandardBias : 0);
     return (int)-bias;
 }
+static __thread HANDLE timer; static __thread int tried;     /* per thread; closed when a plat_thread_start thread ends */
 void plat_sleep_ns(uint64_t ns) {
     /* a high-resolution waitable timer (Windows 10 1803+) sleeps accurately; otherwise Sleep with 1 ms timer resolution */
-    static __thread HANDLE timer; static __thread int tried;
+    win_init();
     if (!tried) { tried = 1; timer = CreateWaitableTimerExW(NULL, NULL, 0x00000002 /* CREATE_WAITABLE_TIMER_HIGH_RESOLUTION */, TIMER_ALL_ACCESS); }
     if (!ns) { SwitchToThread(); return; }
     if (timer) {
         LARGE_INTEGER due; due.QuadPart = -(LONGLONG)((ns + 99) / 100);
         if (SetWaitableTimer(timer, &due, 0, NULL, NULL, FALSE)) { WaitForSingleObject(timer, INFINITE); return; }
     }
-    static int period; if (!period) { period = 1; typedef UINT (WINAPI *TBP)(UINT); HMODULE w = LoadLibraryW(L"winmm.dll"); TBP tbp = w ? (TBP)(void (*)(void))GetProcAddress(w, "timeBeginPeriod") : NULL; if (tbp) tbp(1); }
     DWORD ms = (DWORD)((ns + 999999) / 1000000); Sleep(ms ? ms : 1);
 }
 
@@ -108,7 +124,7 @@ void plat_sleep_ns(uint64_t ns) {
 typedef struct { void (*fn)(void *); void *arg; } Start;
 struct PlatMutex { SRWLOCK l; };
 struct PlatCond { CONDITION_VARIABLE c; };
-static unsigned __stdcall thread_main(void *p) { Start s = *(Start *)p; free(p); s.fn(s.arg); return 0; }
+static unsigned __stdcall thread_main(void *p) { Start s = *(Start *)p; free(p); s.fn(s.arg); if (timer) { CloseHandle(timer); timer = NULL; } return 0; }
 int plat_thread_start(void (*fn)(void *), void *arg, const char *name) {
     Start *s = malloc(sizeof *s); if (!s) return -1; s->fn = fn; s->arg = arg;
     uintptr_t h = _beginthreadex(NULL, 8u << 20, thread_main, s, STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
@@ -173,6 +189,7 @@ int64_t plat_fs_read(PlatFile *f, void *buf, uint64_t n) {
     uint64_t got = 0;
     while (got < n) {
         DWORD want = n - got > 0x40000000u ? 0x40000000u : (DWORD)(n - got), r = 0;
+        commit_range((char *)buf + got, want);
         if (!ReadFile(f->h, (char *)buf + got, want, &r, NULL)) return got ? (int64_t)got : -1;
         if (!r) break; got += r;
     }
@@ -183,6 +200,7 @@ int64_t plat_fs_write(PlatFile *f, const void *buf, uint64_t n) {
     uint64_t done = 0;
     while (done < n) {
         DWORD want = n - done > 0x40000000u ? 0x40000000u : (DWORD)(n - done), r = 0;
+        commit_range((const char *)buf + done, want);
         if (!WriteFile(f->h, (const char *)buf + done, want, &r, NULL)) return done ? (int64_t)done : -1;
         done += r;
     }

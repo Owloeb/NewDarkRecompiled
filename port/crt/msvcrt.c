@@ -141,11 +141,20 @@ SHIM(strcpy_s) { const char *s = gs(A(2)); size_t l = strlen(s); if (!A(1) || l 
 SHIM(strcat_s) { char *d = (char *)GP(A(0)); size_t dl = strlen(d), l = strlen(gs(A(2))); if (dl + l >= A(1)) { if (A(1)) WR8(A(0), 0); RET(34); return; } memmove(d + dl, gs(A(2)), l + 1); RET(0); }
 SHIM(strncpy_s) {
     uint32_t cnt = A(3), sz = A(1); const char *s = gs(A(2)); size_t l = strlen(s); if (cnt != 0xFFFFFFFFu && l > cnt) l = cnt;
-    if (l >= sz) { if (sz) WR8(A(0), 0); RET(cnt == 0xFFFFFFFFu ? 80 : 34); return; } memmove(GP(A(0)), s, l); WR8(A(0) + (uint32_t)l, 0); RET(0);
+    if (l >= sz) {
+        if (cnt == 0xFFFFFFFFu && sz) { memmove(GP(A(0)), s, sz - 1); WR8(A(0) + sz - 1, 0); RET(80); return; }    /* _TRUNCATE: copy what fits, STRUNCATE */
+        if (sz) WR8(A(0), 0); RET(34); return;
+    }
+    memmove(GP(A(0)), s, l); WR8(A(0) + (uint32_t)l, 0); RET(0);
 }
 SHIM(strncat_s) {
     char *d = (char *)GP(A(0)); size_t dl = strlen(d), sz = A(1); const char *s = gs(A(2)); size_t l = strlen(s); if (A(3) != 0xFFFFFFFFu && l > A(3)) l = A(3);
-    if (dl + l >= sz) { RET(34); return; } memmove(d + dl, s, l); d[dl + l] = 0; RET(0);
+    if (dl >= sz) { if (sz) d[0] = 0; RET(22); return; }                                     /* destination not terminated within sz: EINVAL */
+    if (dl + l >= sz) {
+        if (A(3) == 0xFFFFFFFFu) { memmove(d + dl, s, sz - dl - 1); d[sz - 1] = 0; RET(80); return; }  /* _TRUNCATE: append what fits, STRUNCATE */
+        d[0] = 0; RET(34); return;
+    }
+    memmove(d + dl, s, l); d[dl + l] = 0; RET(0);
 }
 SHIM(strchr_) { const char *b = gs(A(0)); RET(gofs(b, A(0), strchr(b, (int)(char)A(1)))); }
 SHIM(strrchr_) { const char *b = gs(A(0)); RET(gofs(b, A(0), strrchr(b, (int)(char)A(1)))); }
@@ -189,7 +198,7 @@ SHIM(strtol_) { char *e; const char *b = gs(A(0)); long long v = strtoll(b, &e, 
 SHIM(strtoul_) { char *e; const char *b = gs(A(0)); unsigned long long v = strtoull(b, &e, (int)A(2)); int neg = 0; for (const char *q = b; *q == ' ' || *q == '\t'; q++) ; { const char *q = b; while (isspace((unsigned char)*q)) q++; neg = *q == '-'; }
     if (!neg && v > 0xFFFFFFFFull) { v = 0xFFFFFFFFull; crt_set_errno(34); } if (A(1)) WR32(A(1), A(0) + (uint32_t)(e - b)); RET((uint32_t)v); }
 SHIM(strtod_) { char *e; const char *b = gs(A(0)); double v = strtod(b, &e); if (A(1)) WR32(A(1), A(0) + (uint32_t)(e - b)); RETF(v); }
-SHIM(atoi_) { RET((uint32_t)(int32_t)strtol(gs(A(0)), NULL, 10)); }
+SHIM(atoi_) { long long v = strtoll(gs(A(0)), NULL, 10); RET((uint32_t)(int32_t)(v > 2147483647LL ? 2147483647LL : v < -2147483648LL ? -2147483648LL : v)); }   /* saturates like MSVCR90 (host long may be 64-bit) */
 SHIM(atoi64_) { ret64(c, (uint64_t)strtoll(gs(A(0)), NULL, 10)); }
 SHIM(atof_) { RETF(strtod(gs(A(0)), NULL)); }
 static uint32_t to_radix(uint64_t u, int neg, uint32_t dst, int radix) {

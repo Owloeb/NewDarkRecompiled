@@ -12,7 +12,7 @@ SHIM(GetDeviceCaps) {
 SHIM(GetObjectA) { if (A(2)) memset(GP(A(2)), 0, A(1)); RET(0); }
 SHIM(GetStockObject) { RET(0x50001 + A(0)); }
 SHIM(CreateCompatibleDC) { RET(0x30002); }
-SHIM(CreateDIBSection) { if (A(4)) WR32(A(4), 0); RET(0); }
+SHIM(CreateDIBSection) { if (A(3)) WR32(A(3), 0); RET(0); }        /* ppvBits is the 4th argument */
 SHIM(CreatePalette) { RET(0x50100); }
 SHIM(CreateSolidBrush) { RET(0x50200); }
 SHIM(CreateFontA) { RET(0x50300); }

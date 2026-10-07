@@ -177,17 +177,18 @@ static void thunk_run(CPU *c, unsigned i) {
     }
     ring_ret[ring_n & 15] = RD32(c->esp); ring_names[ring_n++ & 15] = t->name;
     g_targ = t->arg;
-    t->fn(c);
+    const char *tname = t->name; uint32_t tpop = (uint32_t)t->pop;
+    t->fn(c);                  /* may create thunks (GetProcAddress, LoadLibrary, COM vtables) and move the table: t is stale after this */
     if (tr) {
         char pm[64] = "";      /* the record the first argument points to (a POINT or RECT out / in parameter), when it is one */
-        if (ta[0] && ta[0] < THUNK_BASE && g_valid(ta[0], 16) && (!strcmp(t->name, "GetCursorPos") || !strcmp(t->name, "ClipCursor") || !strcmp(t->name, "GetClipCursor")))
+        if (ta[0] && ta[0] < THUNK_BASE && g_valid(ta[0], 16) && (!strcmp(tname, "GetCursorPos") || !strcmp(tname, "ClipCursor") || !strcmp(tname, "GetClipCursor")))
             snprintf(pm, sizeof pm, " [%d %d %d %d]", (int32_t)RD32(ta[0]), (int32_t)RD32(ta[0] + 4), (int32_t)RD32(ta[0] + 8), (int32_t)RD32(ta[0] + 12));
-        else if (ta[1] && ta[1] < THUNK_BASE && g_valid(ta[1], 16) && (!strcmp(t->name, "GetClientRect") || !strcmp(t->name, "GetWindowRect") || !strcmp(t->name, "ScreenToClient") || !strcmp(t->name, "ClientToScreen")))
+        else if (ta[1] && ta[1] < THUNK_BASE && g_valid(ta[1], 16) && (!strcmp(tname, "GetClientRect") || !strcmp(tname, "GetWindowRect") || !strcmp(tname, "ScreenToClient") || !strcmp(tname, "ClientToScreen")))
             snprintf(pm, sizeof pm, " [%d %d %d %d]", (int32_t)RD32(ta[1]), (int32_t)RD32(ta[1] + 4), (int32_t)RD32(ta[1] + 8), (int32_t)RD32(ta[1] + 12));
-        trace_put("[t%u] %s(%08x, %08x, %08x, %08x) = %08x  from %08x%s%s%s%s%s%s%s", cur_thread_id(), t->name, ta[0], ta[1], ta[2], ta[3], c->eax, tret, pm,
+        trace_put("[t%u] %s(%08x, %08x, %08x, %08x) = %08x  from %08x%s%s%s%s%s%s%s", cur_thread_id(), tname, ta[0], ta[1], ta[2], ta[3], c->eax, tret, pm,
                   ss[0][0] ? " \"" : "", ss[0], ss[0][0] ? "\"" : "", ss[1][0] ? " \"" : "", ss[1], ss[1][0] ? "\"" : "");
     }
-    c->esp += 4 + (uint32_t)t->pop;     /* return address + the arguments the real function pops */
+    c->esp += 4 + tpop;     /* return address + the arguments the real function pops */
     thread_preempt_tick();
 }
 

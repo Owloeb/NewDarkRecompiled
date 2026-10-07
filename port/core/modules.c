@@ -68,7 +68,7 @@ uint32_t mod_load(CPU *c, const char *name) {
     memset(GP(d->base), 0, d->size); memcpy(GP(d->base), file, hdrs);
     for (unsigned i = 0; i < nsec; i++) {
         const uint8_t *s = sec + 40 * i; uint32_t vsz = *(const uint32_t *)(s + 8), va = *(const uint32_t *)(s + 12), rsz = *(const uint32_t *)(s + 16), raw = *(const uint32_t *)(s + 20);
-        uint32_t cp = rsz < vsz || !vsz ? rsz : vsz; if (raw + cp > (uint32_t)n) cp = (uint32_t)n - raw; if (va + cp > d->size) continue;
+        uint32_t cp = rsz < vsz || !vsz ? rsz : vsz; if ((uint64_t)raw + cp > (uint64_t)n) cp = raw < (uint32_t)n ? (uint32_t)n - raw : 0; if (va > d->size || cp > d->size - va) continue;   /* truncated file: no wrap-around */
         memcpy(GP(d->base + va), file + raw, cp);
     }
     free(file);

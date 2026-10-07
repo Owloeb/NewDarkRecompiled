@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 #include <errno.h>
 #include <time.h>
 #include <fcntl.h>
@@ -36,10 +37,14 @@ void *plat_mem_reserve(uint64_t size) {
 }
 void plat_mem_release(void *base, uint64_t size) { munmap(base, (size_t)size); }
 void plat_mem_discard(void *addr, uint64_t size) {
-#ifdef MADV_DONTNEED
-    madvise(addr, (size_t)size, MADV_DONTNEED);      /* private anonymous memory reads back as zero afterwards */
+#if defined(__linux__) && defined(MADV_DONTNEED)
+    madvise(addr, (size_t)size, MADV_DONTNEED);      /* Linux: private anonymous memory reads back as zero afterwards */
 #else
-    memset(addr, 0, (size_t)size);
+    /* elsewhere MADV_DONTNEED may keep the old contents: map fresh zero pages over the page-aligned middle, clear the ends */
+    long pg = sysconf(_SC_PAGESIZE); uintptr_t a = (uintptr_t)addr, e = a + (uintptr_t)size, lo = (a + (uintptr_t)pg - 1) & ~((uintptr_t)pg - 1), hi = e & ~((uintptr_t)pg - 1);
+    if (hi <= lo || mmap((void *)lo, hi - lo, PROT_READ | PROT_WRITE, MAP_FIXED | MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0) == MAP_FAILED) { memset(addr, 0, (size_t)size); return; }
+    if (lo > a) memset(addr, 0, lo - a);
+    if (e > hi) memset((void *)hi, 0, e - hi);
 #endif
 }
 

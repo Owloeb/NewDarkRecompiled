@@ -84,6 +84,11 @@ static void test_crt(void) {
     sprintf(b, "%f|%.2f|%8.3f|%g|%g", 3.14159, 2.005, -1.5, 0.0001, 100000.0); CHECKS(b, "3.141590|2.00|  -1.500|0.0001|100000");
     sprintf(b, "%e|%.2E|%g", 1.5, 12345.678, 1e20); CHECKS(b, "1.500000e+000|1.23E+004|1e+020");      /* MSVC: three exponent digits */
     sprintf(b, "%I64d|%I64x|%lld", (long long)-5000000000ll, 0x123456789ull, 42ll); CHECKS(b, "-5000000000|123456789|42");
+    {   char big[700]; CHECKI(sprintf(big, "%.100d", 42), 100); CHECK(big[0] == '0' && big[98] == '4' && big[99] == '2');           /* precision beyond the old buffers */
+        char d8[8]; CHECKI(strncpy_s(d8, 8, "longer string", (size_t)-1), 80); CHECKS(d8, "longer ");                            /* _TRUNCATE -> STRUNCATE */
+        char c8[8] = "ab"; CHECKI(strncat_s(c8, 8, "cdefghij", (size_t)-1), 80); CHECKS(c8, "abcdefg");
+        CHECKI(atoi("3000000000"), 2147483647); CHECKI(atoi("-3000000000"), (int)0x80000000u);                                     /* saturates */
+        void *p = malloc(16); CHECK(realloc(p, 0xFFFFFFF0u) == 0); free(p); }
     sprintf(b, "%hd|%ld|%p", 70000, 5l, (void *)0x1234); CHECKS(b, "4464|5|00001234");
     CHECKI(_snprintf(b, 5, "123456"), -1); CHECK(b[0] == '1' && b[4] == '5');
     b[5] = 'X'; CHECKI(_snprintf(b, 5, "12345"), 5); CHECK(b[5] == 'X');
@@ -182,6 +187,11 @@ static void test_stdio(void) {
     if (f) { CHECKI(fread(b, 1, 4, f), 4); CHECK(!memcmp(b, "line", 4)); CHECKI(fseek(f, 2, 0), 0); CHECKI(fread(b, 1, 3, f), 3); CHECK(!memcmp(b, "ne ", 3)); CHECKI(ftell(f), 5);
              CHECKI(fseek(f, -3, 1), 0); CHECKI(ftell(f), 2); CHECKI(fread(b, 1, 2, f), 2); CHECK(!memcmp(b, "ne", 2)); CHECKI(fseek(f, 20, 0), 0); CHECKI(fread(b, 1, 2, f), 2); CHECK(!memcmp(b, "77", 2));
              CHECKI(fseek(f, 0, 0), 0); CHECKI(fread(b, 1, 26, f), 26); CHECK(!memcmp(b, "line one\r\nline two\r\n77 x\r\n", 26)); CHECK(!feof(f)); CHECKI(fread(b, 1, 1, f), 0); CHECK(feof(f)); fclose(f); }
+    {   /* a large read after a small one must not leave the old read-ahead behind for a later seek */
+        FILE *g = fopen("ctest_dir\\big.bin", "wb"); static unsigned int vals[50000]; for (int i = 0; i < 50000; i++) vals[i] = (unsigned)i; fwrite(vals, 4, 50000, g); fclose(g);
+        g = fopen("ctest_dir\\big.bin", "rb"); unsigned int v1 = 0, v2 = 0; static unsigned int rest[49999];
+        CHECKI(fread(&v1, 4, 1, g), 1); CHECKI(fread(rest, 4, 49999, g), 49999); CHECKI(fseek(g, -8, SEEK_CUR), 0); CHECKI(fread(&v2, 4, 1, g), 1);
+        CHECKI(v2, 49998); CHECKI(ftell(g), 4 * 49999); fclose(g); remove("ctest_dir\\big.bin"); }
     /* read then write on an update stream: the write lands where reading stopped, not after the read-ahead */
     f = fopen("ctest_dir/text.txt", "r+b"); CHECK(f != 0);
     if (f) { CHECKI(fread(b, 1, 2, f), 2); CHECKI(fseek(f, 0, 1), 0); CHECKI(fwrite("XY", 1, 2, f), 2); CHECKI(fseek(f, 0, 0), 0); CHECKI(fread(b, 1, 4, f), 4); CHECK(!memcmp(b, "liXY", 4));
@@ -249,6 +259,8 @@ static unsigned __stdcall worker(void *arg) {
 static DWORD WINAPI worker2(void *arg) { *(volatile int *)arg = 1234; return 7; }
 static volatile LONG timer_hits;
 static void CALLBACK on_timer(UINT id, UINT msg, DWORD_PTR user, DWORD_PTR r1, DWORD_PTR r2) { InterlockedIncrement((LONG *)user); }
+static HANDLE pulse_ev; static volatile LONG pulse_woke;
+static DWORD WINAPI pulse_waiter(void *p) { (void)p; if (WaitForSingleObject(pulse_ev, 5000) == WAIT_OBJECT_0) pulse_woke = 1; return 0; }
 static void test_threads(void) {
     InitializeCriticalSection(&tcs); go_ev = CreateEventA(NULL, TRUE, FALSE, NULL);
     unsigned tid = 0; HANDLE h1 = (HANDLE)_beginthreadex(NULL, 0, worker, (void *)11, 0, &tid), h2 = (HANDLE)_beginthreadex(NULL, 0, worker, (void *)22, 0, NULL);
@@ -260,6 +272,13 @@ static void test_threads(void) {
     CHECKI(shared_count, 60000); CHECKI(plain_count, 60000);
     volatile int flag = 0; DWORD id; HANDLE h3 = CreateThread(NULL, 0, worker2, (void *)&flag, 0, &id); CHECK(h3 != 0);
     if (h3) { CHECKI(WaitForSingleObject(h3, 10000), WAIT_OBJECT_0); CHECKI(flag, 1234); GetExitCodeThread(h3, &code); CHECKI(code, 7); CloseHandle(h3); }
+    {   /* PulseEvent releases a thread that is already waiting, and leaves the event non-signalled */
+        pulse_ev = CreateEventA(NULL, FALSE, FALSE, NULL); pulse_woke = 0;
+        HANDLE hp = CreateThread(NULL, 0, pulse_waiter, NULL, 0, NULL); CHECK(hp != 0);
+        Sleep(100); CHECK(PulseEvent(pulse_ev));
+        if (hp) { CHECKI(WaitForSingleObject(hp, 3000), WAIT_OBJECT_0); CHECKI(pulse_woke, 1); CloseHandle(hp); }
+        CHECKI(WaitForSingleObject(pulse_ev, 0), WAIT_TIMEOUT); CloseHandle(pulse_ev);
+    }
     timer_hits = 0; MMRESULT tm = timeSetEvent(10, 1, on_timer, (DWORD_PTR)&timer_hits, TIME_PERIODIC); CHECK(tm != 0);
     Sleep(200); timeKillEvent(tm); LONG hits = timer_hits; CHECK(hits >= 5 && hits <= 40); Sleep(50); CHECKI(timer_hits, hits);
     DeleteCriticalSection(&tcs); CloseHandle(go_ev);

@@ -33,6 +33,8 @@ IMP char *__cdecl strtok(char *, const char *);
 IMP long __cdecl strtol(const char *, char **, int);
 IMP unsigned long __cdecl strtoul(const char *, char **, int);
 IMP int __cdecl atoi(const char *);
+IMP int __cdecl strncpy_s(char *, size_t, const char *, size_t);
+IMP int __cdecl strncat_s(char *, size_t, const char *, size_t);
 IMP double __cdecl atof(const char *);
 IMP char *__cdecl _itoa(int, char *, int);
 IMP int __cdecl toupper(int);

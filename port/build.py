@@ -70,7 +70,7 @@ def main():
     cfg = ["cmake", "-S", os.path.join(ROOT, "port"), "-B", a.build, "-G", gen, f"-DPORT_GENERATED={OUT}", f"-DPORT_BACKEND={a.backend}", "-DCMAKE_BUILD_TYPE=Release"]
     if win:
         sys.path.insert(0, os.path.join(ROOT, "port", "tools")); import deps
-        os.environ["ZIG"] = f"{sys.executable} -m ziglang"          # used by port/cmake/zig-* (the compiler wrappers)
+        os.environ["ZIG_PY"] = sys.executable                       # used by port/cmake/zig-* (the compiler wrappers)
         cfg += [f"-DCMAKE_TOOLCHAIN_FILE={os.path.join(ROOT, 'port', 'cmake', 'windows-zig.cmake')}"]
         if a.backend == "sdl2": cfg += [f"-DSDL2_DIR={deps.sdl2_mingw(os.path.join(ROOT, 'build', 'deps'))}"]
     run(cfg, "cmake configure")

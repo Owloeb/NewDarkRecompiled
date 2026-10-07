@@ -50,11 +50,12 @@ static int cursor_null;                            /* SetCursor(NULL) also hides
 static int32_t clip_l, clip_t, clip_r, clip_b;     /* ClipCursor rectangle (screen coordinates, right/bottom exclusive) */
 static int32_t vcur_x, vcur_y;                     /* while captured: the cursor the game sees, in screen coordinates */
 static int mouse_dbg(void) { static int d = -1; if (d < 0) d = getenv("SS2PORT_MOUSE_DEBUG") != NULL; return d; }   /* in time order with the backend's motion lines */
-static void vcur_clamp(void) {
-    if (clip_on && clip_r > clip_l && clip_b > clip_t) {
-        if (vcur_x < clip_l) vcur_x = clip_l; if (vcur_x >= clip_r) vcur_x = clip_r - 1;
-        if (vcur_y < clip_t) vcur_y = clip_t; if (vcur_y >= clip_b) vcur_y = clip_b - 1;
-    }
+static void vcur_clamp(void) {      /* the clip rectangle, or the screen when there is none (Windows never lets the cursor leave it) */
+    int32_t l = 0, t = 0, r, b; int dw, dh; plat_video_display_size(&dw, &dh); r = dw; b = dh;
+    if (clip_on && clip_r > clip_l && clip_b > clip_t) { l = clip_l; t = clip_t; r = clip_r; b = clip_b; }
+    if (r <= l || b <= t) return;
+    if (vcur_x < l) vcur_x = l; if (vcur_x >= r) vcur_x = r - 1;
+    if (vcur_y < t) vcur_y = t; if (vcur_y >= b) vcur_y = b - 1;
 }
 static Wnd *W(uint32_t h) { for (int i = 0; i < 16; i++) if (wins[i].alive && wins[i].hwnd == h) return &wins[i]; return NULL; }
 static uint32_t wndcall(uint32_t h, uint32_t msg, uint32_t wp, uint32_t lp) {
@@ -171,6 +172,10 @@ typedef struct { uint32_t hwnd, msg, wp, lp, time; int x, y; } QMsg;
 #define QN 1024
 static QMsg q[QN]; static unsigned qh, qt; static int quit_posted; static uint32_t quit_code;
 static void post(uint32_t h, uint32_t m, uint32_t wp, uint32_t lp) {
+    if (m == 0x200 && qt > qh) {                                   /* like Windows: one pending WM_MOUSEMOVE carries the latest position */
+        QMsg *last = &q[(qt - 1) % QN];
+        if (last->msg == 0x200 && last->hwnd == h) { last->wp = wp; last->lp = lp; last->time = ms_ticks(); last->x = g_input.mouse_x; last->y = g_input.mouse_y; return; }
+    }
     if (qt - qh >= QN) { if (m == 0x200) return; qh++; }          /* full: drop the oldest (never happens in practice) */
     q[qt++ % QN] = (QMsg){ h, m, wp, lp, ms_ticks(), g_input.mouse_x, g_input.mouse_y };
 }
@@ -333,6 +338,14 @@ static void apply_mouse_mode(void) {
     captured = di_exclusive || clip_on || (hidden && di_acquired);
     if (captured && !was) { Wnd *w = W(g_input.hwnd); vcur_x = g_input.mouse_x + (w ? w->x : 0); vcur_y = g_input.mouse_y + (w ? w->y : 0); vcur_clamp(); }
     plat_video_mouse_mode(captured, !hidden && !captured);
+    if (was && !captured) {           /* released: put the real pointer where the game last left its cursor */
+        Wnd *w = W(g_input.hwnd); int cw, ch; plat_video_window_size(&cw, &ch);
+        int x = vcur_x - (w ? w->x : 0), y = vcur_y - (w ? w->y : 0);
+        if (w && w->w > 0 && w->h > 0 && x >= 0 && y >= 0 && x < w->w && y < w->h) {
+            g_input.mouse_x = x; g_input.mouse_y = y;
+            if (cw > 0) plat_video_warp_mouse((int)((int64_t)x * cw / w->w), (int)((int64_t)y * ch / w->h));
+        }
+    }
 }
 void input_set_di_mouse(int acquired, int exclusive) {
     if (acquired == di_acquired && exclusive == di_exclusive) return;

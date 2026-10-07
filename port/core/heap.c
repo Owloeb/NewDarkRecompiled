@@ -121,6 +121,7 @@ void g_free(uint32_t p) {
 }
 uint32_t g_realloc(uint32_t p, uint32_t n) {
     if (!p) return g_alloc(n);
+    if (n > 0xC0000000u) return 0;            /* as g_alloc: also keeps the size arithmetic below from wrapping */
     uint32_t b = check_block(p); if (!b || (bflags(b) & F_FREE)) bad(p, "realloc of a pointer that is not a live heap block");
     uint32_t old = RD32(B_REQ(b)), need = (n + HDR + ALIGN - 1) & ~(ALIGN - 1); if (need < MIN_BLOCK) need = MIN_BLOCK;
     if (!(bflags(b) & F_BIG)) {

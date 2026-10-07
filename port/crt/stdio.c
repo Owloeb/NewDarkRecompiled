@@ -128,7 +128,17 @@ static uint32_t do_fopen(const char *name, const char *mode) {
 SHIM(fopen_) { RET(do_fopen(gs(A(0)), gs(A(1)))); }
 SHIM(fsopen_) { RET(do_fopen(gs(A(0)), gs(A(1)))); }
 SHIM(fopen_s_) { uint32_t g = do_fopen(gs(A(1)), gs(A(2))); WR32(A(0), g); RET(g ? 0 : 2); }
-SHIM(freopen_) { stream_close(A(2)); RET(do_fopen(gs(A(0)), gs(A(1)))); }
+SHIM(freopen_) {          /* the same FILE pointer comes back, now on the new file (freopen("log", "w", stderr) redirects stderr) */
+    Stream *st = crt_stream(A(2)); if (!st) { RET(0); return; }
+    int rd, wr, ap, text, fl = parse_mode(gs(A(1)), &rd, &wr, &ap, &text);
+    if (st->pf) plat_fs_close(st->pf);
+    st->pf = NULL; st->console = 0; st->bpos = st->blen = 0; st->nungot = 0; st->eof = st->err = 0; st->fd = -1;
+    int err; PlatFile *f = fl < 0 || !A(0) ? NULL : vfs_open(gs(A(0)), fl, &err, NULL, 0);
+    if (!f) { if (fl >= 0 && A(0) && err == PLAT_E_NOENT) port_miss("freopen", gs(A(0))); crt_set_errno(fl < 0 ? 22 : crt_errno_of(err));
+              uint32_t g = st->guest; if (g != crt_iob() && g != crt_iob() + 32 && g != crt_iob() + 64) stream_close(g); RET(0); return; }
+    st->pf = f; st->text = text; st->rd = rd; st->wr = wr; st->append = ap;
+    WR32(st->guest + 12, (rd ? 1u : 0) | (wr ? 2u : 0)); RET(st->guest);
+}
 SHIM(fclose_) { Stream *s = crt_stream(A(0)); if (!s) { RET(0xFFFFFFFFu); return; } stream_close(A(0)); RET(0); }
 SHIM(fcloseall_) { int n = 0; for (uint32_t i = 3; i < MAXS; i++) if (streams[i]) { stream_close(streams[i]->guest); n++; } RET((uint32_t)n); }
 SHIM(fread_) {
@@ -142,7 +152,10 @@ SHIM(fread_) {
             s->bpos = 0; s->blen = r > 0 ? (int)r : 0;
             while (got < want && s->bpos < s->blen) d[got++] = s->buf[s->bpos++];
         }
-        if (got < want && s->pf) { int64_t r = plat_fs_read(s->pf, d + got, want - got); if (r > 0) got += (uint64_t)r; else if (r < 0) s->err = 1; }
+        if (got < want && s->pf) {                                          /* large read: straight into guest memory; the buffer is now empty */
+            s->bpos = s->blen = 0;
+            int64_t r = plat_fs_read(s->pf, d + got, want - got); if (r > 0) got += (uint64_t)r; else if (r < 0) s->err = 1;
+        }
         if (got < want) s->eof = 1;
     } else { int ch; while (got < want && (ch = stream_getc(s)) >= 0) d[got++] = (uint8_t)ch; }
     RET((uint32_t)(got / sz));
@@ -211,6 +224,9 @@ SHIM(read_) {
         int64_t k = 0; for (int64_t i = 0; i < n; i++) {
             if (d[i] == 0x1A) { plat_fs_seek(f->pf, i - n, PLAT_SEEK_CUR); break; }
             if (d[i] == '\r' && i + 1 < n && d[i + 1] == '\n') continue;
+            if (d[i] == '\r' && i + 1 == n) {          /* CR at the end of the chunk: look at the next byte, like MSVCR90 */
+                uint8_t nx; if (plat_fs_read(f->pf, &nx, 1) == 1) { if (nx == '\n') { d[k++] = '\n'; continue; } plat_fs_seek(f->pf, -1, PLAT_SEEK_CUR); }
+            }
             d[k++] = d[i];
         }
         n = k;

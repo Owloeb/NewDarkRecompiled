@@ -1,2 +1,4 @@
 #!/bin/sh
-exec ${ZIG:-python3 -m ziglang} ar "$@"
+# Wrapper for CMake: Zig's ar. ZIG_PY is the Python that has ziglang installed
+# (default python3); it is quoted, so paths with spaces work.
+exec "${ZIG_PY:-python3}" -m ziglang ar "$@"

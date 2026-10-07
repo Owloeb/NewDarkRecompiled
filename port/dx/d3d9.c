@@ -184,6 +184,8 @@ static int layout_decl(Decl *dc, Layout *L) {
         const uint8_t *e = dc->elems + 8 * i; int stream = e[0] | e[1] << 8, off = e[2] | e[3] << 8, type = e[4], usage = e[6], idx = e[7];
         if (stream != 0) continue;
         static const int nf[] = { 1, 2, 3, 4, 0, 0, 0, 0 };
+        static const int tsz[18] = { 4, 8, 12, 16, 4, 4, 4, 8, 4, 4, 8, 4, 8, 4, 4, 4, 8, 0 };   /* D3DDECLTYPE sizes */
+        if (type < 18 && off + tsz[type] > L->stride) L->stride = off + tsz[type];                 /* bytes a vertex spans (for bounds checks) */
         switch (usage) {
         case 0: L->pos = off; L->pos_n = type <= 3 ? nf[type] : 3; ok = 1; break;
         case 9: L->pos = off; L->pos_n = 4; L->rhw = 1; ok = 1; break;
@@ -294,7 +296,12 @@ static void vertex(Device *d, const Layout *L, const Xf *x, const uint8_t *v, Pl
         uint32_t tci = s->tss[st][11]; int set = (int)(tci & 7); float uv[4] = { 0, 0, 0, 1 };
         if ((tci & 0xFFFF0000u) == 0x10000u && L->normal >= 0 && !L->rhw) { float n[3]; memcpy(n, v + L->normal, 12); float t[4]; xform3(&x->wv, n, 0, t); memcpy(uv, t, 12); }   /* CAMERASPACENORMAL */
         else if ((tci & 0xFFFF0000u) == 0x20000u && !L->rhw) { float e[4]; xform3(&x->wv, p, 1, e); memcpy(uv, e, 12); }                                               /* CAMERASPACEPOSITION */
-        else if (set < L->ntex && L->tex[set] >= 0) memcpy(uv, v + L->tex[set], 4 * (size_t)L->tex_n[set]);
+        else if (set < L->ntex && L->tex[set] >= 0) {
+            /* vertex coordinates are padded the way Direct3D's fixed function does before the texture matrix:
+               1D (u,1,0,0), 2D (u,v,1,0) - so 2D translation lives in _31/_32 - 3D (u,v,w,1) */
+            int nt = L->tex_n[set]; memcpy(uv, v + L->tex[set], 4 * (size_t)nt);
+            if (nt == 1) { uv[1] = 1; uv[2] = 0; uv[3] = 0; } else if (nt == 2) { uv[2] = 1; uv[3] = 0; }
+        }
         uint32_t ttf = s->tss[st][24];
         if (ttf & 0xFF) {
             float t[4]; xform3(&s->texm[st], uv, uv[3], t);
@@ -360,14 +367,15 @@ static int prim_counts(uint32_t type, uint32_t prims, uint32_t *nverts, int *pla
     }
     return 0;
 }
-/* list of indices (into the vertex range) for prims of type, from the raw element sequence seq[0..n) */
-static int expand(uint32_t type, uint32_t prims, const uint32_t *seq, uint16_t *out) {
+/* list of indices (into the vertex range) for prims of type, from the raw element sequence seq[0..n); 32-bit so that
+   ranges wider than 65535 vertices stay correct (the narrow path converts afterwards) */
+static int expand(uint32_t type, uint32_t prims, const uint32_t *seq, uint32_t *out) {
     int k = 0;
     switch (type) {
-    case 1: case 2: case 4: { uint32_t n = type == 1 ? prims : type == 2 ? prims * 2 : prims * 3; for (uint32_t i = 0; i < n; i++) out[k++] = (uint16_t)seq[i]; break; }
-    case 3: for (uint32_t i = 0; i < prims; i++) { out[k++] = (uint16_t)seq[i]; out[k++] = (uint16_t)seq[i + 1]; } break;
-    case 5: for (uint32_t i = 0; i < prims; i++) { if (i & 1) { out[k++] = (uint16_t)seq[i + 1]; out[k++] = (uint16_t)seq[i]; } else { out[k++] = (uint16_t)seq[i]; out[k++] = (uint16_t)seq[i + 1]; } out[k++] = (uint16_t)seq[i + 2]; } break;
-    case 6: for (uint32_t i = 0; i < prims; i++) { out[k++] = (uint16_t)seq[0]; out[k++] = (uint16_t)seq[i + 1]; out[k++] = (uint16_t)seq[i + 2]; } break;
+    case 1: case 2: case 4: { uint32_t n = type == 1 ? prims : type == 2 ? prims * 2 : prims * 3; for (uint32_t i = 0; i < n; i++) out[k++] = seq[i]; break; }
+    case 3: for (uint32_t i = 0; i < prims; i++) { out[k++] = seq[i]; out[k++] = seq[i + 1]; } break;
+    case 5: for (uint32_t i = 0; i < prims; i++) { if (i & 1) { out[k++] = seq[i + 1]; out[k++] = seq[i]; } else { out[k++] = seq[i]; out[k++] = seq[i + 1]; } out[k++] = seq[i + 2]; } break;
+    case 6: for (uint32_t i = 0; i < prims; i++) { out[k++] = seq[0]; out[k++] = seq[i + 1]; out[k++] = seq[i + 2]; } break;
     }
     return k;
 }
@@ -401,16 +409,22 @@ static void draw(Device *d, uint32_t type, uint32_t prims, uint32_t vbase, uint3
         uint8_t *used = calloc(span, 1);
         for (uint32_t i = 0; i < nseq; i++) { uint32_t r = seq[i] - lo; if (!used[r]) { used[r] = 1; uint32_t a = vbase + (seq[i]) * stride; if (g_valid(a, (uint32_t)L.stride)) vertex(d, &L, &x, GP(a), &d->vbuf[r]); else memset(&d->vbuf[r], 0, sizeof d->vbuf[r]); } seq[i] = r; }
         free(used);
-        int n = expand(type, prims, seq, d->ibuf);
+        uint32_t *e32 = malloc(maxidx * sizeof *e32); int n = expand(type, prims, seq, e32);
+        for (int i = 0; i < n; i++) d->ibuf[i] = (uint16_t)e32[i];      /* < span <= 65535 */
+        free(e32);
         plat_gfx_draw(plat_prim, d->vbuf, (int)span, d->ibuf, n, &ps);
     } else {                                                          /* rare: a range too wide for 16-bit indices, draw it unindexed */
         uint32_t per = plat_prim == PLAT_PRIM_TRIANGLES ? 3 : plat_prim == PLAT_PRIM_LINES ? 2 : 1;
-        uint16_t *tmp = malloc(maxidx * sizeof *tmp); for (uint32_t i = 0; i < nseq; i++) seq[i] -= lo;
+        uint32_t *tmp = malloc(maxidx * sizeof *tmp); for (uint32_t i = 0; i < nseq; i++) seq[i] -= lo;
         int n = expand(type, prims, seq, tmp);
         if (d->vcap < 65535) { d->vcap = 65535; d->vbuf = realloc(d->vbuf, (size_t)d->vcap * sizeof *d->vbuf); }
         for (int start = 0; start < n; start += (int)(65535 / per * per)) {
             int cnt = n - start; if (cnt > (int)(65535 / per * per)) cnt = (int)(65535 / per * per);
-            for (int i = 0; i < cnt; i++) { vertex(d, &L, &x, GP(vbase + (lo + tmp[start + i]) * stride), &d->vbuf[i]); d->ibuf[i] = (uint16_t)i; }
+            for (int i = 0; i < cnt; i++) {
+                uint32_t a = vbase + (lo + tmp[start + i]) * stride;
+                if (g_valid(a, (uint32_t)L.stride)) vertex(d, &L, &x, GP(a), &d->vbuf[i]); else memset(&d->vbuf[i], 0, sizeof d->vbuf[i]);
+                d->ibuf[i] = (uint16_t)i;
+            }
             plat_gfx_draw(plat_prim, d->vbuf, cnt, d->ibuf, cnt, &ps);
         }
         free(tmp);
@@ -732,7 +746,12 @@ static void dev_creation(CPU *c, ComObj *s) { Device *d = DEV(s); uint32_t p = A
 static void dev_showcursor(CPU *c, ComObj *s) { (void)s; RET(0); }
 static void dev_getswap(CPU *c, ComObj *s) { Device *d = DEV(s); if (A(1)) { RET(D3DERR_INVALIDCALL); return; } if (!d->swap) d->swap = com_create(&c_swap, d); com_addref(d->swap); OUTP(2, d->swap->guest); RET(0); }
 static void dev_nswap(CPU *c, ComObj *s) { (void)s; RET(1); }
-static void dev_reset(CPU *c, ComObj *s) { Device *d = DEV(s); default_state(&d->st, RD32(A(1) + 36) != 0); dev_present_params(d, A(1), 1); RET(0); }
+static void dev_reset(CPU *c, ComObj *s) {
+    Device *d = DEV(s);
+    for (int i = 0; i < 8; i++) bind(&d->st.tex[i], NULL);        /* default_state clears these slots: drop their references first */
+    bind(&d->st.vb, NULL); bind(&d->st.ib, NULL); bind(&d->st.decl, NULL); bind(&d->st.vs, NULL); bind(&d->st.ps, NULL);
+    default_state(&d->st, RD32(A(1) + 36) != 0); dev_present_params(d, A(1), 1); RET(0);
+}
 static void dev_present(CPU *c, ComObj *s) {
     Device *d = DEV(s); (void)c;
     plat_gfx_present(); port_frame_presented(); plat_gfx_begin_frame(); plat_gfx_set_target(surface_target(R(d->rt))); apply_viewport(d);
@@ -779,10 +798,15 @@ static void dev_updatesurface(CPU *c, ComObj *s) {
 }
 static void dev_updatetexture(CPU *c, ComObj *s) {
     (void)s; Res *src = R(com_get(A(1))), *dst = R(com_get(A(2))); if (!src || !dst || src->fmt != dst->fmt || src->kind != dst->kind) { RET(D3DERR_INVALIDCALL); return; }
+    /* like Direct3D 9: a source with more levels skips its top ones, and the first copied level must match the
+       destination's top level in size; anything else is INVALIDCALL (it would overrun the destination) */
+    if (src->levels < dst->levels) { RET(D3DERR_INVALIDCALL); return; }
+    int skip = (int)(src->levels - dst->levels);
+    if (level_w(src, skip) != level_w(dst, 0) || level_h(src, skip) != level_h(dst, 0)) { RET(D3DERR_INVALIDCALL); return; }
     int faces = src->kind == R_CUBE ? 6 : 1;
-    for (int f = 0; f < faces; f++) for (uint32_t l = 0; l < dst->levels && l < src->levels; l++) {
-        uint32_t pitch, size; fmt_layout(src->fmt, level_w(src, (int)l), level_h(src, (int)l), &pitch, &size);
-        memcpy(GP(level_mem(dst, f, (int)l)), GP(level_mem(src, f, (int)l)), size); dst->dirty[f] |= (uint16_t)(1u << l);
+    for (int f = 0; f < faces; f++) for (uint32_t l = 0; l < dst->levels; l++) {
+        uint32_t pitch, size; fmt_layout(dst->fmt, level_w(dst, (int)l), level_h(dst, (int)l), &pitch, &size);
+        memcpy(GP(level_mem(dst, f, (int)l)), GP(level_mem(src, f, (int)l + skip)), size); dst->dirty[f] |= (uint16_t)(1u << l);
     }
     RET(0);
 }

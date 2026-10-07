@@ -51,7 +51,7 @@ def build_host(gen, bdir, a):
            f"-DPORT_BACKEND={a.backend}", "-DCMAKE_BUILD_TYPE=" + a.config]
     if win:
         sys.path.insert(0, os.path.join(PORT, "tools")); import deps
-        os.environ["ZIG"] = f"{PY} -m ziglang"
+        os.environ["ZIG_PY"] = PY
         cfg.append(f"-DCMAKE_TOOLCHAIN_FILE={os.path.join(PORT, 'cmake', 'windows-zig.cmake')}")
         if a.backend == "sdl2": cfg.append(f"-DSDL2_DIR={deps.sdl2_mingw(os.path.join(ROOT, 'build', 'deps'))}")
     if a.cc: cfg.append(f"-DCMAKE_C_COMPILER={a.cc}")

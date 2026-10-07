@@ -184,7 +184,8 @@ static const char *VS =
     "void main() { v_diff = a_diff.bgra; v_spec = a_spec.bgra; v_fog = a_fog; v_uv = a_uv;\n"
     "  gl_Position = vec4(a_pos.x, -a_pos.y, 2.0 * a_pos.z - a_pos.w + 2.0 * u_zbias * a_pos.w, a_pos.w); }\n";
 static GLuint compile(GLenum type, const char *src) {
-    char head[96]; snprintf(head, sizeof head, "%s", gles ? "#version 100\nprecision mediump float;\n" : "#version 120\n");
+    /* GLSL ES: vertex shaders default to highp; only the fragment shader needs (and gets) a default precision */
+    char head[96]; snprintf(head, sizeof head, "%s", !gles ? "#version 120\n" : type == GL_FRAGMENT_SHADER ? "#version 100\nprecision mediump float;\n" : "#version 100\n");
     const char *parts[2] = { head, src }; GLuint s = glCreateShader(type); glShaderSource(s, 2, parts, NULL); glCompileShader(s);
     GLint ok = 0; glGetShaderiv(s, GL_COMPILE_STATUS, &ok);
     if (!ok) { char log[2048]; glGetShaderInfoLog(s, sizeof log, NULL, log); fprintf(stderr, "[gl] shader compile failed:\n%s\n%s\n", log, src); }
