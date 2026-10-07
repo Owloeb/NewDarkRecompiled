@@ -27,7 +27,7 @@ Everything above `plat.h` is shared and contains no operating-system calls. `pla
 ```
 python3 port/build.py "/path/to/System Shock 2/SS2.exe"     # lifts the game and its DLLs, then builds (see port/build.py)
 # or by hand: cmake -S port -B build/port -DPORT_GENERATED=out/port [-DPORT_BACKEND=sdl2|null]
-build/port/ss2port /path/to/SS2.exe          # run from the game folder
+build/port/ss2port [options] /path/to/SS2.exe   # run from the game folder; options go BEFORE the exe, anything after it is passed to the game
 ```
 
 Options: `PORT_PREEMPT` (default ON: other guest threads may run at loop heads; needed for games that spin-wait),

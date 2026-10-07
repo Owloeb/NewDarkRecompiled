@@ -3,6 +3,9 @@
     python3 tools/where.py "SS2.exe" 0x4aff46          # 96 bytes before, 16 after; '>>' marks the address"""
 import sys, pefile, capstone
 exe, va = sys.argv[1], int(sys.argv[2], 16)
+if sys.argv[3:4] == ["-s"]:                      # where.py exe va -s : print the NUL-terminated string / bytes at va
+    _pe = pefile.PE(exe); _d = _pe.get_data(va - _pe.OPTIONAL_HEADER.ImageBase, 64)
+    print(repr(_d.split(b"\0")[0])); print(_d[:32].hex(" ")); sys.exit()
 before = int(sys.argv[3]) if len(sys.argv) > 3 else 96; after = int(sys.argv[4]) if len(sys.argv) > 4 else 16
 pe = pefile.PE(exe); base = pe.OPTIONAL_HEADER.ImageBase
 rva = va - base
