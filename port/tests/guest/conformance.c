@@ -481,6 +481,12 @@ typedef HRESULT (WINAPI *DICreate)(HINSTANCE, DWORD, LPDIRECTINPUTA *, LPUNKNOWN
 static const GUID guid_kbd = { 0x6F1D2B61, 0xD5A0, 0x11CF, { 0xBF, 0xC7, 0x44, 0x45, 0x53, 0x54, 0x00, 0x00 } };
 static const GUID guid_mouse = { 0x6F1D2B60, 0xD5A0, 0x11CF, { 0xBF, 0xC7, 0x44, 0x45, 0x53, 0x54, 0x00, 0x00 } };
 static void test_dinput(HWND hwnd) {
+    {   /* mouselook the way NewDark does it: confine, recentre with SetCursorPos, read back with GetCursorPos */
+        RECT r = { 10, 20, 110, 220 }; POINT p; CHECK(ClipCursor(&r));
+        SetCursorPos(60, 120); CHECK(GetCursorPos(&p)); CHECKI(p.x, 60); CHECKI(p.y, 120);
+        SetCursorPos(5000, -5); CHECK(GetCursorPos(&p)); CHECKI(p.x, 109); CHECKI(p.y, 20);          /* clamped to the rectangle */
+        ClipCursor(NULL);
+    }
     HMODULE m = LoadLibraryA("dinput.dll"); CHECK(m != 0); if (!m) return;
     DICreate create = (DICreate)GetProcAddress(m, "DirectInputCreateA"); CHECK(create != 0); if (!create) return;
     LPDIRECTINPUTA di = 0; CHECKI(create(GetModuleHandleA(NULL), 0x0700, &di, NULL), DI_OK); CHECK(di != 0); if (!di) return;

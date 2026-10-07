@@ -46,6 +46,15 @@ static uint32_t focus_hwnd, capture_hwnd, active_hwnd;
 static int cursor_count;                 /* ShowCursor display counter: >= 0 shows the pointer */
 static int clip_on;
 static int di_acquired, di_exclusive, captured;   /* pointer capture: see apply_mouse_mode */
+static int cursor_null;                            /* SetCursor(NULL) also hides the pointer */
+static int32_t clip_l, clip_t, clip_r, clip_b;     /* ClipCursor rectangle (screen coordinates, right/bottom exclusive) */
+static int32_t vcur_x, vcur_y;                     /* while captured: the cursor the game sees, in screen coordinates */
+static void vcur_clamp(void) {
+    if (clip_on && clip_r > clip_l && clip_b > clip_t) {
+        if (vcur_x < clip_l) vcur_x = clip_l; if (vcur_x >= clip_r) vcur_x = clip_r - 1;
+        if (vcur_y < clip_t) vcur_y = clip_t; if (vcur_y >= clip_b) vcur_y = clip_b - 1;
+    }
+}
 static Wnd *W(uint32_t h) { for (int i = 0; i < 16; i++) if (wins[i].alive && wins[i].hwnd == h) return &wins[i]; return NULL; }
 static uint32_t wndcall(uint32_t h, uint32_t msg, uint32_t wp, uint32_t lp) {
     Wnd *w = W(h); if (!w || !w->proc) return 0;
@@ -189,9 +198,9 @@ static void on_event(const PlatEvent *e, void *user) {
     case PLAT_EV_TEXT: if (h && e->text) post(h, 0x102, e->text < 256 ? e->text : '?', 1); break;              /* WM_CHAR */
     case PLAT_EV_MOUSE_MOVE: {
         int gx, gy; to_game_coords(e->x, e->y, &gx, &gy);
-        if (captured) {           /* the pointer does not move: the cursor the game reads follows the motion (games that recentre it, menu cursors) */
-            Wnd *cw = W(g_input.hwnd); gx = g_input.mouse_x + e->dx; gy = g_input.mouse_y + e->dy;
-            if (cw && cw->w > 0 && cw->h > 0) { gx = gx < 0 ? 0 : gx >= cw->w ? cw->w - 1 : gx; gy = gy < 0 ? 0 : gy >= cw->h ? cw->h - 1 : gy; }
+        if (captured) {           /* the real pointer stays put: raw motion moves the cursor the game reads (it recentres it with SetCursorPos) */
+            Wnd *cw = W(g_input.hwnd); vcur_x += e->dx; vcur_y += e->dy; vcur_clamp();
+            gx = vcur_x - (cw ? cw->x : 0); gy = vcur_y - (cw ? cw->y : 0);
         }
         g_input.mouse_x = gx; g_input.mouse_y = gy; g_input.mouse_dx += e->dx; g_input.mouse_dy += e->dy;
         if (h) post(h, 0x200, mk_flags(), ((uint32_t)(gy & 0xFFFF) << 16) | (uint32_t)(gx & 0xFFFF));
@@ -302,9 +311,11 @@ SHIM(GetKeyNameTextA) {
 SHIM(GetKeyboardType) { RET(A(0) == 0 ? 4 : A(0) == 2 ? 12 : 0); }
 SHIM(GetKeyboardLayout) { RET(0x04090409u); }
 SHIM(VkKeyScanA) { int ch = (int)(A(0) & 0xFF); RET(isalpha(ch) ? (uint32_t)(toupper(ch) | (isupper(ch) ? 0x100 : 0)) : isdigit(ch) ? (uint32_t)ch : ch == ' ' ? 0x20 : 0xFFFFFFFFu); }
-SHIM(GetCursorPos) { input_pump(); Wnd *w = W(g_input.hwnd); WR32(A(0), (uint32_t)(g_input.mouse_x + (w ? w->x : 0))); WR32(A(0) + 4, (uint32_t)(g_input.mouse_y + (w ? w->y : 0))); RET(1); }
+SHIM(GetCursorPos) { input_pump(); if (captured) { WR32(A(0), (uint32_t)vcur_x); WR32(A(0) + 4, (uint32_t)vcur_y); RET(1); return; } Wnd *w = W(g_input.hwnd); WR32(A(0), (uint32_t)(g_input.mouse_x + (w ? w->x : 0))); WR32(A(0) + 4, (uint32_t)(g_input.mouse_y + (w ? w->y : 0))); RET(1); }
 SHIM(SetCursorPos) {
-    Wnd *w = W(g_input.hwnd); int x = (int32_t)A(0) - (w ? w->x : 0), y = (int32_t)A(1) - (w ? w->y : 0);
+    Wnd *w = W(g_input.hwnd);
+    if (captured) { vcur_x = (int32_t)A(0); vcur_y = (int32_t)A(1); vcur_clamp(); g_input.mouse_x = vcur_x - (w ? w->x : 0); g_input.mouse_y = vcur_y - (w ? w->y : 0); RET(1); return; }   /* no real pointer move */
+    int x = (int32_t)A(0) - (w ? w->x : 0), y = (int32_t)A(1) - (w ? w->y : 0);
     g_input.mouse_x = x; g_input.mouse_y = y;
     int cw, ch; plat_video_window_size(&cw, &ch); if (w && w->w > 0 && w->h > 0 && cw > 0) plat_video_warp_mouse((int)((int64_t)x * cw / w->w), (int)((int64_t)y * ch / w->h));
     RET(1);
@@ -313,19 +324,25 @@ SHIM(SetCursorPos) {
    DirectInput (any cooperative level) or a confined cursor. DirectInput in exclusive mode always captures.
    On Windows, DirectInput reads the device, not the cursor, so a free pointer would stop at the screen edge. */
 static void apply_mouse_mode(void) {
-    captured = di_exclusive || (cursor_count < 0 && (di_acquired || clip_on));
-    plat_video_mouse_mode(captured, cursor_count >= 0 && !captured);
+    int was = captured, hidden = cursor_count < 0 || cursor_null;
+    captured = di_exclusive || clip_on || (hidden && di_acquired);
+    if (captured && !was) { Wnd *w = W(g_input.hwnd); vcur_x = g_input.mouse_x + (w ? w->x : 0); vcur_y = g_input.mouse_y + (w ? w->y : 0); vcur_clamp(); }
+    plat_video_mouse_mode(captured, !hidden && !captured);
 }
 void input_set_di_mouse(int acquired, int exclusive) {
     if (acquired == di_acquired && exclusive == di_exclusive) return;
     di_acquired = acquired; di_exclusive = exclusive; apply_mouse_mode();
 }
 SHIM(ShowCursor) { cursor_count += A(0) ? 1 : -1; apply_mouse_mode(); RET((uint32_t)cursor_count); }
-SHIM(ClipCursor) { clip_on = A(0) != 0; apply_mouse_mode(); RET(1); }
+SHIM(ClipCursor) {
+    uint32_t r = A(0); clip_on = r != 0;
+    if (r) { clip_l = (int32_t)RD32(r); clip_t = (int32_t)RD32(r + 4); clip_r = (int32_t)RD32(r + 8); clip_b = (int32_t)RD32(r + 12); }
+    apply_mouse_mode(); if (captured) vcur_clamp(); RET(1);
+}
 SHIM(SetCapture) { uint32_t o = capture_hwnd; capture_hwnd = A(0); RET(o); }
 SHIM(GetCapture) { RET(capture_hwnd); }
 SHIM(ReleaseCapture) { capture_hwnd = 0; RET(1); }
-SHIM(SetCursor) { RET(0); }
+SHIM(SetCursor) { static uint32_t cur = 0x10001; uint32_t old = cur; cur = A(0); cursor_null = !cur; apply_mouse_mode(); RET(old); }
 SHIM(LoadCursorA) { RET(0x40002); }
 SHIM(LoadIconA) { RET(0x40001); }
 SHIM(LoadImageA) { RET(0x40003); }

@@ -257,3 +257,10 @@ distributed; stay vanilla.
   - Mouse: never captured in play ("mouse: free"): capture only followed DirectInput exclusive mode, and user32/dinput
     overrode each other. Now one decision: capture when the cursor is hidden and DirectInput (any level) or ClipCursor
     reads the mouse; captured motion drives GetCursorPos. WSLg pointer capture itself is still unverified.
+- Mouse, from a --trace-only run: NewDark mouselook is ClipCursor + GetCursorPos + SetCursorPos(1280,720) every frame
+  (centre of Owen's 2560x1440 desktop; the window is 800x600). No DirectInput mouse, no ShowCursor. SetCursorPos warped
+  the real pointer outside the window, SDL clamped it to the edge, and the next read gave a large wrong-way delta
+  ("inverted" left), plus warp round trips under WSLg ("delayed"). Now: while the cursor is confined (or DirectInput
+  exclusive, or hidden + DirectInput), the pointer is captured and the game gets a virtual cursor moved by raw motion,
+  set by SetCursorPos without moving the real pointer, clamped to the ClipCursor rectangle. SetCursor(NULL) counts
+  as hidden. Conformance check for the recentre/clamp behaviour.
