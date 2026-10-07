@@ -25,10 +25,8 @@ Everything above `plat.h` is shared and contains no operating-system calls. `pla
 ## Building
 
 ```
-python3 lift.py SS2.exe nd out/nd            # as usual; plus the DLL/mod steps if you use them (see the top-level README)
-python3 host/gen_hostdata.py out/nd/nd_meta.json SS2.exe out/nd/nd_hostdata.c
-cmake -S port -B build/port -DPORT_GENERATED=out [-DPORT_BACKEND=sdl2|null] [-DPORT_SYSTEM=posix]
-cmake --build build/port
+python3 port/build.py "/path/to/System Shock 2/SS2.exe"     # lifts the game and its DLLs, then builds (see port/build.py)
+# or by hand: cmake -S port -B build/port -DPORT_GENERATED=out/port [-DPORT_BACKEND=sdl2|null]
 build/port/ss2port /path/to/SS2.exe          # run from the game folder
 ```
 
