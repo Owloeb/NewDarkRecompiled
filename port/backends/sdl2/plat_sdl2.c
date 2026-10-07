@@ -119,6 +119,8 @@ void plat_video_poll(void (*sink)(const PlatEvent *, void *), void *user) {
         case SDL_MOUSEMOTION: {
             p.type = PLAT_EV_MOUSE_MOVE; to_surface(e.motion.x, e.motion.y, &p.x, &p.y);
             if (warp_pending && e.motion.x == warp_x && e.motion.y == warp_y) { warp_pending = 0; p.dx = p.dy = 0; sink(&p, user); break; }
+            { static int dbg = -1; if (dbg < 0) dbg = getenv("SS2PORT_MOUSE_DEBUG") != NULL; static unsigned n;
+              if (dbg && n++ < 3000) port_log_plat("motion x=%d y=%d xrel=%d yrel=%d %s", e.motion.x, e.motion.y, e.motion.xrel, e.motion.yrel, rel_mode ? "captured" : "free"); }
             float fx = e.motion.xrel * mouse_scale + frac_x, fy = e.motion.yrel * mouse_scale + frac_y;
             p.dx = (int)fx; p.dy = (int)fy; frac_x = fx - (float)p.dx; frac_y = fy - (float)p.dy;
             sink(&p, user); break; }
