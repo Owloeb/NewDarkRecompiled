@@ -7,7 +7,7 @@
 #include <time.h>
 #include "port.h"
 
-enum { C_D3D9, C_DEV, C_TEX, C_CUBE, C_SURF, C_BUF, C_SWAP, C_QUERY, C_GEN, C_DS, C_DSB, C_DS3B, C_DS3L, C_DI, C_DID, C_DD, C_KSP, C_NCLASS };
+enum { C_D3D9, C_DEV, C_TEX, C_CUBE, C_SURF, C_BUF, C_SWAP, C_QUERY, C_GEN, C_DS, C_DSB, C_DS3B, C_DS3L, C_DI, C_DID, C_DD, C_KSP, C_SB, C_NCLASS };
 typedef void (*mfn)(CPU *c, uint32_t self);
 typedef struct { const char *name; const char *spec; } IfaceDef;
 #define UNK "QueryInterface:2 AddRef:0 Release:0 "
@@ -28,6 +28,7 @@ static const IfaceDef ifaces[C_NCLASS] = {
  [C_DS3L] = { "IDirectSound3DListener", UNK "GetAllParameters:1 GetDistanceFactor:1 GetDopplerFactor:1 GetOrientation:2 GetPosition:1 GetRolloffFactor:1 SetAllParameters:2 SetDistanceFactor:2 SetDopplerFactor:2 SetOrientation:7 SetPosition:4 SetRolloffFactor:2 CommitDeferredSettings:0" },
  [C_DI] = { "IDirectInput", UNK "CreateDevice:3 EnumDevices:4 GetDeviceStatus:1 RunControlPanel:2 Initialize:3" },
  [C_DD] = { "IDirectDraw", UNK "Compact:0 CreateClipper:3 CreatePalette:4 CreateSurface:3 DuplicateSurface:2 EnumDisplayModes:4 EnumSurfaces:4 FlipToGDISurface:0 GetCaps:2 GetDisplayMode:1 GetFourCCCodes:2 GetGDISurface:1 GetMonitorFrequency:1 GetScanLine:1 GetVerticalBlankStatus:1 Initialize:1 RestoreDisplayMode:0 SetCooperativeLevel:2 SetDisplayMode:3 WaitForVerticalBlank:2" },
+ [C_SB] = { "IDirect3DStateBlock9", UNK "GetDevice:1 Capture:0 Apply:0" },
  [C_KSP] = { "IKsPropertySet", UNK "Get:7 Set:6 QuerySupport:3" },
  [C_DID] = { "IDirectInputDevice", UNK "GetCapabilities:1 EnumObjects:3 GetProperty:2 SetProperty:2 Acquire:0 Unacquire:0 GetDeviceState:2 GetDeviceData:4 SetDataFormat:1 SetEventNotification:1 SetCooperativeLevel:2 GetObjectInfo:3 GetDeviceInfo:1 RunControlPanel:2 Initialize:3" },
 };
@@ -138,7 +139,8 @@ static void dev_getbackbuffer(CPU *c, uint32_t s) { Obj *d = O(s); if (!backbuf)
 static void dev_getrt(CPU *c, uint32_t s) { Obj *d = O(s); if (!backbuf) backbuf = new_surface(d->w, d->h, d->fmt); OUT(2, backbuf); }
 static void dev_getds(CPU *c, uint32_t s) { Obj *d = O(s); if (!depthbuf) depthbuf = new_surface(d->w, d->h, 75); OUT(1, depthbuf); }
 static void dev_gen2(CPU *c, uint32_t s) { (void)s; OUT(2, make(C_GEN)); }
-static void dev_gen1(CPU *c, uint32_t s) { (void)s; OUT(1, make(C_GEN)); }
+static void dev_gen1(CPU *c, uint32_t s) { (void)s; OUT(1, make(C_SB)); }
+static void dev_sb2(CPU *c, uint32_t s) { (void)s; OUT(2, make(C_SB)); }
 static void dev_genvol(CPU *c, uint32_t s) { (void)s; OUT(8, make(C_GEN)); }
 static void dev_createquery(CPU *c, uint32_t s) { (void)s; OUT(2, make(C_QUERY)); }
 static void dev_getswap(CPU *c, uint32_t s) { (void)s; OUT(2, make(C_SWAP)); }
@@ -217,7 +219,7 @@ static const Handler hlist[] = {
     { C_DEV, "CreateTexture", dev_createtexture }, { C_DEV, "CreateCubeTexture", dev_createcube }, { C_DEV, "CreateVertexBuffer", dev_createvb }, { C_DEV, "CreateIndexBuffer", dev_createib },
     { C_DEV, "CreateRenderTarget", dev_creatert }, { C_DEV, "CreateDepthStencilSurface", dev_creatert }, { C_DEV, "CreateOffscreenPlainSurface", dev_createoff },
     { C_DEV, "GetBackBuffer", dev_getbackbuffer }, { C_DEV, "GetRenderTarget", dev_getrt }, { C_DEV, "GetDepthStencilSurface", dev_getds },
-    { C_DEV, "CreateVertexDeclaration", dev_gen2 }, { C_DEV, "CreateVertexShader", dev_gen2 }, { C_DEV, "CreatePixelShader", dev_gen2 }, { C_DEV, "CreateStateBlock", dev_gen2 },
+    { C_DEV, "CreateVertexDeclaration", dev_gen2 }, { C_DEV, "CreateVertexShader", dev_gen2 }, { C_DEV, "CreatePixelShader", dev_gen2 }, { C_DEV, "CreateStateBlock", dev_sb2 },
     { C_DEV, "EndStateBlock", dev_gen1 }, { C_DEV, "CreateVolumeTexture", dev_genvol }, { C_DEV, "CreateQuery", dev_createquery }, { C_DEV, "GetSwapChain", dev_getswap },
     { C_DEV, "GetTexture", dev_null2 }, { C_DEV, "GetStreamSource", dev_nullstream }, { C_DEV, "GetIndices", dev_null1 }, { C_DEV, "GetVertexDeclaration", dev_null1 },
     { C_DEV, "GetVertexShader", dev_null1 }, { C_DEV, "GetPixelShader", dev_null1 }, { C_DEV, "GetDeviceCaps", dev_getcaps }, { C_DEV, "GetDisplayMode", dev_getdispmode },
