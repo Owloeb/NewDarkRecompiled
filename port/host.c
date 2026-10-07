@@ -43,8 +43,17 @@ void port_exit(int code) { fflush(stdout); fflush(stderr); _exit(code); }
 #define COV_LO 0x400000u
 #define COV_N 0x700000u
 static uint8_t cov_bits[COV_N / 8 + 1]; static uint32_t *cov_ord; static uint32_t cov_cnt; static uint32_t tr_ring[64]; static uint32_t tr_pos;
+static uint32_t at_list[32]; static int at_n = -1;
+static void at_dump(CPU *c, uint32_t va) {
+    fprintf(stderr, "[at %08x] eax=%08x ecx=%08x edx=%08x ebx=%08x esi=%08x edi=%08x ebp=%08x esp=%08x\n  stack:", va, c->eax, c->ecx, c->edx, c->ebx, c->esi, c->edi, c->ebp, c->esp);
+    for (int i = 0; i < 10; i++) fprintf(stderr, " %08x", RD32(c->esp + 4 * i)); fputc(10, stderr);
+    uint32_t v[16] = { c->eax, c->ecx, c->edx, c->ebx, c->esi, c->edi }; for (int i = 0; i < 10; i++) v[6 + i] = RD32(c->esp + 4 * i);
+    for (int i = 0; i < 16; i++) { uint32_t p = v[i]; if (p < 0x1000 || p > 0xF0000000u) continue; const unsigned char *s = (const unsigned char *)GP(p); int k = 0; while (k < 60 && s[k] >= 32 && s[k] < 127) k++; if (k >= 3 && !s[k]) fprintf(stderr, "  %08x = \"%s\"\n", p, s); }
+}
 void rt_trace(CPU *c, uint32_t va) {
-    (void)c; tr_ring[tr_pos++ & 63] = va; uint32_t i = va - COV_LO; if (i >= COV_N) return;
+    if (at_n < 0) { at_n = 0; const char *e = getenv("PORT_AT"); while (e && *e && at_n < 32) { at_list[at_n++] = (uint32_t)strtoul(e, (char **)&e, 16); while (*e == ',') e++; } }
+    for (int k = 0; k < at_n; k++) if (at_list[k] == va) at_dump(c, va);
+    tr_ring[tr_pos++ & 63] = va; uint32_t i = va - COV_LO; if (i >= COV_N) return;
     if (cov_bits[i >> 3] & (1u << (i & 7))) return; cov_bits[i >> 3] |= (uint8_t)(1u << (i & 7));
     if (!cov_ord) cov_ord = malloc(sizeof(uint32_t) * COV_N); cov_ord[cov_cnt++] = va;
 }
