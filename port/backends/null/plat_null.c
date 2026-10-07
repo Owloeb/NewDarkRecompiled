@@ -50,5 +50,6 @@ int  plat_audio_open(int rate, void (*fill)(int16_t *, int, void *), void *user)
 void plat_audio_close(void) {}
 void plat_audio_pause(int p) { (void)p; }
 
+void plat_alert(const char *title, const char *text) { (void)title; (void)text; }
 int port_main(int argc, char **argv);
 int main(int argc, char **argv) { return port_main(argc, argv); }

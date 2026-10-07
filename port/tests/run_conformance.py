@@ -67,6 +67,7 @@ def main():
     work = os.path.join(a.build, "run"); shutil.rmtree(work, ignore_errors=True); os.makedirs(work)
     shutil.copy(exe, work)
     args = (a.wrap.split() if a.wrap else []) + [host, os.path.join(work, "conformance.exe")] + [x for s in a.skip for x in ("-skip", s)]
+    if a.backend != "null": args.append("-pixels")         # a real renderer: check what it draws
     r = subprocess.run(args, cwd=work)
     print(f"conformance ({a.backend}): {'PASS' if r.returncode == 0 else 'FAIL (exit %d)' % r.returncode}")
     sys.exit(0 if r.returncode == 0 else 1)

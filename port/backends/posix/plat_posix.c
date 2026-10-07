@@ -24,7 +24,7 @@ void plat_log_write(PlatLogLevel level, const char *line) {
     fputs(line, o); fputc('\n', o); fflush(o);
     pthread_mutex_unlock(&log_m);
 }
-void plat_alert(const char *title, const char *text) { (void)title; (void)text; }
+
 
 /* ---------------------------------------------------------------- memory */
 #ifndef MAP_NORESERVE

@@ -94,7 +94,7 @@ typedef enum {
     PLAT_EV_NONE, PLAT_EV_QUIT, PLAT_EV_FOCUS, PLAT_EV_RESIZE,
     PLAT_EV_KEY,           /* key: scan code in DirectInput numbering (DIK_*: set-1 scan codes, extended keys + 0x80) */
     PLAT_EV_TEXT,          /* text: one Unicode code point the player typed */
-    PLAT_EV_MOUSE_MOVE,    /* x, y: absolute position in window client pixels; dx, dy: raw relative motion */
+    PLAT_EV_MOUSE_MOVE,    /* x, y: absolute position in the drawing surface's pixels (0..w-1, 0..h-1 of plat_video_open); dx, dy: raw relative motion */
     PLAT_EV_MOUSE_BUTTON,  /* button: 0 left, 1 right, 2 middle, 3, 4 extra */
     PLAT_EV_MOUSE_WHEEL    /* dy: +120 per notch away from the player, like WM_MOUSEWHEEL */
 } PlatEventType;
@@ -121,7 +121,7 @@ typedef struct {
 int  plat_video_open(int w, int h, int fullscreen, const char *title);
 void plat_video_close(void);
 void plat_video_caps(PlatVideoCaps *caps);
-void plat_video_window_size(int *w, int *h);                     /* client size in pixels */
+void plat_video_window_size(int *w, int *h);                     /* size of the drawing surface (what plat_video_open was given) */
 void plat_video_display_size(int *w, int *h);                    /* desktop / screen size */
 /* Calls sink for every pending event. Must be called regularly by the core (it is, from the message pump and Present). */
 void plat_video_poll(void (*sink)(const PlatEvent *ev, void *user), void *user);
@@ -138,12 +138,17 @@ void plat_tex_destroy(PlatTexture *t);
 /* reads back w x h RGBA8 pixels of a render target (NULL = the back buffer) into out; returns 0 on success */
 int  plat_tex_read(PlatTexture *t, int x, int y, int w, int h, void *out, int pitch);
 
-typedef struct { float x, y, z, w; uint32_t diffuse, specular; float fog; float u0, v0, u1, v1; } PlatVertex;   /* clip space; colours 0xAARRGGBB */
+/* A vertex in clip space with Direct3D's conventions: y points up, z runs from 0 (near) to w (far). The front end has
+ * already moved the geometry by half a pixel, so a backend that samples pixel centres at .5 (OpenGL, Vulkan, Metal,
+ * Direct3D 10+) needs no correction. Window y runs downward from the top-left corner of the target; texture
+ * coordinates (0,0) are the top-left texel, which is the first row a texture was uploaded with. Colours are
+ * 0xAARRGGBB. fog: 1 = no fog, 0 = fully fogged. u0/v0 feed stage 0, u1/v1 stage 1. */
+typedef struct { float x, y, z, w; uint32_t diffuse, specular; float fog; float u0, v0, u1, v1; } PlatVertex;
 enum { PLAT_PRIM_TRIANGLES, PLAT_PRIM_LINES, PLAT_PRIM_POINTS };
 enum { PLAT_BLEND_ZERO, PLAT_BLEND_ONE, PLAT_BLEND_SRC_COLOR, PLAT_BLEND_INV_SRC_COLOR, PLAT_BLEND_SRC_ALPHA, PLAT_BLEND_INV_SRC_ALPHA,
        PLAT_BLEND_DST_ALPHA, PLAT_BLEND_INV_DST_ALPHA, PLAT_BLEND_DST_COLOR, PLAT_BLEND_INV_DST_COLOR, PLAT_BLEND_SRC_ALPHA_SAT };
 enum { PLAT_CMP_NEVER, PLAT_CMP_LESS, PLAT_CMP_EQUAL, PLAT_CMP_LEQUAL, PLAT_CMP_GREATER, PLAT_CMP_NOTEQUAL, PLAT_CMP_GEQUAL, PLAT_CMP_ALWAYS };
-enum { PLAT_CULL_NONE, PLAT_CULL_CW, PLAT_CULL_CCW };            /* which screen-space winding is discarded (y down) */
+enum { PLAT_CULL_NONE, PLAT_CULL_CW, PLAT_CULL_CCW };            /* which winding is discarded, as seen on the target (y down) */
 /* texture stage operations, a subset of D3DTEXTUREOP with the same meaning */
 enum { PLAT_TOP_DISABLE, PLAT_TOP_SELECTARG1, PLAT_TOP_SELECTARG2, PLAT_TOP_MODULATE, PLAT_TOP_MODULATE2X, PLAT_TOP_MODULATE4X, PLAT_TOP_ADD,
        PLAT_TOP_ADDSIGNED, PLAT_TOP_SUBTRACT, PLAT_TOP_BLENDDIFFUSEALPHA, PLAT_TOP_BLENDTEXTUREALPHA, PLAT_TOP_BLENDCURRENTALPHA };

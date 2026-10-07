@@ -67,7 +67,7 @@ double __cdecl ci2(double a, double b, void *fn);
 __asm__(".globl _ci1\n_ci1:\n  fldl 4(%esp)\n  call *12(%esp)\n  ret\n"
         ".globl _ci2\n_ci2:\n  fldl 4(%esp)\n  fldl 12(%esp)\n  call *20(%esp)\n  ret\n");
 static int close_to(double a, double b) { double d = a - b; return d < 1e-9 && d > -1e-9; }
-static int skip_mask; static const char *const names[] = { "crt", "stdio", "win32", "threads", "window", "d3d9", "dsound", "dinput", 0 };
+static int skip_mask; static const char *const names[] = { "crt", "stdio", "win32", "threads", "window", "d3d9", "dsound", "dinput", "pixels", 0 };
 static int on(int i) { section = names[i]; return !(skip_mask & (1 << i)); }
 
 /* ---------------------------------------------------------------- C runtime: formatting, parsing, strings, sorting, math */
@@ -301,6 +301,89 @@ static void test_d3d9(HWND hwnd) {
     IDirect3DDevice9_Release(dev); IDirect3D9_Release(d3d);
 }
 
+/* ---------------------------------------------------------------- pixels: what a real renderer draws (skipped unless -pixels; the null backend draws nothing) */
+typedef struct { float x, y, z, rhw; DWORD c, s; float u, v; } TV;
+static DWORD px(IDirect3DDevice9 *dev, IDirect3DSurface9 *bb, IDirect3DSurface9 *sys, int x, int y) {
+    if (IDirect3DDevice9_GetRenderTargetData(dev, bb, sys) != D3D_OK) return 0xDEADBEEF;
+    D3DLOCKED_RECT lr; if (IDirect3DSurface9_LockRect(sys, &lr, NULL, D3DLOCK_READONLY) != D3D_OK) return 0xDEADBEEF;
+    DWORD v = ((DWORD *)((char *)lr.pBits + y * lr.Pitch))[x] & 0xFFFFFF; IDirect3DSurface9_UnlockRect(sys); return v;
+}
+static int near_rgb(DWORD a, DWORD b) { for (int i = 0; i < 24; i += 8) { int d = (int)((a >> i) & 255) - (int)((b >> i) & 255); if (d > 3 || d < -3) return 0; } return 1; }
+#define CHECKPX(x, y, want) do { DWORD g_ = px(dev, bb, sys, x, y); check(near_rgb(g_, want), "pixel (" #x ", " #y ") == " #want, __LINE__); if (!near_rgb(g_, want)) { char t_[120]; sprintf(t_, "     got %06lx\n", (unsigned long)g_); out(t_); } } while (0)
+static void rect(IDirect3DDevice9 *dev, float x0, float y0, float x1, float y1, float z, DWORD c, DWORD s) {
+    TV q[4] = { { x0, y0, z, 1, c, s, 0, 0 }, { x1, y0, z, 1, c, s, 1, 0 }, { x0, y1, z, 1, c, s, 0, 1 }, { x1, y1, z, 1, c, s, 1, 1 } };
+    IDirect3DDevice9_SetFVF(dev, D3DFVF_XYZRHW | D3DFVF_DIFFUSE | D3DFVF_SPECULAR | D3DFVF_TEX1); IDirect3DDevice9_DrawPrimitiveUP(dev, D3DPT_TRIANGLESTRIP, 2, q, sizeof q[0]);
+}
+static void test_pixels(HWND hwnd) {
+    HMODULE m = LoadLibraryA("d3d9.dll"); Create9 create = (Create9)GetProcAddress(m, "Direct3DCreate9"); IDirect3D9 *d3d = create(D3D_SDK_VERSION);
+    D3DPRESENT_PARAMETERS pp = { 0 }; pp.BackBufferWidth = 64; pp.BackBufferHeight = 64; pp.BackBufferFormat = D3DFMT_X8R8G8B8; pp.BackBufferCount = 1; pp.SwapEffect = D3DSWAPEFFECT_DISCARD;
+    pp.hDeviceWindow = hwnd; pp.Windowed = TRUE; pp.EnableAutoDepthStencil = TRUE; pp.AutoDepthStencilFormat = D3DFMT_D24S8;
+    IDirect3DDevice9 *dev = 0; CHECKI(IDirect3D9_CreateDevice(d3d, 0, D3DDEVTYPE_HAL, hwnd, D3DCREATE_SOFTWARE_VERTEXPROCESSING, &pp, &dev), D3D_OK); if (!dev) return;
+    IDirect3DSurface9 *bb = 0, *sys = 0; IDirect3DDevice9_GetBackBuffer(dev, 0, 0, D3DBACKBUFFER_TYPE_MONO, &bb);
+    CHECKI(IDirect3DDevice9_CreateOffscreenPlainSurface(dev, 64, 64, D3DFMT_X8R8G8B8, D3DPOOL_SYSTEMMEM, &sys, NULL), D3D_OK); if (!bb || !sys) return;
+    IDirect3DDevice9_SetRenderState(dev, D3DRS_LIGHTING, FALSE); IDirect3DDevice9_SetRenderState(dev, D3DRS_CULLMODE, D3DCULL_NONE);
+    IDirect3DDevice9_SetTextureStageState(dev, 0, D3DTSS_COLOROP, D3DTOP_SELECTARG1); IDirect3DDevice9_SetTextureStageState(dev, 0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
+    IDirect3DDevice9_SetTextureStageState(dev, 0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1); IDirect3DDevice9_SetTextureStageState(dev, 0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
+    IDirect3DDevice9_Clear(dev, 0, NULL, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, 0xFF0000FFu, 1.0f, 0);
+    IDirect3DDevice9_BeginScene(dev);
+    rect(dev, 10, 10, 20, 20, 0.5f, 0xFFFFFFFFu, 0xFF000000u);                        /* exact pixel edges: Direct3D 9 pixel centres are at integers */
+    IDirect3DDevice9_EndScene(dev);
+    CHECKPX(10, 10, 0xFFFFFF); CHECKPX(19, 19, 0xFFFFFF); CHECKPX(9, 10, 0x0000FF); CHECKPX(20, 10, 0x0000FF); CHECKPX(10, 20, 0x0000FF); CHECKPX(10, 9, 0x0000FF); CHECKPX(0, 0, 0x0000FF);
+    /* texture, modulated with the vertex colour */
+    IDirect3DTexture9 *tex = 0; IDirect3DDevice9_CreateTexture(dev, 4, 4, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &tex, NULL);
+    D3DLOCKED_RECT lr; IDirect3DTexture9_LockRect(tex, 0, &lr, NULL, 0); for (int y = 0; y < 4; y++) for (int x = 0; x < 4; x++) ((DWORD *)((char *)lr.pBits + y * lr.Pitch))[x] = x < 2 ? 0xFF00FF00u : 0xFFFF00FFu; IDirect3DTexture9_UnlockRect(tex, 0);
+    IDirect3DDevice9_SetTexture(dev, 0, (IDirect3DBaseTexture9 *)tex); IDirect3DDevice9_SetTextureStageState(dev, 0, D3DTSS_COLOROP, D3DTOP_MODULATE); IDirect3DDevice9_SetTextureStageState(dev, 0, D3DTSS_COLORARG1, D3DTA_TEXTURE); IDirect3DDevice9_SetTextureStageState(dev, 0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
+    IDirect3DDevice9_BeginScene(dev); rect(dev, 30, 30, 38, 38, 0.5f, 0xFFFFFFFFu, 0xFF000000u); IDirect3DDevice9_EndScene(dev);
+    CHECKPX(31, 33, 0x00FF00); CHECKPX(36, 33, 0xFF00FF);                               /* left half green, right half magenta: v = 0 is the top row */
+    IDirect3DDevice9_BeginScene(dev); rect(dev, 30, 40, 38, 48, 0.5f, 0xFF808080u, 0xFF000000u); IDirect3DDevice9_EndScene(dev);
+    CHECKPX(31, 44, 0x008000);
+    IDirect3DDevice9_SetTexture(dev, 0, NULL); IDirect3DDevice9_SetTextureStageState(dev, 0, D3DTSS_COLOROP, D3DTOP_SELECTARG1); IDirect3DDevice9_SetTextureStageState(dev, 0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
+    /* alpha blending */
+    IDirect3DDevice9_SetRenderState(dev, D3DRS_ALPHABLENDENABLE, TRUE); IDirect3DDevice9_SetRenderState(dev, D3DRS_SRCBLEND, D3DBLEND_SRCALPHA); IDirect3DDevice9_SetRenderState(dev, D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+    IDirect3DDevice9_BeginScene(dev); rect(dev, 40, 10, 50, 20, 0.5f, 0x80FF0000u, 0xFF000000u); IDirect3DDevice9_EndScene(dev);
+    IDirect3DDevice9_SetRenderState(dev, D3DRS_ALPHABLENDENABLE, FALSE);
+    CHECKPX(45, 15, 0x80007F);
+    /* alpha test */
+    IDirect3DDevice9_SetRenderState(dev, D3DRS_ALPHATESTENABLE, TRUE); IDirect3DDevice9_SetRenderState(dev, D3DRS_ALPHAFUNC, D3DCMP_GREATEREQUAL); IDirect3DDevice9_SetRenderState(dev, D3DRS_ALPHAREF, 0x80);
+    IDirect3DDevice9_BeginScene(dev); rect(dev, 50, 30, 54, 34, 0.5f, 0x7FFFFF00u, 0xFF000000u); rect(dev, 54, 30, 58, 34, 0.5f, 0x80FFFF00u, 0xFF000000u); IDirect3DDevice9_EndScene(dev);
+    IDirect3DDevice9_SetRenderState(dev, D3DRS_ALPHATESTENABLE, FALSE);
+    CHECKPX(51, 31, 0x0000FF); CHECKPX(55, 31, 0xFFFF00);
+    /* depth: the nearer red quad stays in front of the farther green one drawn later */
+    IDirect3DDevice9_SetRenderState(dev, D3DRS_ZENABLE, TRUE); IDirect3DDevice9_SetRenderState(dev, D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
+    IDirect3DDevice9_BeginScene(dev); rect(dev, 2, 40, 12, 50, 0.3f, 0xFFFF0000u, 0xFF000000u); rect(dev, 2, 40, 12, 50, 0.6f, 0xFF00FF00u, 0xFF000000u); IDirect3DDevice9_EndScene(dev);
+    CHECKPX(6, 45, 0xFF0000);
+    IDirect3DDevice9_SetRenderState(dev, D3DRS_ZENABLE, FALSE);
+    /* fog from the specular alpha (vertex fog mode none): alpha 0 is fully fogged */
+    IDirect3DDevice9_SetRenderState(dev, D3DRS_FOGENABLE, TRUE); IDirect3DDevice9_SetRenderState(dev, D3DRS_FOGCOLOR, 0xFFFFFF00u);
+    IDirect3DDevice9_BeginScene(dev); rect(dev, 14, 40, 20, 46, 0.5f, 0xFF0000FFu, 0x00000000u); rect(dev, 20, 40, 26, 46, 0.5f, 0xFFFF0000u, 0xFF000000u); IDirect3DDevice9_EndScene(dev);
+    IDirect3DDevice9_SetRenderState(dev, D3DRS_FOGENABLE, FALSE);
+    CHECKPX(16, 42, 0xFFFF00); CHECKPX(22, 42, 0xFF0000);
+    /* culling: this triangle is counter-clockwise on screen, so D3DCULL_CCW removes it and D3DCULL_CW keeps it */
+    TV tri[3] = { { 56, 40, 0.5f, 1, 0xFF00FF00u, 0xFF000000u, 0, 0 }, { 56, 50, 0.5f, 1, 0xFF00FF00u, 0xFF000000u, 0, 0 }, { 63, 40, 0.5f, 1, 0xFF00FF00u, 0xFF000000u, 0, 0 } };
+    IDirect3DDevice9_SetRenderState(dev, D3DRS_CULLMODE, D3DCULL_CCW);
+    IDirect3DDevice9_BeginScene(dev); IDirect3DDevice9_SetFVF(dev, D3DFVF_XYZRHW | D3DFVF_DIFFUSE | D3DFVF_SPECULAR | D3DFVF_TEX1); IDirect3DDevice9_DrawPrimitiveUP(dev, D3DPT_TRIANGLELIST, 1, tri, sizeof tri[0]); IDirect3DDevice9_EndScene(dev);
+    CHECKPX(57, 41, 0x0000FF);
+    IDirect3DDevice9_SetRenderState(dev, D3DRS_CULLMODE, D3DCULL_CW);
+    IDirect3DDevice9_BeginScene(dev); IDirect3DDevice9_DrawPrimitiveUP(dev, D3DPT_TRIANGLELIST, 1, tri, sizeof tri[0]); IDirect3DDevice9_EndScene(dev);
+    CHECKPX(57, 41, 0x00FF00);
+    IDirect3DDevice9_SetRenderState(dev, D3DRS_CULLMODE, D3DCULL_NONE);
+    /* transformed geometry: identity world/view, an orthographic projection that maps x, y in [-1, 1] to the viewport */
+    struct { float x, y, z; DWORD c; } cv[3] = { { -1.0f, 1.0f, 0.5f, 0xFFFF8000u }, { 0.0f, 1.0f, 0.5f, 0xFFFF8000u }, { -1.0f, 0.0f, 0.5f, 0xFFFF8000u } };
+    D3DMATRIX id = { { { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 } } };
+    IDirect3DDevice9_SetTransform(dev, D3DTS_WORLD, &id); IDirect3DDevice9_SetTransform(dev, D3DTS_VIEW, &id); IDirect3DDevice9_SetTransform(dev, D3DTS_PROJECTION, &id);
+    IDirect3DDevice9_BeginScene(dev); IDirect3DDevice9_SetFVF(dev, D3DFVF_XYZ | D3DFVF_DIFFUSE); IDirect3DDevice9_DrawPrimitiveUP(dev, D3DPT_TRIANGLELIST, 1, cv, sizeof cv[0]); IDirect3DDevice9_EndScene(dev);
+    CHECKPX(2, 2, 0xFF8000); CHECKPX(40, 2, 0x0000FF);                                     /* top-left quarter of the screen, upper-left half */
+    /* a viewport: Clear only touches its area */
+    D3DVIEWPORT9 vp = { 60, 60, 4, 4, 0, 1 }; IDirect3DDevice9_SetViewport(dev, &vp); IDirect3DDevice9_Clear(dev, 0, NULL, D3DCLEAR_TARGET, 0xFF00FFFFu, 1.0f, 0);
+    CHECKPX(61, 61, 0x00FFFF); CHECKPX(59, 61, 0x0000FF);
+    /* StretchRect from an offscreen surface into the back buffer */
+    IDirect3DSurface9 *off = 0; IDirect3DDevice9_CreateOffscreenPlainSurface(dev, 2, 2, D3DFMT_X8R8G8B8, D3DPOOL_DEFAULT, &off, NULL);
+    if (off) { IDirect3DSurface9_LockRect(off, &lr, NULL, 0); for (int y = 0; y < 2; y++) for (int x = 0; x < 2; x++) ((DWORD *)((char *)lr.pBits + y * lr.Pitch))[x] = 0xFF123456u; IDirect3DSurface9_UnlockRect(off);
+               RECT dr = { 0, 56, 8, 64 }; CHECKI(IDirect3DDevice9_StretchRect(dev, off, NULL, bb, &dr, D3DTEXF_POINT), D3D_OK); CHECKPX(4, 60, 0x123456); CHECKPX(9, 60, 0x0000FF); IDirect3DSurface9_Release(off); }
+    IDirect3DDevice9_Present(dev, NULL, NULL, NULL, NULL);
+    IDirect3DTexture9_Release(tex); IDirect3DSurface9_Release(sys); IDirect3DSurface9_Release(bb); IDirect3DDevice9_Release(dev); IDirect3D9_Release(d3d);
+}
+
 /* ---------------------------------------------------------------- DirectSound */
 typedef HRESULT (WINAPI *DSCreate)(LPCGUID, LPDIRECTSOUND *, LPUNKNOWN);
 static const GUID iid_listener = { 0x279AFA84, 0x4981, 0x11CE, { 0xA5, 0x21, 0x00, 0x20, 0xAF, 0x0B, 0xE5, 0x60 } };
@@ -386,7 +469,11 @@ static void test_dinput(HWND hwnd) {
 /* ---------------------------------------------------------------- entry */
 void __stdcall start(void) {
     const char *cl = GetCommandLineA(); char buf[256]; strncpy(buf, cl, 255); buf[255] = 0;
-    for (char *t = strtok(buf, " "); t; t = strtok(0, " ")) if (seq(t, "-skip")) { char *w = strtok(0, " "); for (int i = 0; w && names[i]; i++) if (!_stricmp(w, names[i])) skip_mask |= 1 << i; }
+    skip_mask = 1 << 8;                       /* "pixels" runs only when asked for */
+    for (char *t = strtok(buf, " "); t; t = strtok(0, " ")) {
+        if (seq(t, "-skip")) { char *w = strtok(0, " "); for (int i = 0; w && names[i]; i++) if (!_stricmp(w, names[i])) skip_mask |= 1 << i; }
+        if (seq(t, "-pixels")) skip_mask &= ~(1 << 8);
+    }
     if (on(0)) test_crt();
     if (on(1)) test_stdio();
     if (on(2)) test_win32();
@@ -395,6 +482,7 @@ void __stdcall start(void) {
     if (on(5)) test_d3d9(h);
     if (on(6)) test_dsound(h);
     if (on(7)) test_dinput(h);
+    if (on(8)) test_pixels(h);
     char b[128]; sprintf(b, "conformance: %d of %d checks failed\n", fails, checks); out(b);
     ExitProcess((UINT)fails);
 }
