@@ -41,15 +41,28 @@ const char *guest_symbol(uint32_t va) {
 /* --trace keeps the last TRACE_N calls in memory (never streams: a spinning game would fill the disk) and prints them on a
    crash, on SIGINT / SIGTERM (Ctrl-C, `timeout`), or at exit. */
 #define TRACE_N 4096
-static char trace_ring[TRACE_N][200]; static unsigned trace_n;
+#define TRACE_HEAD 8192             /* also keep the first calls: the start of a loop matters as much as its end */
+static char trace_ring[TRACE_N][220], trace_head[TRACE_HEAD][220]; static unsigned trace_n;
+static char trace_only[512];        /* --trace-only a,b,c: trace just these functions (",name," match) */
+static int trace_wanted(const char *name) {
+    if (!trace_only[0]) return 1;
+    char k[96]; snprintf(k, sizeof k, ",%s,", name); return strstr(trace_only, k) != NULL;
+}
 static void trace_put(const char *fmt, ...) {
-    unsigned i = __atomic_fetch_add(&trace_n, 1, __ATOMIC_RELAXED) % TRACE_N;
-    va_list ap; va_start(ap, fmt); vsnprintf(trace_ring[i], sizeof trace_ring[i], fmt, ap); va_end(ap);
+    unsigned n = __atomic_fetch_add(&trace_n, 1, __ATOMIC_RELAXED);
+    char *d = n < TRACE_HEAD ? trace_head[n] : trace_ring[n % TRACE_N];
+    va_list ap; va_start(ap, fmt); vsnprintf(d, sizeof trace_ring[0], fmt, ap); va_end(ap);
 }
 static void trace_dump(void) {
     unsigned n = __atomic_load_n(&trace_n, __ATOMIC_RELAXED); if (!port_trace || !n) return;
-    port_log("---- last %u traced calls (oldest first) ----", n < TRACE_N ? n : TRACE_N);
-    for (unsigned i = n > TRACE_N ? n - TRACE_N : 0; i < n; i++) plat_log_write(PLAT_LOG_INFO, trace_ring[i % TRACE_N]);
+    unsigned h = n < TRACE_HEAD ? n : TRACE_HEAD;
+    port_log("---- first %u traced calls ----", h);
+    for (unsigned i = 0; i < h; i++) plat_log_write(PLAT_LOG_INFO, trace_head[i]);
+    if (n <= TRACE_HEAD) return;
+    unsigned from = n - TRACE_N > TRACE_HEAD ? n - TRACE_N : TRACE_HEAD;
+    if (from > TRACE_HEAD) port_log("---- %u calls not kept ----", from - TRACE_HEAD);
+    port_log("---- last %u traced calls (of %u) ----", n - from, n);
+    for (unsigned i = from; i < n; i++) plat_log_write(PLAT_LOG_INFO, trace_ring[i % TRACE_N]);
 }
 static void dump_state(void) {
     CPU *c = cur_cpu(); if (!c) return;
@@ -150,14 +163,18 @@ uint32_t port_proc(const char *n) {
 static void thunk_run(CPU *c, unsigned i) {
     Thunk *t = &thunks[i];
     if (!t->fn) port_die("the game called %s, which the portable host does not implement yet", t->name);
-    if (port_trace) {
-        char ss[3][48] = { "", "", "" };
-        for (int k = 0; k < 3; k++) { uint32_t a = A(k); if (!g_valid(a, 48) || a >= THUNK_BASE) continue; const uint8_t *p = GP(a); int n = 0; while (n < 44 && p[n] >= 32 && p[n] < 127) n++; if (n >= 3 && (p[n] == 0 || n == 44)) { memcpy(ss[k], p, (size_t)n); ss[k][n] = 0; } }
-        trace_put("[t%u] %s(%08x, %08x, %08x, %08x)%s%s%s%s%s%s", cur_thread_id(), t->name, A(0), A(1), A(2), A(3), ss[0][0] ? " \"" : "", ss[0], ss[0][0] ? "\"" : "", ss[1][0] ? " \"" : "", ss[1], ss[1][0] ? "\"" : "");
+    int tr = port_trace && trace_wanted(t->name);
+    char ss[3][48] = { "", "", "" }; uint32_t ta[4] = { 0, 0, 0, 0 }, tret = 0;
+    if (tr) {
+        for (int k = 0; k < 4; k++) ta[k] = A(k);
+        tret = RD32(c->esp);
+        for (int k = 0; k < 3; k++) { uint32_t a = A(k); if (!g_valid(a, 48) || a >= THUNK_BASE) continue; const uint8_t *p = GP(a); int n = 0; while (n < 44 && p[n] >= 32 && p[n] < 127) n++; if (n >= 2 && (p[n] == 0 || n == 44)) { memcpy(ss[k], p, (size_t)n); ss[k][n] = 0; } }
     }
     ring_ret[ring_n & 15] = RD32(c->esp); ring_names[ring_n++ & 15] = t->name;
     g_targ = t->arg;
     t->fn(c);
+    if (tr) trace_put("[t%u] %s(%08x, %08x, %08x, %08x) = %08x  from %08x%s%s%s%s%s%s", cur_thread_id(), t->name, ta[0], ta[1], ta[2], ta[3], c->eax, tret,
+                      ss[0][0] ? " \"" : "", ss[0], ss[0][0] ? "\"" : "", ss[1][0] ? " \"" : "", ss[1], ss[1][0] ? "\"" : "");
     c->esp += 4 + (uint32_t)t->pop;     /* return address + the arguments the real function pops */
     thread_preempt_tick();
 }
@@ -268,7 +285,8 @@ static void usage(void) {
         "  --frames N        stop after N presented frames\n"
         "  --windowed        force a window\n"
         "  --guest-space MB  guest address space to reserve (default: 4096 on 64-bit hosts)\n"
-        "  --verbose         more logging; --trace: log every import call\n"
+        "  --verbose         more logging; --trace: record import calls (first 8192 and last 4096, printed on exit/crash/Ctrl-C)\n"
+        "  --trace-only a,b  record only these imports (e.g. fopen,fread,fseek)\n"
         "  --list-missing    list the game's imports the host does not implement\n"
         "  --list-shims      list every implemented import\n");
     exit(1);
@@ -281,6 +299,7 @@ int port_main(int argc, char **argv) {
         if (!strcmp(a, "--list-missing")) list_missing = 1;
         else if (!strcmp(a, "--list-shims")) { for (const ShimDef *const *t = shim_tables(); *t; t++) for (const ShimDef *s = *t; s->name; s++) puts(s->name); return 0; }
         else if (!strcmp(a, "--trace")) port_trace = port_verbose = 1;
+        else if (!strcmp(a, "--trace-only") && i + 1 < argc) { port_trace = port_verbose = 1; snprintf(trace_only, sizeof trace_only, ",%s,", argv[++i]); }
         else if (!strcmp(a, "--verbose")) port_verbose = 1;
         else if (!strcmp(a, "--windowed")) g_cfg.windowed = 1;
         else if (!strcmp(a, "--frames") && i + 1 < argc) g_cfg.max_frames = (uint32_t)strtoul(argv[++i], NULL, 10);
