@@ -50,7 +50,7 @@ static void at_dump(CPU *c, uint32_t va) {
     if (getenv("PORT_HEX")) {   /* 32 bytes at every register that looks like a guest pointer, and 32 stack words */
         const char *nm[6] = { "eax", "ecx", "edx", "ebx", "esi", "edi" }; uint32_t rv[6] = { c->eax, c->ecx, c->edx, c->ebx, c->esi, c->edi };
         for (int i = 0; i < 6; i++) if (rv[i] >= 0x10000 && rv[i] < 0x08400000u) { fprintf(stderr, "  %s -> ", nm[i]); for (int k = 0; k < 32; k++) fprintf(stderr, "%02x ", *(uint8_t *)GP(rv[i] + k)); fputc(10, stderr); }
-        fprintf(stderr, "  stack32:"); for (int i = 0; i < 32; i++) fprintf(stderr, " %08x", RD32(c->esp + 4 * i)); fputc(10, stderr);
+        fprintf(stderr, "  stack32:"); for (int i = 0; i < 64; i++) fprintf(stderr, " %08x", RD32(c->esp + 4 * i)); fputc(10, stderr);
     }
     { const char *m = getenv("PORT_MEM"); while (m && *m) { uint32_t ad = (uint32_t)strtoul(m, (char **)&m, 16); while (*m == ',') m++; uint32_t p = RD32(ad); fprintf(stderr, "  [%08x] = %08x ->", ad, p); for (int i = 0; i < 24 && p; i++) fprintf(stderr, " %02x", *(uint8_t *)GP(p + i)); fputc(10, stderr); } }
     uint32_t v[16] = { c->eax, c->ecx, c->edx, c->ebx, c->esi, c->edi }; for (int i = 0; i < 10; i++) v[6 + i] = RD32(c->esp + 4 * i);
