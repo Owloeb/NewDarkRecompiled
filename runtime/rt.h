@@ -76,11 +76,24 @@ extern uint32_t rt_shadow[]; extern int rt_shadow_sp;
  * __builtin_setjmp in the recompiled caller's own C frame. A call to longjmp becomes rt_longjmp, which restores the
  * guest registers saved for that jump buffer and __builtin_longjmp's back there; RT_SETJMP then returns the value as if
  * from setjmp. (No C++ destructors run in between, unlike MSVC's longjmp; leaks at worst.) */
+#if defined(_WIN64)
+/* Clang's __builtin_setjmp loses the caller's locals on 64-bit Windows (checked with a minimal program under Zig 0.16),
+ * so use the C runtime's _setjmp with a NULL frame: longjmp then restores every callee-saved register and skips SEH
+ * unwinding, which is what the builtin does elsewhere. */
+#include <setjmp.h>
+#define RT_HJ_WORDS (sizeof(jmp_buf) / sizeof(void *) + 1)
+#define RT_HOST_SETJMP(b) _setjmp((_JBTYPE *)(void *)(b), NULL)
+#define RT_HOST_LONGJMP(b) longjmp(*(jmp_buf *)(void *)(b), 1)
+#else
+#define RT_HJ_WORDS 5
+#define RT_HOST_SETJMP(b) __builtin_setjmp(b)
+#define RT_HOST_LONGJMP(b) __builtin_longjmp(b, 1)
+#endif
 void **rt_sj_begin(CPU *c, uint32_t buf);     /* record the guest state for setjmp(buf); returns the host jump buffer */
 void rt_sj_resume(CPU *c, uint32_t buf);      /* after a longjmp to buf: restore the guest registers, eax = value */
 void rt_longjmp(CPU *c);                      /* longjmp(buf = [esp+4], value = [esp+8]); does not return */
 #define RT_SETJMP(c) do { uint32_t sjb_ = RD32((c)->esp + 4); void **hj_ = rt_sj_begin((c), sjb_); \
-                          if (__builtin_setjmp(hj_) == 0) (c)->eax = 0; else rt_sj_resume((c), sjb_); \
+                          if (RT_HOST_SETJMP(hj_) == 0) (c)->eax = 0; else rt_sj_resume((c), sjb_); \
                           RETCHK(c); (c)->esp += 4; } while (0)
 
 #ifdef RT_TRACE

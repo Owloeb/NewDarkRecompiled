@@ -220,7 +220,7 @@ uint32_t g_call(CPU *c, uint32_t fn, int n, ...) {
 }
 
 /* setjmp/longjmp: the lifter turns a guest setjmp into RT_SETJMP, a host __builtin_setjmp in the caller's C frame */
-typedef struct { uint32_t buf, esp, ebp, ebx, esi, edi, fs0, val; void *hj[5]; int used; } SjRec;
+typedef struct { _Alignas(16) void *hj[RT_HJ_WORDS]; uint32_t buf, esp, ebp, ebx, esi, edi, fs0, val; int used; } SjRec;   /* hj first: jmp_buf wants 16-byte alignment on Windows x64 */
 static SjRec sj[64]; static int sj_tick;
 static SjRec *sj_find(uint32_t buf, int create) {
     SjRec *lru = &sj[0];
@@ -242,7 +242,7 @@ void rt_sj_resume(CPU *c, uint32_t buf) {
 void rt_longjmp(CPU *c) {
     uint32_t buf = RD32(c->esp + 4), val = RD32(c->esp + 8); SjRec *r = sj_find(buf, 0);
     if (!r) port_die("longjmp to jump buffer %08x, which recompiled code never passed to setjmp", buf);
-    r->val = val ? val : 1; __builtin_longjmp(r->hj, 1);
+    r->val = val ? val : 1; RT_HOST_LONGJMP(r->hj);
 }
 
 /* ---------------------------------------------------------------- loading the executable */

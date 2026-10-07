@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """port/build.py: build the portable host (ss2port) from your own SS2.exe (NewDark 2.48). Linux / WSL / macOS.
 
-    python3 port/build.py "/path/to/System Shock 2/SS2.exe" [--backend sdl2|null] [--jobs N]
+    python3 port/build.py "/path/to/System Shock 2/SS2.exe" [--backend sdl2|null] [--jobs N] [--target linux|windows] [--install]
+
+--target windows cross-compiles a 64-bit Windows ss2port.exe (with SDL2.dll) using Zig: python3 -m pip install ziglang.
+--install copies the result next to SS2.exe.
 
 Steps: (1) lift SS2.exe and its DLLs (allobjs.osm, Squirrel.osm, lgvid.dll) to C: about 8 minutes the first time, skipped
 when nothing changed, (2) build the host with CMake. The result is build/port/ss2port; run it from the game folder.
@@ -24,15 +27,22 @@ def sha(*paths, extra=""):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("ss2exe"); ap.add_argument("--backend", default="sdl2", choices=["sdl2", "null"])
-    ap.add_argument("--jobs", type=int, default=os.cpu_count() or 2); ap.add_argument("--build", default=os.path.join(ROOT, "build", "port"))
+    ap.add_argument("--jobs", type=int, default=os.cpu_count() or 2); ap.add_argument("--build")
+    ap.add_argument("--target", default="linux", choices=["linux", "windows"], help="linux: this machine (any POSIX system); windows: cross-compile a Windows exe")
+    ap.add_argument("--install", action="store_true", help="copy the result next to SS2.exe")
     a = ap.parse_args(); exe = os.path.abspath(a.ss2exe)
+    win = a.target == "windows"
+    if not a.build: a.build = os.path.join(ROOT, "build", "port-win" if win else "port")
+    if win:
+        try: import ziglang  # noqa: F401
+        except ImportError: sys.exit("--target windows needs Zig: python3 -m pip install ziglang")
     if not os.path.isfile(exe): sys.exit(f"SS2.exe not found: {exe}")
     for m in ("pefile", "capstone"):
         try: __import__(m)
         except ImportError: sys.exit(f"missing Python package '{m}': python3 -m pip install pefile capstone")
     for t in ("cmake",):
         if not shutil.which(t): sys.exit(f"missing tool '{t}'")
-    if not (shutil.which("gcc") or shutil.which("clang") or shutil.which("cc")): sys.exit("missing C compiler (gcc or clang)")
+    if not win and not (shutil.which("gcc") or shutil.which("clang") or shutil.which("cc")): sys.exit("missing C compiler (gcc or clang)")
 
     print("[1/2] lifting (about 8 minutes the first time)", flush=True)
     nd = os.path.join(OUT, "nd"); lift_py = os.path.join(ROOT, "lift.py"); sigf = os.path.join(nd, "src.sha1"); s = sha(exe, lift_py)
@@ -57,8 +67,20 @@ def main():
 
     print("[2/2] building the host", flush=True)
     gen = "Ninja" if shutil.which("ninja") else "Unix Makefiles"
-    run(["cmake", "-S", os.path.join(ROOT, "port"), "-B", a.build, "-G", gen, f"-DPORT_GENERATED={OUT}", f"-DPORT_BACKEND={a.backend}", "-DCMAKE_BUILD_TYPE=Release"], "cmake configure")
+    cfg = ["cmake", "-S", os.path.join(ROOT, "port"), "-B", a.build, "-G", gen, f"-DPORT_GENERATED={OUT}", f"-DPORT_BACKEND={a.backend}", "-DCMAKE_BUILD_TYPE=Release"]
+    if win:
+        sys.path.insert(0, os.path.join(ROOT, "port", "tools")); import deps
+        os.environ["ZIG"] = f"{sys.executable} -m ziglang"          # used by port/cmake/zig-* (the compiler wrappers)
+        cfg += [f"-DCMAKE_TOOLCHAIN_FILE={os.path.join(ROOT, 'port', 'cmake', 'windows-zig.cmake')}"]
+        if a.backend == "sdl2": cfg += [f"-DSDL2_DIR={deps.sdl2_mingw(os.path.join(ROOT, 'build', 'deps'))}"]
+    run(cfg, "cmake configure")
     run(["cmake", "--build", a.build, "-j", str(a.jobs)], "build")
-    print(f"\ndone: {os.path.join(a.build, 'ss2port')}\nrun it from the game folder:  cd \"{os.path.dirname(exe)}\" && {os.path.join(a.build, 'ss2port')} --windowed --verbose SS2.exe")
+    prog = os.path.join(a.build, "ss2port.exe" if win else "ss2port")
+    if a.install:
+        dest = os.path.dirname(exe); shutil.copy2(prog, dest)
+        if win and os.path.isfile(os.path.join(a.build, "SDL2.dll")): shutil.copy2(os.path.join(a.build, "SDL2.dll"), dest)
+        print(f"\ninstalled {os.path.basename(prog)} next to SS2.exe in {dest}")
+    if win: print(f"\ndone: {prog} (with SDL2.dll). On Windows, in the game folder:  .\\ss2port.exe --windowed SS2.exe")
+    else: print(f"\ndone: {prog}\nrun it from the game folder:  cd \"{os.path.dirname(exe)}\" && {prog} --windowed --verbose SS2.exe")
 
 if __name__ == "__main__": main()

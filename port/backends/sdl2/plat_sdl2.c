@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#define SDL_MAIN_HANDLED          /* our own main(): no SDL_main redirection on Windows */
 #include <SDL.h>
 #include "plat.h"
 #include "gl_render.h"
@@ -159,6 +160,7 @@ int main(int argc, char **argv) {
        such as some remote desktops); SS2PORT_MOUSE_SCALE: multiply mouse motion (e.g. 0.5) */
     const char *mw = getenv("SS2PORT_MOUSE_WARP"); SDL_SetHint(SDL_HINT_MOUSE_RELATIVE_MODE_WARP, mw && *mw == '1' ? "1" : "0");
     const char *ms = getenv("SS2PORT_MOUSE_SCALE"); if (ms && atof(ms) > 0) mouse_scale = (float)atof(ms);
+    SDL_SetMainReady();
     if (SDL_Init(0)) { fprintf(stderr, "SDL: %s\n", SDL_GetError()); return 1; }
     int r = port_main(argc, argv);
     SDL_Quit(); return r;

@@ -78,7 +78,12 @@ typedef unsigned int GLenum, GLuint, GLbitfield; typedef int GLint, GLsizei; typ
 #define GL_NO_ERROR 0
 #define GL_VERSION 0x1F02
 #define GL_RENDERER 0x1F01
-#define GLF(ret, name, args) static ret (*name) args;
+#if defined(_WIN32) && !defined(_WIN64)
+#define GLCALL __stdcall          /* OpenGL entry points use stdcall on 32-bit Windows */
+#else
+#define GLCALL
+#endif
+#define GLF(ret, name, args) static ret (GLCALL *name) args;
 #define GL_FUNCS \
     GLF(const GLubyte *, glGetString, (GLenum)) GLF(void, glGetIntegerv, (GLenum, GLint *)) GLF(void, glGetFloatv, (GLenum, GLfloat *)) GLF(void, glEnable, (GLenum)) \
     GLF(void, glDisable, (GLenum)) GLF(void, glBlendFunc, (GLenum, GLenum)) GLF(void, glDepthFunc, (GLenum)) GLF(void, glDepthMask, (GLboolean)) \
@@ -367,7 +372,7 @@ void plat_gfx_gamma(const uint16_t ramp[3][256]) {
 static int has_ext(const char *e) { const char *x = (const char *)glGetString(GL_EXTENSIONS); if (!x) return 0; size_t n = strlen(e); for (const char *p = x; (p = strstr(p, e)); p += n) if ((p == x || p[-1] == ' ') && (p[n] == ' ' || !p[n])) return 1; return 0; }
 int gl_init(void *(*get)(const char *), int es) {
     gles = es;
-    #define GLF(ret, name, args) name = (ret (*) args)get(#name); if (!name) { char ext[64]; snprintf(ext, sizeof ext, "%sEXT", #name); name = (ret (*) args)get(ext); }
+    #define GLF(ret, name, args) name = (ret (GLCALL *) args)get(#name); if (!name) { char ext[64]; snprintf(ext, sizeof ext, "%sEXT", #name); name = (ret (GLCALL *) args)get(ext); }
     GL_FUNCS
     #undef GLF
     if (!glGetString || !glCreateShader || !glGenFramebuffers || !glDrawElements) { fprintf(stderr, "[gl] OpenGL 2.1 with framebuffer objects (or OpenGL ES 2.0) is required\n"); return -1; }

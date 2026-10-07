@@ -3,6 +3,7 @@
 recompiles it with lift.py, builds the portable host around it and runs it. No game files are needed.
 
     python3 port/tests/run_conformance.py [--backend null|sdl2] [--build DIR] [--skip SECTION ...] [--cc CC] [--cflags ...]
+    python3 port/tests/run_conformance.py --target windows --wrap wine        # Windows exe, run under Wine (or on Windows)
 
 Needs: python3 -m pip install pefile capstone ziglang, CMake, a host C compiler (and SDL2 for --backend sdl2).
 Exit status: 0 when every check passes."""
@@ -44,17 +45,23 @@ def lift(exe, bdir):
     return gen
 
 def build_host(gen, bdir, a):
-    hb = os.path.join(bdir, "host-" + a.backend)
+    win = a.target == "windows"
+    hb = os.path.join(bdir, "host-" + a.backend + ("-win" if win else ""))
     cfg = ["cmake", "-S", PORT, "-B", hb, "-G", "Ninja" if shutil.which("ninja") else "Unix Makefiles", f"-DPORT_GENERATED={gen}",
            f"-DPORT_BACKEND={a.backend}", "-DCMAKE_BUILD_TYPE=" + a.config]
+    if win:
+        sys.path.insert(0, os.path.join(PORT, "tools")); import deps
+        os.environ["ZIG"] = f"{PY} -m ziglang"
+        cfg.append(f"-DCMAKE_TOOLCHAIN_FILE={os.path.join(PORT, 'cmake', 'windows-zig.cmake')}")
+        if a.backend == "sdl2": cfg.append(f"-DSDL2_DIR={deps.sdl2_mingw(os.path.join(ROOT, 'build', 'deps'))}")
     if a.cc: cfg.append(f"-DCMAKE_C_COMPILER={a.cc}")
     if a.cflags: cfg.append(f"-DCMAKE_C_FLAGS={a.cflags}")
     run(cfg, stdout=subprocess.DEVNULL); run(["cmake", "--build", hb], stdout=subprocess.DEVNULL)
-    return os.path.join(hb, "ss2port")
+    return os.path.join(hb, "ss2port.exe" if win else "ss2port")
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--backend", default="null"); ap.add_argument("--build", default=os.path.join(ROOT, "build", "conformance"))
+    ap.add_argument("--backend", default="null"); ap.add_argument("--target", default="native", choices=["native", "windows"]); ap.add_argument("--build", default=os.path.join(ROOT, "build", "conformance"))
     ap.add_argument("--skip", action="append", default=[]); ap.add_argument("--cc"); ap.add_argument("--cflags")
     ap.add_argument("--config", default="RelWithDebInfo"); ap.add_argument("--no-rebuild-guest", action="store_true")
     ap.add_argument("--wrap", help="run the host under this command (e.g. 'valgrind -q', 'xvfb-run -a')")
@@ -66,10 +73,11 @@ def main():
     host = build_host(gen, a.build, a)
     work = os.path.join(a.build, "run"); shutil.rmtree(work, ignore_errors=True); os.makedirs(work)
     shutil.copy(exe, work)
+    if a.target == "windows" and os.path.isfile(os.path.join(os.path.dirname(host), "SDL2.dll")): shutil.copy(os.path.join(os.path.dirname(host), "SDL2.dll"), work)
     args = (a.wrap.split() if a.wrap else []) + [host, os.path.join(work, "conformance.exe")] + [x for s in a.skip for x in ("-skip", s)]
     if a.backend != "null": args.append("-pixels")         # a real renderer: check what it draws
     r = subprocess.run(args, cwd=work)
-    print(f"conformance ({a.backend}): {'PASS' if r.returncode == 0 else 'FAIL (exit %d)' % r.returncode}")
+    print(f"conformance ({a.backend}{', windows' if a.target == 'windows' else ''}): {'PASS' if r.returncode == 0 else 'FAIL (exit %d)' % r.returncode}")
     sys.exit(0 if r.returncode == 0 else 1)
 
 if __name__ == "__main__": main()

@@ -271,3 +271,9 @@ distributed; stay vanilla.
   on native Linux or a native Windows build of the portable host.
 - Exit crash: mod_free dropped the module's reference before calling DllMain(DETACH), so mod_call refused the call into
   lgvid.dll (call to 30303d97). Now calls DllMain first.
+- Windows system backend (backends/win32): reserve-and-commit-on-touch guest memory (vectored exception handler),
+  SRW locks and condition variables, _beginthreadex, high-resolution waitable-timer sleep, UTF-8 file API. Cross-built
+  with Zig (port/cmake/windows-zig.cmake), SDL2 MinGW package fetched and SHA-256 checked (port/tools/deps.py).
+  Found: Clang's __builtin_setjmp loses the caller's locals on x86_64-windows (minimal repro under Wine), so rt.h uses
+  the CRT's _setjmp(buf, NULL) there. Conformance under Wine: 449/449 null, 476/476 sdl2 with pixel checks.
+  Purpose: a development/test target (real mouse, Windows debuggers, Windows on ARM), not a way to play on Windows.

@@ -1,0 +1,2 @@
+#!/bin/sh
+exec ${ZIG:-python3 -m ziglang} ranlib "$@"

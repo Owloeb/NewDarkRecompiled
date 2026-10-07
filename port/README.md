@@ -14,6 +14,7 @@ dx/      Direct3D 9 (state, vertex processing, formats, render targets), DirectS
          DirectDraw (detection), the built-in cutscene decoder (video.c, stands in for ffmpeg.dll)
    | include/plat.h        <- the only interface a port implements
 backends/posix/   system part: memory, time, threads, files   (any POSIX system)
+backends/win32/   system part for Windows (a development and test target: to play on Windows use the normal Windows build)
 backends/sdl2/    window, input, audio, OpenGL 2.1 / OpenGL ES 2.0 renderer
 backends/null/    headless (everything accepted, nothing shown); used for tests
 ```
@@ -29,6 +30,11 @@ python3 port/build.py "/path/to/System Shock 2/SS2.exe"     # lifts the game and
 # or by hand: cmake -S port -B build/port -DPORT_GENERATED=out/port [-DPORT_BACKEND=sdl2|null]
 build/port/ss2port [options] /path/to/SS2.exe   # run from the game folder; options go BEFORE the exe, anything after it is passed to the game
 ```
+
+Windows (cross-compiled from Linux or WSL with Zig, `python3 -m pip install ziglang`; SDL2 is fetched automatically):
+`python3 port/build.py "/path/to/SS2.exe" --target windows --install`, then in the game folder `.\ss2port.exe --windowed SS2.exe`.
+This runs the same shared code as every other port on a real Windows mouse, keyboard and debugger; it is not meant
+for playing (the normal Windows build calls Windows and DirectX directly).
 
 Options: `PORT_PREEMPT` (default ON: other guest threads may run at loop heads; needed for games that spin-wait),
 `PORT_VIDEO` (default ON: built-in Indeo 5 cutscene decoder, LGPL code from `video/`). Needs GCC or Clang.
@@ -62,6 +68,7 @@ The only requirements on the platform: a little-endian CPU, a C99 compiler with 
 * `tests/run_conformance.py`: builds a game-free 32-bit Windows test program, lifts it with `lift.py` (so it goes through the
   same recompiler as the game) and runs it on the chosen backend: 370 checks on `null`, 397 on `sdl2` (which adds pixel-exact
   rendering checks). Also run clean under ASan, UBSan and TSan, and as a 32-bit build with a small guest space.
+  `--target windows --wrap wine` builds and runs the Windows exe (Wine, or natively on Windows).
 
 ## Status and limitations
 
