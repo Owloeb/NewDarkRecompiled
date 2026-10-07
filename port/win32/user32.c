@@ -45,6 +45,7 @@ static Wnd wins[16];
 static uint32_t focus_hwnd, capture_hwnd, active_hwnd;
 static int cursor_count;                 /* ShowCursor display counter: >= 0 shows the pointer */
 static int clip_on;
+static int di_acquired, di_exclusive, captured;   /* pointer capture: see apply_mouse_mode */
 static Wnd *W(uint32_t h) { for (int i = 0; i < 16; i++) if (wins[i].alive && wins[i].hwnd == h) return &wins[i]; return NULL; }
 static uint32_t wndcall(uint32_t h, uint32_t msg, uint32_t wp, uint32_t lp) {
     Wnd *w = W(h); if (!w || !w->proc) return 0;
@@ -187,7 +188,12 @@ static void on_event(const PlatEvent *e, void *user) {
         break; }
     case PLAT_EV_TEXT: if (h && e->text) post(h, 0x102, e->text < 256 ? e->text : '?', 1); break;              /* WM_CHAR */
     case PLAT_EV_MOUSE_MOVE: {
-        int gx, gy; to_game_coords(e->x, e->y, &gx, &gy); g_input.mouse_x = gx; g_input.mouse_y = gy; g_input.mouse_dx += e->dx; g_input.mouse_dy += e->dy;
+        int gx, gy; to_game_coords(e->x, e->y, &gx, &gy);
+        if (captured) {           /* the pointer does not move: the cursor the game reads follows the motion (games that recentre it, menu cursors) */
+            Wnd *cw = W(g_input.hwnd); gx = g_input.mouse_x + e->dx; gy = g_input.mouse_y + e->dy;
+            if (cw && cw->w > 0 && cw->h > 0) { gx = gx < 0 ? 0 : gx >= cw->w ? cw->w - 1 : gx; gy = gy < 0 ? 0 : gy >= cw->h ? cw->h - 1 : gy; }
+        }
+        g_input.mouse_x = gx; g_input.mouse_y = gy; g_input.mouse_dx += e->dx; g_input.mouse_dy += e->dy;
         if (h) post(h, 0x200, mk_flags(), ((uint32_t)(gy & 0xFFFF) << 16) | (uint32_t)(gx & 0xFFFF));
         break; }
     case PLAT_EV_MOUSE_BUTTON: {
@@ -303,7 +309,17 @@ SHIM(SetCursorPos) {
     int cw, ch; plat_video_window_size(&cw, &ch); if (w && w->w > 0 && w->h > 0 && cw > 0) plat_video_warp_mouse((int)((int64_t)x * cw / w->w), (int)((int64_t)y * ch / w->h));
     RET(1);
 }
-static void apply_mouse_mode(void) { plat_video_mouse_mode(clip_on && cursor_count < 0, cursor_count >= 0); }
+/* Capture the pointer (relative motion, no screen edges) when the game hid the cursor and reads the mouse itself:
+   DirectInput (any cooperative level) or a confined cursor. DirectInput in exclusive mode always captures.
+   On Windows, DirectInput reads the device, not the cursor, so a free pointer would stop at the screen edge. */
+static void apply_mouse_mode(void) {
+    captured = di_exclusive || (cursor_count < 0 && (di_acquired || clip_on));
+    plat_video_mouse_mode(captured, cursor_count >= 0 && !captured);
+}
+void input_set_di_mouse(int acquired, int exclusive) {
+    if (acquired == di_acquired && exclusive == di_exclusive) return;
+    di_acquired = acquired; di_exclusive = exclusive; apply_mouse_mode();
+}
 SHIM(ShowCursor) { cursor_count += A(0) ? 1 : -1; apply_mouse_mode(); RET((uint32_t)cursor_count); }
 SHIM(ClipCursor) { clip_on = A(0) != 0; apply_mouse_mode(); RET(1); }
 SHIM(SetCapture) { uint32_t o = capture_hwnd; capture_hwnd = A(0); RET(o); }

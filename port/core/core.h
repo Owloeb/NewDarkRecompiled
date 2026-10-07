@@ -157,7 +157,8 @@ typedef struct {
 extern InputState g_input;
 void input_pump(void);             /* polls the platform and turns events into window messages / DirectInput data */
 typedef void (*input_listener)(const PlatEvent *ev);
-void input_listen(input_listener fn);     /* DirectInput hooks in here for buffered data */
+void input_listen(input_listener fn);
+void input_set_di_mouse(int acquired, int exclusive);  /* win32/user32.c: DirectInput mouse state, for pointer capture */     /* DirectInput hooks in here for buffered data */
 int  dik_to_vk(int dik);
 
 /* ---------------------------------------------------------------- recompiled DLLs (core/modules.c) */

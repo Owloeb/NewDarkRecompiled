@@ -28,7 +28,7 @@ typedef struct Dev {
 } Dev;
 static Dev *devs;
 static Dev *D(ComObj *o) { return (Dev *)o->data; }
-static void mouse_mode(void) { int rel = 0; for (Dev *d = devs; d; d = d->next) if (d->mouse && d->acquired && d->exclusive) rel = 1; plat_video_mouse_mode(rel, !rel); }
+static void mouse_mode(void) { int acq = 0, ex = 0; for (Dev *d = devs; d; d = d->next) if (d->mouse && d->acquired) { acq = 1; if (d->exclusive) ex = 1; } input_set_di_mouse(acq, ex); }
 
 /* ---------------------------------------------------------------- events from the platform */
 static void push(Dev *d, uint32_t ofs, uint32_t data) {

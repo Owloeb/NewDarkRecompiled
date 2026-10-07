@@ -248,3 +248,12 @@ distributed; stay vanilla.
   seen under full tracing). Fixed in port/crt/stdio.c; regression check added to the conformance test.
 - Tracing is now bounded (first 8192 + last 4096 calls in memory, with return values and callers): the first version
   streamed every call and filled the disk.
+- Owen's next run: in-game picture, cutscenes with sound, keyboard fine; loading slow, no in-game sound, mouselook bad.
+  - Loading: binary fread was unbuffered (two system calls per archive entry, slow on /mnt drives). Buffered; now as
+    fast as the Windows build.
+  - Sound: the engine mixes in software into one streaming buffer (works), but loads every sound with
+    mmioOpen(NULL, {fccIOProc=FOURCC_MEM, pchBuffer}) and mmio only supported files: 25 "not found (mmioOpen): """.
+    Added memory files (and conformance tests for mmio, which had none).
+  - Mouse: never captured in play ("mouse: free"): capture only followed DirectInput exclusive mode, and user32/dinput
+    overrode each other. Now one decision: capture when the cursor is hidden and DirectInput (any level) or ClipCursor
+    reads the mouse; captured motion drives GetCursorPos. WSLg pointer capture itself is still unverified.

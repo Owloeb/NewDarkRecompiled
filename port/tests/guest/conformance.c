@@ -134,6 +134,37 @@ static void test_crt(void) {
 }
 
 /* ---------------------------------------------------------------- files: stdio, low-level, Win32, case-insensitive paths */
+/* ---------------------------------------------------------------- WINMM mmio: RIFF parsing from memory (how the engine loads
+   every sound) and from a file */
+static void put4(unsigned char *p, const char *t) { for (int i = 0; i < 4; i++) p[i] = (unsigned char)t[i]; }
+static void put32(unsigned char *p, DWORD v) { p[0] = (unsigned char)v; p[1] = (unsigned char)(v >> 8); p[2] = (unsigned char)(v >> 16); p[3] = (unsigned char)(v >> 24); }
+static void mmio_walk(HMMIO h, const char *what) {
+    MMCKINFO r, c; unsigned char b[32]; (void)what;
+    r.fccType = mmioFOURCC('W', 'A', 'V', 'E'); CHECKI(mmioDescend(h, &r, NULL, MMIO_FINDRIFF), 0); CHECKI(r.cksize, 52);
+    c.ckid = mmioFOURCC('f', 'm', 't', ' '); CHECKI(mmioDescend(h, &c, &r, MMIO_FINDCHUNK), 0); CHECKI(c.cksize, 16);
+    CHECKI(mmioRead(h, (HPSTR)b, 16), 16); CHECK(b[0] == 1 && b[2] == 1 && b[4] == 0x22 && b[14] == 16);   /* PCM, mono, 22050 Hz (0x5622), 16-bit */
+    CHECKI(mmioAscend(h, &c, 0), 0);
+    c.ckid = mmioFOURCC('d', 'a', 't', 'a'); CHECKI(mmioDescend(h, &c, &r, MMIO_FINDCHUNK), 0); CHECKI(c.cksize, 4);   /* skips the odd-sized chunk and its pad byte */
+    CHECKI(mmioRead(h, (HPSTR)b, 16), 4); CHECK(b[0] == 0x11 && b[3] == 0x44); CHECKI(mmioRead(h, (HPSTR)b, 4), 0);
+    CHECKI(mmioSeek(h, 0, SEEK_CUR), 60); CHECKI(mmioSeek(h, 8, SEEK_SET), 8); CHECKI(mmioRead(h, (HPSTR)b, 4), 4); CHECK(!memcmp(b, "WAVE", 4));
+    c.ckid = mmioFOURCC('n', 'o', 'n', 'e'); mmioSeek(h, 12, SEEK_SET); CHECKI(mmioDescend(h, &c, &r, MMIO_FINDCHUNK), MMIOERR_CHUNKNOTFOUND);
+}
+static void test_mmio(void) {
+    unsigned char w[60]; memset(w, 0, sizeof w);
+    put4(w, "RIFF"); put32(w + 4, 52); put4(w + 8, "WAVE");
+    put4(w + 12, "fmt "); put32(w + 16, 16); w[20] = 1; w[22] = 1; put32(w + 24, 22050); put32(w + 28, 44100); w[32] = 2; w[34] = 16;
+    put4(w + 36, "junk"); put32(w + 40, 3); w[44] = 'x'; w[45] = 'y'; w[46] = 'z';
+    put4(w + 48, "data"); put32(w + 52, 4); w[56] = 0x11; w[57] = 0x22; w[58] = 0x33; w[59] = 0x44;
+    MMIOINFO mi; memset(&mi, 0, sizeof mi); mi.fccIOProc = FOURCC_MEM; mi.pchBuffer = (HPSTR)w; mi.cchBuffer = sizeof w;
+    HMMIO h = mmioOpenA(NULL, &mi, MMIO_READ); CHECK(h != 0); CHECKI(mi.wErrorRet, 0);
+    if (h) { mmio_walk(h, "memory"); CHECKI(mmioClose(h, 0), 0); }
+    FILE *f = fopen("ctest_dir\\t.wav", "wb"); fwrite(w, 1, sizeof w, f); fclose(f);
+    h = mmioOpenA("ctest_dir\\T.WAV", NULL, MMIO_READ); CHECK(h != 0);
+    if (h) { mmio_walk(h, "file"); mmioClose(h, 0); }
+    CHECK(mmioOpenA("ctest_dir\\missing.wav", NULL, MMIO_READ) == 0);
+    remove("ctest_dir\\t.wav");
+}
+
 static void test_stdio(void) {
     char b[256];
     _mkdir("ctest_dir"); _mkdir("CTest_Dir\\Sub");
@@ -178,6 +209,7 @@ static void test_stdio(void) {
     CHECKI(GetPrivateProfileStringA("Video", "name", "def", b, sizeof b, ".\\ctest_dir\\cfg.ini"), 11); CHECKS(b, "Dark Engine");
     CHECKI(GetPrivateProfileStringA("Video", "none", "def", b, sizeof b, ".\\ctest_dir\\cfg.ini"), 3); CHECKS(b, "def");
     remove("ctest_dir\\cfg.ini"); remove("ctest_dir\\text.txt");
+    test_mmio();
 }
 
 /* ---------------------------------------------------------------- Win32: memory, TLS, interlocked, strings, time */
