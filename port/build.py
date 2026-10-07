@@ -59,6 +59,6 @@ def main():
     gen = "Ninja" if shutil.which("ninja") else "Unix Makefiles"
     run(["cmake", "-S", os.path.join(ROOT, "port"), "-B", a.build, "-G", gen, f"-DPORT_GENERATED={OUT}", f"-DPORT_BACKEND={a.backend}", "-DCMAKE_BUILD_TYPE=Release"], "cmake configure")
     run(["cmake", "--build", a.build, "-j", str(a.jobs)], "build")
-    print(f"\ndone: {os.path.join(a.build, 'ss2port')}\nrun it from the game folder:  cd \"{os.path.dirname(exe)}\" && {os.path.join(a.build, "ss2port")} --windowed --verbose SS2.exe")
+    print(f"\ndone: {os.path.join(a.build, 'ss2port')}\nrun it from the game folder:  cd \"{os.path.dirname(exe)}\" && {os.path.join(a.build, 'ss2port')} --windowed --verbose SS2.exe")
 
 if __name__ == "__main__": main()
