@@ -23,6 +23,47 @@ Everything above `plat.h` is shared and contains no operating-system calls. `pla
 (coordinate conventions: Direct3D clip space with the half-pixel offset already applied, top-left texture origin,
 `0xAARRGGBB` colours, DIK scan codes for keys).
 
+## Linux quick start (Ubuntu / Debian, including WSL)
+
+You need your own copy of the game (NewDark 2.48 `SS2.exe`); the generated C is built on your machine and never distributed.
+
+```
+# 1. tools and libraries
+sudo apt update
+sudo apt install -y git build-essential cmake ninja-build python3-venv libsdl2-dev
+
+# 2. get the code (the platform layer lives on its own branch)
+git clone -b platform-layer https://github.com/Owloeb/NewDarkRecompiled.git
+cd NewDarkRecompiled
+
+# 3. Python environment for the lifter (use `source`, do not execute the activate script)
+python3 -m venv .venv
+source .venv/bin/activate
+pip install pefile capstone
+
+# 4. lift + build (about 8 minutes the first time; later runs skip unchanged steps)
+python3 port/build.py "/path/to/System Shock 2/SS2.exe"
+```
+
+The result is `build/port/ss2port`. Run it from the game folder, **options before the exe**
+(anything after `SS2.exe` is passed to the game):
+
+```
+cd "/path/to/System Shock 2"
+~/NewDarkRecompiled/build/port/ss2port --windowed SS2.exe
+# or: python3 port/build.py ... --install   (copies ss2port next to SS2.exe), then ./ss2port --windowed
+# with no exe argument it uses SS2.exe in the current folder or next to ss2port
+```
+
+Tips:
+- **WSL:** keep the game folder on the Linux filesystem (e.g. `~/ss2`, copy it from `/mnt/c/...`); reading through `/mnt/c`
+  is very slow. WSL needs WSLg (Windows 11, or Windows 10 with a recent WSL) for a window and sound.
+- **Mouse:** WSLg cannot capture the pointer, so mouselook is unreliable there; on native Linux (X11/Wayland) SDL2 uses
+  relative mouse mode. If motion is too fast or slow, set `SS2PORT_MOUSE_SCALE` (e.g. `0.5`); `SS2PORT_MOUSE_DEBUG=1` logs events.
+- **Saves/config** are written next to the game; set `SS2PORT_WRITE_DIR` to keep the game folder read-only.
+- **Problems:** run with `--verbose`; for a crash or hang add `--trace` (bounded, dumped on crash or Ctrl-C) and see the
+  options below. Headless check without a window or sound: `--backend null` at build time.
+
 ## Building
 
 ```

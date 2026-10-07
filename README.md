@@ -171,6 +171,9 @@ python3 port/build.py "/path/to/System Shock 2/SS2.exe"                     # Li
 python3 port/build.py "/path/to/System Shock 2/SS2.exe" --target windows    # 64-bit Windows exe, cross-built with Zig
 ```
 
+Step-by-step instructions for Ubuntu/Debian/WSL (packages, Python environment, running, tips):
+[Linux quick start](port/README.md#linux-quick-start-ubuntu--debian-including-wsl).
+
 Status: the game plays (tested through Rickenbacker and Body of the Many) on Linux under WSL and as a 64-bit Windows
 build; mouselook verified on Windows (WSLg cannot capture the pointer). Known gaps: shaders and cube/volume textures
 (the game falls back to its fixed-function path), C++ exceptions, `fmsel.dll`; native Linux mouselook not yet tested.
