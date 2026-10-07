@@ -238,3 +238,13 @@ conformance suite (`port/tests/run_conformance.py`: 370 null / 397 sdl2 checks, 
 Not verified: the real SS2.exe (no game data in the sandbox). Next step is Owen running it on his game folder and sending
 the log of the first fault. Rules still in force: do not merge to main until Owen confirms; generated C is never
 distributed; stay vanilla.
+
+### First runs on Owen's machine (WSL, Ubuntu, Windows 10)
+- Builds and starts; recompiled lgvid.dll loads; WSLg window with Mesa llvmpipe GL.
+- Crash at 0x4aff44 (call through NULL after a failed `iface\fontpal` lookup). Root cause found with the new
+  `--trace-only` file trace: the engine's ZIP (.crf) reader sizes archives with `_filelength(_fileno(f))`; `_fileno`
+  of an fopen stream is 1000+index, which `_filelength`/`_fstat` did not accept, so every archive had length -1, the
+  end-of-directory seek (-23) failed, and the reader indexed garbage (also the ~224 MB heap growth and the endless loop
+  seen under full tracing). Fixed in port/crt/stdio.c; regression check added to the conformance test.
+- Tracing is now bounded (first 8192 + last 4096 calls in memory, with return values and callers): the first version
+  streamed every call and filled the disk.

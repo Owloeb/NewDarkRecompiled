@@ -164,7 +164,7 @@ SHIM(fputs_) { Stream *s = crt_stream(A(1)); const char *p = gs(A(0)); RET(s && 
 SHIM(puts_) { const char *p = gs(A(0)); console_write(0, p, (uint32_t)strlen(p)); console_write(0, "\n", 1); RET(0); }
 SHIM(putchar_) { char ch = (char)A(0); console_write(0, &ch, 1); RET(A(0) & 0xFF); }
 SHIM(getchar_) { RET(0xFFFFFFFFu); }
-SHIM(fileno_) { Stream *s = crt_stream(A(0)); RET(s ? (uint32_t)(s->fd >= 0 ? s->fd : (int)RD32(A(0) + 16) + 1000) : 0xFFFFFFFFu); }
+SHIM(fileno_) { Stream *s = crt_stream(A(0)); RET(s ? (uint32_t)(s->fd >= 0 ? s->fd : (int)RD32(A(0) + 16) + 1000) : 0xFFFFFFFFu); }   /* 1000 + index: see fd_stream */
 SHIM(fprintf_) { Stream *s = crt_stream(A(0)); char *o; int n = crt_format(&o, gs(A(1)), c->esp + 12, 0); if (s) stream_write(s, (const uint8_t *)o, (uint64_t)n); free(o); RET(n); }
 SHIM(vfprintf_) { Stream *s = crt_stream(A(0)); char *o; int n = crt_format(&o, gs(A(1)), A(2), 0); if (s) stream_write(s, (const uint8_t *)o, (uint64_t)n); free(o); RET(n); }
 SHIM(printf_) { char *o; int n = crt_format(&o, gs(A(0)), c->esp + 8, 0); console_write(0, o, (uint32_t)n); free(o); RET(n); }
@@ -178,6 +178,11 @@ typedef struct { PlatFile *pf; int text, append, used; } Fd;
 #define MAXFD 256
 static Fd fds[MAXFD];
 static Fd *FD(uint32_t fd) { return fd < MAXFD && fds[fd].used ? &fds[fd] : NULL; }
+/* _fileno of an fopen stream is 1000 + its index (fileno_ above). Calls that only ask about the file (size, stat, flush)
+   must accept those too: the engine's ZIP reader does _filelength(_fileno(f)) on every archive it opens. */
+#define STREAM_FD0 1000u
+static Stream *fd_stream(uint32_t fd) { return fd >= STREAM_FD0 && fd < STREAM_FD0 + MAXS && streams[fd - STREAM_FD0] && streams[fd - STREAM_FD0]->pf ? streams[fd - STREAM_FD0] : NULL; }
+static PlatFile *fd_file(uint32_t fd) { Fd *f = FD(fd); if (f) return f->pf; Stream *s = fd_stream(fd); return s ? s->pf : NULL; }
 static int fd_open(const char *name, uint32_t of) {
     int fl = (of & 3) == 0 ? PLAT_READ : (of & 3) == 1 ? PLAT_WRITE : PLAT_READ | PLAT_WRITE;
     if (of & 0x100) fl |= PLAT_CREATE; if (of & 0x200) fl |= PLAT_TRUNCATE; if (of & 0x400) fl |= PLAT_EXCLUSIVE;
@@ -218,11 +223,11 @@ SHIM(lseek_) { Fd *f = FD(A(0)); int64_t r = f ? plat_fs_seek(f->pf, (int32_t)A(
 SHIM(lseeki64_) { Fd *f = FD(A(0)); int64_t r = f ? plat_fs_seek(f->pf, (int64_t)(((uint64_t)A(2) << 32) | A(1)), (int)A(3)) : -1; ret64(c, (uint64_t)r); }
 SHIM(tell_) { Fd *f = FD(A(0)); RET(f ? (uint32_t)plat_fs_seek(f->pf, 0, PLAT_SEEK_CUR) : 0xFFFFFFFFu); }
 SHIM(eof_) { Fd *f = FD(A(0)); if (!f) { RET(0xFFFFFFFFu); return; } PlatStat st; plat_fs_fstat(f->pf, &st); RET((uint64_t)plat_fs_seek(f->pf, 0, PLAT_SEEK_CUR) >= st.size); }
-SHIM(filelength_) { Fd *f = FD(A(0)); PlatStat st; RET(f && !plat_fs_fstat(f->pf, &st) ? (uint32_t)st.size : 0xFFFFFFFFu); }
-SHIM(filelengthi64_) { Fd *f = FD(A(0)); PlatStat st; ret64(c, f && !plat_fs_fstat(f->pf, &st) ? st.size : (uint64_t)-1); }
+SHIM(filelength_) { PlatFile *f = fd_file(A(0)); PlatStat st; if (!f) crt_set_errno(9); RET(f && !plat_fs_fstat(f, &st) ? (uint32_t)st.size : 0xFFFFFFFFu); }
+SHIM(filelengthi64_) { PlatFile *f = fd_file(A(0)); PlatStat st; if (!f) crt_set_errno(9); ret64(c, f && !plat_fs_fstat(f, &st) ? st.size : (uint64_t)-1); }
 SHIM(chsize_) { Fd *f = FD(A(0)); RET(f && !plat_fs_truncate(f->pf, A(1)) ? 0 : 0xFFFFFFFFu); }
-SHIM(commit_) { Fd *f = FD(A(0)); if (f) plat_fs_flush(f->pf); RET(0); }
-SHIM(setmode_) { Fd *f = FD(A(0)); if (!f) { RET(0x8000); return; } uint32_t old = f->text ? 0x4000 : 0x8000; f->text = A(1) == 0x4000; RET(old); }
+SHIM(commit_) { PlatFile *f = fd_file(A(0)); if (f) plat_fs_flush(f); RET(0); }
+SHIM(setmode_) { Fd *f = FD(A(0)); if (!f) { Stream *st = fd_stream(A(0)); if (st) { uint32_t old = st->text ? 0x4000 : 0x8000; st->text = A(1) == 0x4000; RET(old); return; } RET(0x8000); return; } uint32_t old = f->text ? 0x4000 : 0x8000; f->text = A(1) == 0x4000; RET(old); }
 SHIM(isatty_) { RET(A(0) < 3); }
 SHIM(dup_) { RET(0xFFFFFFFFu); }
 SHIM(get_osfhandle_) { RET(A(0) + 0x7000); }
@@ -244,7 +249,7 @@ static int stat_name(const char *name, PlatStat *st) {
 }
 SHIM(stat64i32_) { PlatStat st; if (stat_name(gs(A(0)), &st)) { RET(0xFFFFFFFFu); return; } put_stat(A(1), &st); RET(0); }
 SHIM(stat32_) { PlatStat st; if (stat_name(gs(A(0)), &st)) { RET(0xFFFFFFFFu); return; } put_stat32(A(1), &st); RET(0); }
-SHIM(fstat64i32_) { Fd *f = FD(A(0)); PlatStat st; if (!f || plat_fs_fstat(f->pf, &st)) { crt_set_errno(9); RET(0xFFFFFFFFu); return; } put_stat(A(1), &st); RET(0); }
+SHIM(fstat64i32_) { PlatFile *f = fd_file(A(0)); PlatStat st; if (!f || plat_fs_fstat(f, &st)) { crt_set_errno(9); RET(0xFFFFFFFFu); return; } put_stat(A(1), &st); RET(0); }
 SHIM(access_) { PlatStat st; char hp[1200]; vfs_map(gs(A(0)), hp, sizeof hp); if (plat_fs_stat(hp, &st)) { crt_set_errno(2); RET(0xFFFFFFFFu); return; } if ((A(1) & 2) && st.readonly) { crt_set_errno(13); RET(0xFFFFFFFFu); return; } RET(0); }
 SHIM(remove_) { char hp[1200]; vfs_map_write(gs(A(0)), hp, sizeof hp); int e = plat_fs_remove(hp); if (e) { crt_set_errno(crt_errno_of(e)); RET(0xFFFFFFFFu); return; } vfs_changed(hp); RET(0); }
 SHIM(rename_) {

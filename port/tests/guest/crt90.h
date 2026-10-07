@@ -61,6 +61,7 @@ IMP int __cdecl _read(int, void *, unsigned);
 IMP int __cdecl _write(int, const void *, unsigned);
 IMP int __cdecl _close(int);
 IMP long __cdecl _filelength(int);
+IMP int __cdecl _fileno(FILE *);
 IMP int __cdecl remove(const char *);
 IMP int __cdecl rename(const char *, const char *);
 IMP int __cdecl _mkdir(const char *);

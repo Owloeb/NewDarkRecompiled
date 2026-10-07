@@ -143,6 +143,9 @@ static void test_stdio(void) {
     if (f) { CHECKS(fgets(b, sizeof b, f), "line one\n"); CHECKS(fgets(b, sizeof b, f), "line two\n"); int n = 0; char w[8]; CHECKI(fscanf(f, "%d %s", &n, w), 2); CHECKI(n, 77); fclose(f); }
     f = fopen("ctest_dir/text.txt", "rb"); CHECK(f != 0);
     if (f) { CHECKI(fseek(f, 0, 2), 0); CHECKI(ftell(f), 26); fseek(f, 5, 0); CHECKI(fread(b, 1, 3, f), 3); b[3] = 0; CHECKS(b, "one"); CHECK(!feof(f)); fread(b, 1, 100, f); CHECK(feof(f)); fclose(f); }
+    /* the engine's ZIP reader: size from _filelength(_fileno(f)), then seek to size - 22 for the end-of-directory record */
+    f = fopen("ctest_dir/text.txt", "rb"); CHECK(f != 0);
+    if (f) { long len = _filelength(_fileno(f)); CHECKI(len, 26); CHECKI(fseek(f, len - 22, 0), 0); CHECKI(fread(b, 1, 22, f), 22); CHECKI(ftell(f), 26); fclose(f); }
     CHECK(fopen("ctest_dir\\missing.txt", "rb") == 0);
     struct _stat64i32 st; CHECKI(_stat64i32("ctest_dir\\TEXT.txt", &st), 0); CHECKI(st.st_size, 26); CHECK(st.st_mode & 0x8000);
     CHECKI(_stat64i32("ctest_dir\\sub", &st), 0); CHECK(st.st_mode & 0x4000); CHECKI(_stat64i32("nope", &st), -1);
