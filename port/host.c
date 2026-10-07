@@ -37,13 +37,33 @@ static CPU g_cpu; CPU *g_cpup = &g_cpu;
 void port_miss(const char *what, const char *guest, const char *host) { static int n; if (n++ < 60) port_log("not found (%s): \"%s\" -> %s", what, guest, host); }
 void port_log(const char *fmt, ...) { va_list ap; va_start(ap, fmt); fputs("[port] ", stderr); vfprintf(stderr, fmt, ap); fputc('\n', stderr); va_end(ap); }
 void port_exit(int code) { fflush(stdout); fflush(stderr); _exit(code); }
+
+#ifdef RT_TRACE
+/* coverage trace (debug build: -DRT_TRACE): remembers every guest instruction address in the order it first ran */
+#define COV_LO 0x400000u
+#define COV_N 0x700000u
+static uint8_t cov_bits[COV_N / 8 + 1]; static uint32_t *cov_ord; static uint32_t cov_cnt; static uint32_t tr_ring[64]; static uint32_t tr_pos;
+void rt_trace(CPU *c, uint32_t va) {
+    (void)c; tr_ring[tr_pos++ & 63] = va; uint32_t i = va - COV_LO; if (i >= COV_N) return;
+    if (cov_bits[i >> 3] & (1u << (i & 7))) return; cov_bits[i >> 3] |= (uint8_t)(1u << (i & 7));
+    if (!cov_ord) cov_ord = malloc(sizeof(uint32_t) * COV_N); cov_ord[cov_cnt++] = va;
+}
+void port_cov_dump(void) {
+    const char *p = getenv("PORT_COV"); if (!p || !cov_ord) return; FILE *f = fopen(p, "w"); if (!f) return;
+    fprintf(f, "# last 64 instructions, oldest first\n"); for (int k = 0; k < 64; k++) fprintf(f, "%08x\n", tr_ring[(tr_pos + k) & 63]);
+    fprintf(f, "# first-execution order of %u instructions\n", cov_cnt); for (uint32_t k = 0; k < cov_cnt; k++) fprintf(f, "%08x\n", cov_ord[k]); fclose(f);
+}
+#else
+void port_cov_dump(void) {}
+#endif
+void port_cov_dump(void);
 void port_die(const char *fmt, ...) {
     va_list ap; va_start(ap, fmt); fputs("[port] FATAL: ", stderr); vfprintf(stderr, fmt, ap); fputc('\n', stderr); va_end(ap);
     fprintf(stderr, "[port]   guest esp=%08x ebp=%08x eax=%08x ecx=%08x edx=%08x ebx=%08x esi=%08x edi=%08x\n", g_cpu.esp, g_cpu.ebp, g_cpu.eax, g_cpu.ecx, g_cpu.edx, g_cpu.ebx, g_cpu.esi, g_cpu.edi);
     fprintf(stderr, "[port]   last host calls:"); for (unsigned i = ring_n > 12 ? ring_n - 12 : 0; i < ring_n; i++) fprintf(stderr, " %s@%x", ring_names[i & 15], ring_ret[i & 15]); fputc(10, stderr);
     { fprintf(stderr, "[port]   frames (ebp chain, return addresses):"); uint32_t bp = g_cpu.ebp; for (int i = 0; i < 12 && bp > 0x1000 && bp < 0x08400000u; i++) { fprintf(stderr, " %08x", RD32(bp + 4)); uint32_t nb = RD32(bp); if (nb <= bp) break; bp = nb; } fputc(10, stderr); }
     fprintf(stderr, "[port]   guest stack:"); for (int i = 0; i < 12; i++) fprintf(stderr, " %08x", RD32(g_cpu.esp + 4 * i)); fputc(10, stderr);
-    port_exit(2);
+    port_cov_dump(); port_exit(2);
 }
 
 /* ---------------------------------------------------------------- guest heap (first-fit-free size classes inside the guest address space) */
