@@ -303,6 +303,14 @@ static void usage(void) {
         "  --list-shims      list every implemented import\n");
     exit(1);
 }
+static const char *find_default_exe(const char *self) {
+    static char path[1100]; PlatStat st; const char *names[] = { "SS2.exe", "ss2.exe", "SS2.EXE" };
+    for (int i = 0; i < 3; i++) if (!plat_fs_stat(names[i], &st) && !st.is_dir) return names[i];
+    const char *sl = self ? strrchr(self, '/') : NULL, *bs = self ? strrchr(self, '\\') : NULL; if (bs > sl) sl = bs;
+    if (!sl) return NULL;
+    for (int i = 0; i < 3; i++) { snprintf(path, sizeof path, "%.*s/%s", (int)(sl - self), self, names[i]); if (!plat_fs_stat(path, &st) && !st.is_dir) return path; }
+    return NULL;
+}
 int port_main(int argc, char **argv) {
     signal(SIGINT, on_signal); signal(SIGTERM, on_signal);
     int list_missing = 0; const char *exe = NULL; int i;
@@ -320,6 +328,7 @@ int port_main(int argc, char **argv) {
         else exe = a;
     }
     if (list_missing) { int missing = 0; bind_imports(1, &missing); printf("# %d of %u imports have no implementation yet\n", missing, hd_nimports); return 0; }
+    if (!exe) exe = find_default_exe(argv[0]);      /* started without arguments (double-click): SS2.exe in the current folder or next to us */
     if (!exe) usage();
     /* guest command line: the exe name and whatever followed it on ours */
     int n = snprintf(g_cfg.cmdline, sizeof g_cfg.cmdline, "SS2.exe");

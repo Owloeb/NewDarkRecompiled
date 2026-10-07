@@ -64,7 +64,10 @@ void plat_video_mouse_mode(int relative, int visible) {
     static int last = -1, rel_was; rel_mode = relative;
     if (!win) return;
     int r = SDL_SetRelativeMouseMode(relative ? SDL_TRUE : SDL_FALSE); if (relative && !rel_was) skip_first_rel = 1; rel_was = relative; SDL_ShowCursor(visible && !relative ? SDL_ENABLE : SDL_DISABLE);
-    if (relative != last) { last = relative; port_log_plat("mouse: %s%s%s", relative ? "captured (relative motion)" : "free", r ? " - SDL refused: " : "", r ? SDL_GetError() : ""); }
+    if (relative != last) {        /* quiet unless capture failed or SS2PORT_MOUSE_DEBUG is set */
+        last = relative;
+        if (r || getenv("SS2PORT_MOUSE_DEBUG")) port_log_plat("mouse: %s%s%s", relative ? "captured (relative motion)" : "free", r ? " - SDL refused: " : "", r ? SDL_GetError() : "");
+    }
 }
 void plat_video_warp_mouse(int x, int y) {
     if (!win || rel_mode) return; int bx, by, bw, bh; letterbox(&bx, &by, &bw, &bh);

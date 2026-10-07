@@ -28,7 +28,8 @@ Everything above `plat.h` is shared and contains no operating-system calls. `pla
 ```
 python3 port/build.py "/path/to/System Shock 2/SS2.exe"     # lifts the game and its DLLs, then builds (see port/build.py)
 # or by hand: cmake -S port -B build/port -DPORT_GENERATED=out/port [-DPORT_BACKEND=sdl2|null]
-build/port/ss2port [options] /path/to/SS2.exe   # run from the game folder; options go BEFORE the exe, anything after it is passed to the game
+build/port/ss2port [options] /path/to/SS2.exe   # options go BEFORE the exe, anything after it is passed to the game;
+                                                # with no exe it uses SS2.exe in the current folder or next to ss2port
 ```
 
 Windows (cross-compiled from Linux or WSL with Zig, `python3 -m pip install ziglang`; SDL2 is fetched automatically):
@@ -41,7 +42,8 @@ Options: `PORT_PREEMPT` (default ON: other guest threads may run at loop heads; 
 Command line: `--frames N --windowed --guest-space MB --verbose --trace --list-missing --list-shims`.
 Environment: `SS2PORT_FULLSCREEN`, `SS2PORT_GLES` (force OpenGL ES), `SS2PORT_NOVSYNC`, `SS2PORT_NOSOUND`,
 `SS2PORT_NOALERT` (log instead of message boxes), `SS2PORT_MOUSE_SCALE` (multiply mouse motion, e.g. `0.5`),
-`SS2PORT_MOUSE_WARP=1` (capture the mouse by re-centring the pointer, for systems where pointer capture does not work), `SS2PORT_WRITE_DIR` (where saves and configuration are written; the game
+`SS2PORT_MOUSE_WARP=1` (capture the mouse by re-centring the pointer, for systems where pointer capture does not work),
+`SS2PORT_MOUSE_DEBUG=1` (log raw mouse motion and the cursor the game reads and sets), `SS2PORT_WRITE_DIR` (where saves and configuration are written; the game
 folder stays read-only).
 
 ## Porting to a new platform
