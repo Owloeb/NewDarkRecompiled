@@ -81,10 +81,10 @@ int plat_video_open(int w, int h, int fullscreen, const char *title) {
         static int vgl_tried;
         if (!vgl_tried) {
             vgl_tried = 1;
-            int ok = vglInitWithCustomSizes(0, SCREEN_W, SCREEN_H, VITA_VGL_RAM_MB * 1024 * 1024, 96 * 1024 * 1024, 0, 0, SCE_GXM_MULTISAMPLE_NONE);
-            vlog("vitaGL init returned %d (RAM pool %d MB)", ok, VITA_VGL_RAM_MB);
-            if (!ok) { vlog("vitaGL failed to start"); return -1; }
-        } else { vlog("vitaGL did not start earlier"); return -1; }       /* it must not be started twice */
+            /* the result is NOT a success flag: GL_TRUE only means the display size was clamped to what the Vita can show */
+            int clamped = vglInitWithCustomSizes(0, SCREEN_W, SCREEN_H, VITA_VGL_RAM_MB * 1024 * 1024, 96 * 1024 * 1024, 0, 0, SCE_GXM_MULTISAMPLE_NONE);
+            vlog("vitaGL started (RAM pool %d MB%s)", VITA_VGL_RAM_MB, clamped ? ", display size was clamped" : "");
+        }       /* started once only: a second plat_video_open reuses it */
         vita_log_free_memory("after vitaGL");
         if (gl_init(vglGetProcAddress, 1)) return -1;
         gl_ready = 1;
