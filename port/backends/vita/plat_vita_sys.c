@@ -135,7 +135,8 @@ int plat_fs_truncate(PlatFile *f, uint64_t size) { return ftruncate(f->fd, (off_
 int plat_fs_flush(PlatFile *f) { (void)f; return PLAT_OK; }
 static void fill_stat(const struct stat *s, PlatStat *o) {
     o->size = (uint64_t)s->st_size; o->is_dir = S_ISDIR(s->st_mode); o->readonly = !(s->st_mode & S_IWUSR);
-    o->mtime_ns = (int64_t)s->st_mtim.tv_sec * 1000000000 + s->st_mtim.tv_nsec; o->atime_ns = (int64_t)s->st_atim.tv_sec * 1000000000 + s->st_atim.tv_nsec; o->ctime_ns = (int64_t)s->st_ctim.tv_sec * 1000000000 + s->st_ctim.tv_nsec;
+    /* the Vita's newlib has plain time_t fields (SVR4 layout), no timespec members: whole seconds only */
+    o->mtime_ns = (int64_t)s->st_mtime * 1000000000; o->atime_ns = (int64_t)s->st_atime * 1000000000; o->ctime_ns = (int64_t)s->st_ctime * 1000000000;
 }
 int plat_fs_fstat(PlatFile *f, PlatStat *st) { struct stat s; if (fstat(f->fd, &s)) return err_of(errno); fill_stat(&s, st); return PLAT_OK; }
 int plat_fs_stat(const char *path, PlatStat *st) { struct stat s; if (stat(path, &s)) return err_of(errno); fill_stat(&s, st); return PLAT_OK; }
