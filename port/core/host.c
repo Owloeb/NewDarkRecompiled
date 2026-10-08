@@ -83,7 +83,21 @@ static void dump_state(void) {
 static void on_signal(int sig) {          /* Ctrl-C or timeout: show where the game was, then stop */
     port_log("stopped by signal %d", sig); dump_state(); trace_dump(); _Exit(3);
 }
-void port_exit(int code) { trace_dump(); plat_audio_close(); plat_video_close(); exit(code); }
+#ifdef __linux__
+#include <sys/mman.h>
+#include <unistd.h>
+/* verbose only: how much of the guest address space was ever touched (what a host without lazy commit would need) */
+static void report_resident(void) {
+    long pg = sysconf(_SC_PAGESIZE); size_t n = (size_t)((g_space + (uint64_t)pg - 1) / (uint64_t)pg), res = 0, big = 0, run = 0;
+    unsigned char *v = malloc(n); if (!v || !M || mincore(M, (size_t)g_space, v)) { free(v); return; }
+    for (size_t i = 0; i < n; i++) { if (v[i] & 1) { res++; run++; if (run > big) big = run; } else run = 0; }
+    port_debug("guest memory touched: %llu MB of %llu MB (longest touched run %llu MB)", (unsigned long long)((res * (size_t)pg) >> 20), (unsigned long long)(g_space >> 20), (unsigned long long)((big * (size_t)pg) >> 20));
+    free(v);
+}
+#else
+static void report_resident(void) {}
+#endif
+void port_exit(int code) { report_resident(); trace_dump(); plat_audio_close(); plat_video_close(); exit(code); }
 void port_die(const char *fmt, ...) {
     char b[1024]; va_list ap; va_start(ap, fmt); vsnprintf(b, sizeof b, fmt, ap); va_end(ap);
     plat_log_write(PLAT_LOG_ERROR, "[port] FATAL: "); plat_log_write(PLAT_LOG_ERROR, b);
