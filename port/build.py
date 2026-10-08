@@ -23,7 +23,7 @@ def find_ci(base, *parts):
             q = next((os.path.join(p, e) for e in sorted(os.listdir(p)) if e.lower() == part.lower()), q)
         p = q
     return p
-MODULES = [("allobjs.osm", "Data", "ao", None), ("Squirrel.osm", "osm", "sq", 0x30000000), ("lgvid.dll", ".", "lv", 0x30300000)]
+MODULES = [("allobjs.osm", "Data", "ao", 0x00E00000), ("Squirrel.osm", "osm", "sq", 0x00E90000), ("lgvid.dll", ".", "lv", 0x01130000)]
 
 def run(cmd, what):
     r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
