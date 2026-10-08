@@ -80,8 +80,9 @@ static void dump_state(void) {
     port_log("%s", b);
     if (g_valid(c->esp, 48)) { n = snprintf(b, sizeof b, "  guest stack:"); for (int i = 0; i < 12; i++) n += snprintf(b + n, sizeof b - (size_t)n, " %08x", RD32(c->esp + 4 * (uint32_t)i)); port_log("%s", b); }
 }
+static void report_resident(void);
 static void on_signal(int sig) {          /* Ctrl-C or timeout: show where the game was, then stop */
-    port_log("stopped by signal %d", sig); dump_state(); trace_dump(); _Exit(3);
+    report_resident(); port_log("stopped by signal %d", sig); dump_state(); trace_dump(); _Exit(3);
 }
 #ifdef __linux__
 #include <sys/mman.h>
