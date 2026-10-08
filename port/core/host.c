@@ -97,8 +97,8 @@ static void report_resident(void) {
     for (size_t i = 0; i < n; i++) { if (v[i] & 1) { res++; run++; if (run > big) big = run; } else run = 0; }
     port_debug("guest memory touched: %llu MB of %llu MB (longest touched run %llu MB)", (unsigned long long)((res * (size_t)pg) >> 20), (unsigned long long)(g_space >> 20), (unsigned long long)((big * (size_t)pg) >> 20));
     for (uint32_t pi = 1; pi < vm_pages; pi++) if (vm_len[pi] && (uint64_t)vm_len[pi] * VM_GRAN >= (1u << 20)) {      /* regions of 1 MB or more */
-        size_t a = (size_t)pi * VM_GRAN / (size_t)pg, e = a + (size_t)vm_len[pi] * VM_GRAN / (size_t)pg, t = 0; for (size_t i = a; i < e && i < n; i++) t += v[i] & 1;
-        port_debug("  region %08x +%u KB: %u KB touched", pi * VM_GRAN, (unsigned)(vm_len[pi] * (VM_GRAN >> 10)), (unsigned)(t * (size_t)pg >> 10));
+        size_t a = (size_t)pi * VM_GRAN / (size_t)pg, e = a + (size_t)vm_len[pi] * VM_GRAN / (size_t)pg, t = 0, hi = 0; for (size_t i = a; i < e && i < n; i++) if (v[i] & 1) { t++; hi = i - a + 1; }
+        port_debug("  region %08x +%u KB: %u KB touched, highest touched page ends at +%u KB", pi * VM_GRAN, (unsigned)(vm_len[pi] * (VM_GRAN >> 10)), (unsigned)(t * (size_t)pg >> 10), (unsigned)(hi * (size_t)pg >> 10));
     }
     free(v);
 }
