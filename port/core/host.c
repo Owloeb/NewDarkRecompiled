@@ -20,6 +20,7 @@ extern const SymEnt nd_symtab[] __attribute__((weak)); extern const unsigned nd_
 
 uint8_t *M;
 uint64_t g_space;
+uint32_t g_thunk_base = 0xF0000000u;
 PortConfig g_cfg;
 int port_verbose, port_trace;
 uint32_t g_frames;
@@ -135,7 +136,11 @@ static void vm_init(uint64_t need_hi) {
     g_space = want; vm_pages = (uint32_t)(want / VM_GRAN);
     vm_len = calloc(vm_pages, sizeof *vm_len); vm_used = calloc(vm_pages, 1);
     vm_used[0] = 1;                                      /* the first 64 KB stay unmapped for the guest: null pointers */
-    if (g_space > THUNK_BASE) vm_mark(THUNK_BASE, (uint32_t)(g_space - 1) & ~(VM_GRAN - 1), "host function thunks");
+    if (g_space > 0xF0000000u) vm_mark(THUNK_BASE, (uint32_t)(g_space - 1) & ~(VM_GRAN - 1), "host function thunks");
+    else {                                               /* small guest space: keep the thunk range inside it, 256 KB (16384 thunks) below the top */
+        g_thunk_base = (uint32_t)(g_space - 0x40000u) & ~(VM_GRAN - 1);
+        if (g_thunk_base < need_hi || !vm_mark(g_thunk_base, g_thunk_base + 0x40000u, "host function thunks")) port_die("the guest address space is too small for the host function thunks");
+    }
     port_debug("guest address space: %llu MB at %p", (unsigned long long)(g_space >> 20), (void *)M);
 }
 
@@ -144,6 +149,7 @@ typedef struct { shim_fn fn; int pop; const char *name; uint32_t arg; } Thunk;
 uint32_t g_targ;
 static Thunk *thunks; static unsigned nthunks, capthunks;
 uint32_t g_thunk_arg(shim_fn fn, int pop, const char *name, uint32_t arg) {
+    if ((uint64_t)THUNK_BASE + 16ull * (nthunks + 1) > (g_space < (1ull << 32) ? g_thunk_base + 0x40000ull : (1ull << 32))) port_die("too many host function thunks for the reserved range");
     if (nthunks == capthunks) { capthunks = capthunks ? capthunks * 2 : 1024; thunks = realloc(thunks, capthunks * sizeof *thunks); }
     thunks[nthunks] = (Thunk){ fn, pop, name, arg }; return THUNK_BASE + 16 * nthunks++;
 }

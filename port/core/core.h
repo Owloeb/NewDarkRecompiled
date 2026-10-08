@@ -72,7 +72,9 @@ uint32_t g_str(const char *s);              /* a copy of s in guest memory (call
 void     heap_check(void);                  /* validates every block; dies on corruption */
 
 /* ---------------------------------------------------------------- thunks: guest-callable host functions */
-#define THUNK_BASE 0xF0000000u              /* guest addresses [THUNK_BASE, +16*n) run host functions */
+extern uint32_t g_thunk_base;               /* guest addresses [THUNK_BASE, +16*n) run host functions. 0xF0000000 when the guest space reaches that high,
+                                               otherwise just below the top of the space: the game reads memory at these addresses, so they must be backed by M */
+#define THUNK_BASE g_thunk_base
 uint32_t g_thunk(shim_fn fn, int pop, const char *name);
 uint32_t g_thunk_arg(shim_fn fn, int pop, const char *name, uint32_t arg);   /* the shim reads arg from g_targ */
 extern uint32_t g_targ;
