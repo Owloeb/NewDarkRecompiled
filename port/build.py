@@ -13,6 +13,16 @@ import argparse, glob, hashlib, os, shutil, subprocess, sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__))); PY = sys.executable
 OUT = os.path.join(ROOT, "out", "port")                 # kept apart from the Windows build's out/nd, out/ao, ...
+def find_ci(base, *parts):
+    """base/parts..., matching each part case-insensitively (the game looks files up that way; Linux file systems don't)"""
+    p = base
+    for part in parts:
+        if part in (".", ""): continue
+        q = os.path.join(p, part)
+        if not os.path.exists(q) and os.path.isdir(p):
+            q = next((os.path.join(p, e) for e in sorted(os.listdir(p)) if e.lower() == part.lower()), q)
+        p = q
+    return p
 MODULES = [("allobjs.osm", "Data", "ao", None), ("Squirrel.osm", "osm", "sq", 0x30000000), ("lgvid.dll", ".", "lv", 0x30300000)]
 
 def run(cmd, what):
@@ -52,7 +62,7 @@ def main():
     run([PY, os.path.join("host", "gen_hostdata.py"), os.path.join(nd, "nd_meta.json"), exe, os.path.join(nd, "nd_hostdata.c")], "host data")
     mods = []
     for fname, sub, pfx, rebase in MODULES:
-        src = os.path.join(os.path.dirname(exe), sub, fname); md = os.path.join(OUT, pfx)
+        src = find_ci(os.path.dirname(exe), sub, fname); md = os.path.join(OUT, pfx)
         if not os.path.isfile(src): print(f"  warning: {src} not found; the game will not run without it"); shutil.rmtree(md, ignore_errors=True); continue
         s = sha(src, lift_py, extra=str(rebase)); sigf = os.path.join(md, "src.sha1")
         if not (os.path.exists(sigf) and open(sigf).read().strip() == s and os.path.exists(os.path.join(md, f"{pfx}_meta.json"))):
