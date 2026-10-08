@@ -20,6 +20,7 @@
  *   Start       Esc (menu)        Select       I (inventory)
  *   front touch: cursor position and left click (for inventory, PDA and hacking screens) */
 #include <stdio.h>
+#include <psp2/kernel/cpu.h>
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
@@ -72,17 +73,20 @@ static void letterbox(int *x, int *y, int *w, int *h) {
 void gl_present_rect(int *x, int *y, int *w, int *h, int *ww, int *wh) { letterbox(x, y, w, h); *ww = SCREEN_W; *wh = SCREEN_H; }
 /* every 5 s: frame rate, and how the time splits between the file layer, presenting the picture and everything else (the game's CPU work) */
 extern uint64_t vp_fs_ns, vp_fs_open, vp_fs_stat, vp_fs_read_calls, vp_fs_sys_reads, vp_fs_bytes;
+uint64_t gl_prof_ns, gl_prof_draws;
 static uint64_t swap_ns; static unsigned frames;
 void vita_profile_tick(uint64_t now) {
-    static uint64_t t0, last_swap, last_fs, o0, st0, rc0, sr0, b0; static unsigned f0;
+    static uint64_t t0, last_swap, last_fs, last_gl, d0, o0, st0, rc0, sr0, b0; static unsigned f0;
     if (!t0) { t0 = now; return; }
     if (now - t0 < 5000000000ull) return;
     double dt = (double)(now - t0) / 1e9;
-    vlog("profile: %.1f fps | swap %.0f%% | files %.0f%% (%llu opens, %llu stats, %llu reads -> %llu system reads, %.1f MB) | game cpu %.0f%%", (frames - f0) / dt,
-         100.0 * (double)(swap_ns - last_swap) / (dt * 1e9), 100.0 * (double)(vp_fs_ns - last_fs) / (dt * 1e9), (unsigned long long)(vp_fs_open - o0), (unsigned long long)(vp_fs_stat - st0),
+    double gl = (double)(gl_prof_ns - last_gl), fs = (double)(vp_fs_ns - last_fs), sw = (double)(swap_ns - last_swap); unsigned nf = frames - f0;
+    vlog("profile: %.1f fps | render %.0f%% (swap %.0f%%, %llu draws/frame) | files %.0f%% (%llu opens, %llu stats, %llu reads -> %llu system reads, %.1f MB) | game cpu %.0f%%", nf / dt,
+         100.0 * gl / (dt * 1e9), 100.0 * sw / (dt * 1e9), (unsigned long long)(nf ? (gl_prof_draws - d0) / nf : 0),
+         100.0 * fs / (dt * 1e9), (unsigned long long)(vp_fs_open - o0), (unsigned long long)(vp_fs_stat - st0),
          (unsigned long long)(vp_fs_read_calls - rc0), (unsigned long long)(vp_fs_sys_reads - sr0), (double)(vp_fs_bytes - b0) / 1048576.0,
-         100.0 - 100.0 * (double)((swap_ns - last_swap) + (vp_fs_ns - last_fs)) / (dt * 1e9));
-    t0 = now; last_swap = swap_ns; last_fs = vp_fs_ns; o0 = vp_fs_open; st0 = vp_fs_stat; rc0 = vp_fs_read_calls; sr0 = vp_fs_sys_reads; b0 = vp_fs_bytes; f0 = frames;
+         100.0 - 100.0 * (gl + fs) / (dt * 1e9));
+    t0 = now; last_swap = swap_ns; last_fs = vp_fs_ns; last_gl = gl_prof_ns; d0 = gl_prof_draws; o0 = vp_fs_open; st0 = vp_fs_stat; rc0 = vp_fs_read_calls; sr0 = vp_fs_sys_reads; b0 = vp_fs_bytes; f0 = frames;
 }
 void gl_swap(void) {
     struct timespec a, b; clock_gettime(CLOCK_MONOTONIC, &a);
@@ -223,7 +227,32 @@ void plat_alert(const char *title, const char *text) { vlog("ALERT %s: %s", titl
 /* ---------------------------------------------------------------- start-up */
 int port_main(int argc, char **argv);
 typedef struct { int argc; char **argv; int ret; } MainArgs;
-static void *game_thread(void *p) { MainArgs *a = p; a->ret = port_main(a->argc, a->argv); return NULL; }
+static void *game_thread(void *p) {
+    sceKernelChangeThreadCpuAffinityMask(sceKernelGetThreadId(), SCE_KERNEL_CPU_MASK_USER_0);    /* a core of its own */
+    MainArgs *a = p; a->ret = port_main(a->argc, a->argv); return NULL;
+}
+
+/* Watchdog: if the game neither draws a frame nor reads a file for VITA_WATCHDOG_S seconds, it has hung. The Vita writes
+ * no dump for a hang, so crash on purpose: the dump then holds the game thread's registers and stack, which show where it
+ * is stuck. Counted in 1-second sleeps, so time spent suspended (PS button) does not count. --no-watchdog turns it off. */
+#ifndef VITA_WATCHDOG_S
+#define VITA_WATCHDOG_S 45
+#endif
+static int watchdog_on = 1;
+static void *watchdog(void *u) {
+    (void)u; unsigned last_f = 0; uint64_t last_r = 0; int idle = 0;
+    for (;;) {
+        sceKernelDelayThread(1000000);
+        unsigned f = *(volatile unsigned *)&frames; uint64_t r = *(volatile uint64_t *)&vp_fs_read_calls;
+        if (f != last_f || r != last_r || !f) { last_f = f; last_r = r; idle = 0; continue; }
+        if (++idle == VITA_WATCHDOG_S) {
+            vlog("watchdog: no frame and no file read for %d s; the game has hung. Crashing on purpose so the Vita writes a core dump (send it with this log)", VITA_WATCHDOG_S);
+            sceKernelDelayThread(200000);
+            *(volatile int *)0 = 0;
+        }
+    }
+    return NULL;
+}
 
 /* options from ss2port.txt: whitespace-separated, "quoted" for spaces, # starts a comment line */
 static int read_options(const char *path, char **out, int max) {
@@ -259,6 +288,7 @@ int main(int argc, char **argv) {
     av[ac++] = "ss2port";
     for (int i = 0; i < nopt; i++) {
         if (!strcmp(opt[i], "--swap-sticks")) { swap_sticks = 1; continue; }
+        if (!strcmp(opt[i], "--no-watchdog")) { watchdog_on = 0; continue; }
         if (!strcmp(opt[i], "--look-speed") && i + 1 < nopt) { look_speed = (float)atof(opt[++i]) / 100.0f; continue; }
         if (!strcmp(opt[i], "--guest-space") || !strcmp(opt[i], "--guest-backed")) have_space = 1;
         if (ends_with_exe(opt[i])) have_exe = 1;
@@ -274,6 +304,7 @@ int main(int argc, char **argv) {
     /* the game runs on its own thread: recompiled code uses the host stack for every guest call */
     MainArgs a = { ac, av, 1 }; pthread_t t; pthread_attr_t at; pthread_attr_init(&at); pthread_attr_setstacksize(&at, 8u << 20);
     if (pthread_create(&t, &at, game_thread, &a)) { vlog("could not start the game thread"); return 1; }
+    if (watchdog_on) { pthread_t w; pthread_attr_t wa; pthread_attr_init(&wa); pthread_attr_setstacksize(&wa, 64u << 10); pthread_create(&w, &wa, watchdog, NULL); pthread_attr_destroy(&wa); }
     pthread_join(t, NULL);
     vlog("exit %d", a.ret);
     sceKernelExitProcess(a.ret);

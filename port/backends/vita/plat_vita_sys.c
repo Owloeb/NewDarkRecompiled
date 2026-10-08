@@ -10,6 +10,8 @@
  * The CMake setup builds this file instead of backends/posix when PORT_BACKEND=vita. */
 #define _GNU_SOURCE
 #include <stdio.h>
+#include <psp2/kernel/cpu.h>
+#include <psp2/kernel/threadmgr.h>
 #include <malloc.h>
 #include <stdlib.h>
 #include <string.h>
@@ -80,7 +82,10 @@ void plat_sleep_ns(uint64_t ns) { sceKernelDelayThread((SceUInt)(ns / 1000u)); }
 typedef struct { void (*fn)(void *); void *arg; } Start;
 struct PlatMutex { pthread_mutex_t m; };
 struct PlatCond { pthread_cond_t c; };
-static void *thread_main(void *p) { Start s = *(Start *)p; free(p); s.fn(s.arg); return NULL; }
+static void *thread_main(void *p) {          /* host and guest worker threads stay off core 0, which belongs to the game's main thread */
+    sceKernelChangeThreadCpuAffinityMask(sceKernelGetThreadId(), SCE_KERNEL_CPU_MASK_USER_1 | SCE_KERNEL_CPU_MASK_USER_2);
+    Start s = *(Start *)p; free(p); s.fn(s.arg); return NULL;
+}
 int plat_thread_start(void (*fn)(void *), void *arg, const char *name) {
     (void)name;
     Start *s = malloc(sizeof *s); s->fn = fn; s->arg = arg; pthread_t t;
@@ -117,7 +122,9 @@ struct PlatFile { int fd; int ro; int64_t pos, size; uint8_t *buf; int64_t bstar
 /* what the file layer costs (reported with the frame rate by vita_profile_report in plat_vita.c) */
 void vita_profile_tick(uint64_t now);
 uint64_t vp_fs_ns, vp_fs_open, vp_fs_stat, vp_fs_read_calls, vp_fs_sys_reads, vp_fs_bytes;
+uint64_t vita_now_ns(void);
 static inline uint64_t vp_now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (uint64_t)t.tv_sec * 1000000000u + (uint64_t)t.tv_nsec; }
+uint64_t vita_now_ns(void) { return vp_now(); }
 struct PlatDir { DIR *d; };
 static int err_of(int e) {
     switch (e) { case ENOENT: return PLAT_E_NOENT; case EEXIST: return PLAT_E_EXIST; case EACCES: case EPERM: case EROFS: return PLAT_E_ACCESS;

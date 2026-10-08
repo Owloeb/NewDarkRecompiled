@@ -148,14 +148,22 @@ static void tex_storage(PlatTexture *t) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST); glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     t->last_min = t->last_mag = GL_NEAREST; t->last_wu = t->last_wv = GL_REPEAT; t->last_aniso = 1;
 }
-PlatTexture *plat_tex_create(int w, int h, int levels, PlatTexFormat fmt, int rt) {
+/* Vita: time spent in the renderer (GL calls included), for the performance report. Nothing elsewhere. */
+#ifdef __vita__
+extern uint64_t gl_prof_ns, gl_prof_draws; uint64_t vita_now_ns(void);
+static inline void glp_done(uint64_t *t0) { gl_prof_ns += vita_now_ns() - *t0; }
+#define GLP uint64_t glp_t0 __attribute__((cleanup(glp_done))) = vita_now_ns()
+#else
+#define GLP (void)0
+#endif
+PlatTexture *plat_tex_create(int w, int h, int levels, PlatTexFormat fmt, int rt) { GLP;
     if (w < 1 || h < 1 || w > max_tex || h > max_tex) return NULL;
     PlatTexture *t = calloc(1, sizeof *t); t->w = w; t->h = h; t->levels = levels < 1 ? 1 : levels; t->fmt = rt ? PLAT_TEX_RGBA8 : fmt; t->rt = rt;
     if (rt) t->levels = 1;
     if (gles && t->levels > 1) { int full = 1, m = w > h ? w : h; while (m > 1) { full++; m >>= 1; } if (t->levels != full) t->levels = 1; }   /* ES 2.0 needs complete chains */
     glGenTextures(1, &t->tex); tex_storage(t); return t;
 }
-void plat_tex_upload(PlatTexture *t, int level, int x, int y, int w, int h, const void *data, int pitch) {
+void plat_tex_upload(PlatTexture *t, int level, int x, int y, int w, int h, const void *data, int pitch) { GLP;
     if (!t || level >= t->levels) return;
     glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, t->tex); glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     if (t->fmt != PLAT_TEX_RGBA8) { int lw = t->w >> level, lh = t->h >> level; if (lw < 1) lw = 1; if (lh < 1) lh = 1; glCompressedTexImage2D(GL_TEXTURE_2D, level, cfmt(t->fmt), lw, lh, 0, csize(t->fmt, lw, lh), data); return; }
@@ -163,12 +171,12 @@ void plat_tex_upload(PlatTexture *t, int level, int x, int y, int w, int h, cons
     uint8_t *tight = malloc((size_t)w * h * 4); for (int r = 0; r < h; r++) memcpy(tight + (size_t)r * w * 4, (const uint8_t *)data + (size_t)r * pitch, (size_t)w * 4);
     glTexSubImage2D(GL_TEXTURE_2D, level, x, y, w, h, GL_RGBA, GL_UNSIGNED_BYTE, tight); free(tight);
 }
-void plat_tex_destroy(PlatTexture *t) {
+void plat_tex_destroy(PlatTexture *t) { GLP;
     if (!t || t == &bb) return;
     if (target == t) { target = &bb; bind_target(&bb); }
     if (t->fbo) glDeleteFramebuffers(1, &t->fbo); if (t->depth) glDeleteRenderbuffers(1, &t->depth); glDeleteTextures(1, &t->tex); free(t);
 }
-int plat_tex_read(PlatTexture *t, int x, int y, int w, int h, void *out, int pitch) {
+int plat_tex_read(PlatTexture *t, int x, int y, int w, int h, void *out, int pitch) { GLP;
     if (!t) t = &bb;
     if (t->fmt != PLAT_TEX_RGBA8) return -1;
     ensure_fbo(t); glBindFramebuffer(GL_FRAMEBUFFER, t->fbo); glPixelStorei(GL_PACK_ALIGNMENT, 1);
@@ -274,10 +282,10 @@ static void apply_scissor(void) {
     glEnable(GL_SCISSOR_TEST); glScissor(x0, y0, x1 - x0, y1 - y0);
 }
 void plat_gfx_begin_frame(void) {}
-void plat_gfx_set_target(PlatTexture *t) { target = t ? t : &bb; bind_target(target); }
+void plat_gfx_set_target(PlatTexture *t) { GLP; target = t ? t : &bb; bind_target(target); }
 void plat_gfx_viewport(const PlatViewport *vp) { cur_vp = *vp; glViewport(vp->x, vp->y, vp->w, vp->h); apply_scissor(); }
 void plat_gfx_scissor(int enable, int x, int y, int w, int h) { sc_on = enable; sc_x = x; sc_y = y; sc_w = w; sc_h = h; apply_scissor(); }
-void plat_gfx_clear(int color, uint32_t argb, int depth, float z, int stencil, uint32_t s) {
+void plat_gfx_clear(int color, uint32_t argb, int depth, float z, int stencil, uint32_t s) { GLP;
     GLbitfield m = 0;
     if (color) { glColorMask(1, 1, 1, 1); glClearColor(((argb >> 16) & 255) / 255.0f, ((argb >> 8) & 255) / 255.0f, (argb & 255) / 255.0f, (argb >> 24) / 255.0f); m |= GL_COLOR_BUFFER_BIT; }
     if (depth) { glDepthMask(1); if (glClearDepthf) glClearDepthf(z); else glClearDepth(z); m |= GL_DEPTH_BUFFER_BIT; }
@@ -309,7 +317,11 @@ static void attribs(int quad) {
     glVertexAttribPointer(4, 4, GL_FLOAT, 0, sizeof(PlatVertex), (void *)28);
     for (GLuint i = 0; i <= 4; i++) glEnableVertexAttribArray(i);
 }
-void plat_gfx_draw(int prim, const PlatVertex *v, int nverts, const uint16_t *idx, int nidx, const PlatDrawState *st) {
+void plat_gfx_draw(int prim, const PlatVertex *v, int nverts, const uint16_t *idx, int nidx, const PlatDrawState *st) { GLP;
+#ifdef __vita__
+    gl_prof_draws++;
+#endif
+
     if (!nverts || !nidx) return;
     Prog *p = program(st); glUseProgram(p->prog);
     glUniform4f(p->u_tf, ((st->texture_factor >> 16) & 255) / 255.0f, ((st->texture_factor >> 8) & 255) / 255.0f, (st->texture_factor & 255) / 255.0f, (st->texture_factor >> 24) / 255.0f);
@@ -337,7 +349,7 @@ static void quad(GLuint prog, GLuint tex, float u0, float v0, float u1, float v1
     glBindBuffer(GL_ARRAY_BUFFER, vbo); glBufferData(GL_ARRAY_BUFFER, sizeof q, q, GL_STREAM_DRAW); attribs(1);
     glDrawArrays(0x0005, 0, 4);     /* GL_TRIANGLE_STRIP */
 }
-void plat_gfx_copy(PlatTexture *src, int sx, int sy, int sw, int sh, PlatTexture *dst, int dx, int dy, int dw, int dh, int linear) {
+void plat_gfx_copy(PlatTexture *src, int sx, int sy, int sw, int sh, PlatTexture *dst, int dx, int dy, int dw, int dh, int linear) { GLP;
     if (!src) src = &bb; if (!dst) dst = &bb; if (src == dst) return;
     bind_target(dst); glViewport(dx, dy, dw, dh); glDisable(GL_SCISSOR_TEST);
     /* NDC y -1 is the first row of the target here (top-down rows), which must show the first row of the source rectangle */
@@ -347,7 +359,7 @@ void plat_gfx_copy(PlatTexture *src, int sx, int sy, int sw, int sh, PlatTexture
     for (int i = 0; i < 2; i++) { glActiveTexture(GL_TEXTURE0 + (GLenum)i); glBindTexture(GL_TEXTURE_2D, 0); }
     src->last_min = src->last_mag = -1;
 }
-void plat_gfx_present(void) {
+void plat_gfx_present(void) { GLP;
     int x, y, w, h, ww, wh; gl_present_rect(&x, &y, &w, &h, &ww, &wh);
     glBindFramebuffer(GL_FRAMEBUFFER, 0); glDisable(GL_SCISSOR_TEST); glViewport(0, 0, ww, wh); glClearColor(0, 0, 0, 1); glClear(GL_COLOR_BUFFER_BIT);
     glViewport(x, y, w, h);
