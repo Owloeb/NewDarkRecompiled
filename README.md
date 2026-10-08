@@ -64,7 +64,9 @@ video decoder in `video/ffmpeg/` is taken unmodified from FFmpeg and is LGPL 2.1
    stay too; it is only used with the switch file below). Display and audio settings come from the game's own config, so whatever you use in the normal game applies here.
 
 Without `--install` the exe is left in `build\win\ss2_native.exe` and you copy it over yourself. On Linux or macOS the same
-command works with `python3 host/build_win.py /path/to/SS2.exe` (you can only build it there, not run it).
+command works with `python3 host/build_win.py /path/to/SS2.exe`. That is the native Windows build, which calls Windows and
+DirectX directly: you can build it there, but `ss2_native.exe` only runs on Windows. To run the game on Linux or elsewhere, use
+the portable host instead: [Other platforms](#other-platforms-the-portable-host).
 
 The exe writes `ss2_native.log` next to itself. In normal use the log is short; if something goes wrong the crash report
 (last recompiled functions, last native calls, stack, loaded modules) is written to it automatically.
