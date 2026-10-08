@@ -22,6 +22,7 @@ struct Stream {
     int ungot[4], nungot;
     uint32_t guest;                     /* the guest FILE */
     int fd;                             /* low-level descriptor it was opened from, or -1 */
+    volatile int busy;                  /* a read is running without the guest lock (see stream_read) */
 };
 #define MAXS 256
 static Stream *streams[MAXS];
@@ -37,8 +38,14 @@ static void init_std(void);
 Stream *crt_stream(uint32_t g) {
     init_std();
     if (!g || !g_valid(g, 32)) return NULL;
-    uint32_t i = RD32(g + 16); return i < MAXS && streams[i] && streams[i]->guest == g ? streams[i] : NULL;
+    for (;;) {
+        uint32_t i = RD32(g + 16); Stream *s = i < MAXS && streams[i] && streams[i]->guest == g ? streams[i] : NULL;
+        if (!s || !s->busy) return s;
+        BLOCKING(plat_thread_yield());         /* another thread is reading this stream: wait for it */
+    }
 }
+/* file reads run without the guest lock, so other guest threads (the main loop) keep running during slow I/O */
+static int64_t stream_read(Stream *s, void *dst, uint64_t n) { int64_t r; s->busy = 1; BLOCKING(r = plat_fs_read(s->pf, dst, n)); s->busy = 0; return r; }
 static uint32_t stream_new(PlatFile *pf, int console, int text, int rd, int wr, int append) {
     for (uint32_t i = 3; i < MAXS; i++) if (!streams[i]) {
         Stream *s = calloc(1, sizeof *s); s->pf = pf; s->console = console; s->text = text; s->rd = rd; s->wr = wr; s->append = append; s->fd = -1;
@@ -55,7 +62,7 @@ uint32_t crt_iob(void) { init_std(); return iob; }
 static int raw_getc(Stream *s) {
     if (s->bpos >= s->blen) {
         if (!s->pf) return -1;
-        int64_t n = plat_fs_read(s->pf, s->buf, sizeof s->buf); if (n <= 0) { if (n < 0) s->err = 1; s->blen = s->bpos = 0; return -1; }
+        int64_t n = stream_read(s, s->buf, sizeof s->buf); if (n <= 0) { if (n < 0) s->err = 1; s->blen = s->bpos = 0; return -1; }
         s->blen = (int)n; s->bpos = 0;
     }
     return s->buf[s->bpos++];
@@ -148,13 +155,13 @@ SHIM(fread_) {
         while (s->nungot && got < want) d[got++] = (uint8_t)s->ungot[--s->nungot];
         while (got < want && s->bpos < s->blen) d[got++] = s->buf[s->bpos++];
         if (got < want && s->pf && want - got < sizeof s->buf) {           /* small read: refill the buffer and copy from it */
-            int64_t r = plat_fs_read(s->pf, s->buf, sizeof s->buf); if (r < 0) s->err = 1;
+            int64_t r = stream_read(s, s->buf, sizeof s->buf); if (r < 0) s->err = 1;
             s->bpos = 0; s->blen = r > 0 ? (int)r : 0;
             while (got < want && s->bpos < s->blen) d[got++] = s->buf[s->bpos++];
         }
         if (got < want && s->pf) {                                          /* large read: straight into guest memory; the buffer is now empty */
             s->bpos = s->blen = 0;
-            int64_t r = plat_fs_read(s->pf, d + got, want - got); if (r > 0) got += (uint64_t)r; else if (r < 0) s->err = 1;
+            int64_t r = stream_read(s, d + got, want - got); if (r > 0) got += (uint64_t)r; else if (r < 0) s->err = 1;
         }
         if (got < want) s->eof = 1;
     } else { int ch; while (got < want && (ch = stream_getc(s)) >= 0) d[got++] = (uint8_t)ch; }
