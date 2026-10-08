@@ -10,6 +10,7 @@
  * The CMake setup builds this file instead of backends/posix when PORT_BACKEND=vita. */
 #define _GNU_SOURCE
 #include <stdio.h>
+#include <malloc.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
@@ -26,7 +27,7 @@
 #include "plat.h"
 
 #ifndef VITA_THREAD_STACK
-#define VITA_THREAD_STACK (4u << 20)
+#define VITA_THREAD_STACK (2u << 20)
 #endif
 
 /* ---------------------------------------------------------------- log (stderr is redirected to the log file by main) */
@@ -43,7 +44,8 @@ static SceUID guest_block = -1;
 void vita_log_free_memory(const char *when) {
     SceKernelFreeMemorySizeInfo i; memset(&i, 0, sizeof i); i.size = sizeof i;
     if (sceKernelGetFreeMemorySize(&i) < 0) return;
-    char b[160]; snprintf(b, sizeof b, "[vita] free memory %s: user %d MB, cdram %d MB, phycont %d MB", when, i.size_user >> 20, i.size_cdram >> 20, i.size_phycont >> 20);
+    struct mallinfo mi = mallinfo();
+    char b[200]; snprintf(b, sizeof b, "[vita] free memory %s: user %d MB, cdram %d MB, phycont %d MB (host heap: %d MB in use, %d MB taken)", when, i.size_user >> 20, i.size_cdram >> 20, i.size_phycont >> 20, (int)(mi.uordblks >> 20), (int)(mi.arena >> 20));
     plat_log_write(PLAT_LOG_INFO, b);
 }
 void *plat_mem_reserve(uint64_t size) {

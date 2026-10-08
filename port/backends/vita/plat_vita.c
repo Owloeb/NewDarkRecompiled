@@ -40,13 +40,16 @@
 #define VITA_GAME_DIR "ux0:data/ss2"
 #endif
 #ifndef VITA_HEAP_MB                 /* newlib heap for the host (file buffers, tables, the renderer's CPU-side data) */
-#define VITA_HEAP_MB 48
+#define VITA_HEAP_MB 40
 #endif
 #ifndef VITA_GUEST_SPACE_MB_STR       /* guest address space, and how much of it is real RAM (see vm_alloc: the game's 64 MB startup pool is mostly never touched) */
 #define VITA_GUEST_SPACE_MB_STR "208"
 #endif
 #ifndef VITA_GUEST_BACKED_MB_STR
-#define VITA_GUEST_BACKED_MB_STR "144"
+#define VITA_GUEST_BACKED_MB_STR "128"
+#endif
+#ifndef VITA_VGL_RAM_MB             /* main-RAM pool of vitaGL (vertex data etc.) */
+#define VITA_VGL_RAM_MB 6
 #endif
 #ifndef VITA_RAM_THRESHOLD_MB        /* RAM vitaGL leaves free when it sizes its pools (thread stacks are allocated later) */
 #define VITA_RAM_THRESHOLD_MB 32
@@ -74,7 +77,14 @@ int plat_video_open(int w, int h, int fullscreen, const char *title) {
     if (!gl_ready) {
         vita_log_free_memory("before vitaGL");
         mkdir(VITA_GAME_DIR "/shader_cache", 0777); vglSetShaderCachePath(VITA_GAME_DIR "/shader_cache");   /* used if vitaGL was built with HAVE_SHADER_CACHE=1 */
-        if (!vglInitExtended(0, SCREEN_W, SCREEN_H, VITA_RAM_THRESHOLD_MB * 1024 * 1024, SCE_GXM_MULTISAMPLE_NONE)) { vlog("vitaGL failed to start"); return -1; }
+        /* explicit pools, not "whatever RAM is left": the guest block has taken nearly all of it. Textures and buffers live in the 112 MB of video memory */
+        static int vgl_tried;
+        if (!vgl_tried) {
+            vgl_tried = 1;
+            int ok = vglInitWithCustomSizes(0, SCREEN_W, SCREEN_H, VITA_VGL_RAM_MB * 1024 * 1024, 96 * 1024 * 1024, 0, 0, SCE_GXM_MULTISAMPLE_NONE);
+            vlog("vitaGL init returned %d (RAM pool %d MB)", ok, VITA_VGL_RAM_MB);
+            if (!ok) { vlog("vitaGL failed to start"); return -1; }
+        } else { vlog("vitaGL did not start earlier"); return -1; }       /* it must not be started twice */
         vita_log_free_memory("after vitaGL");
         if (gl_init(vglGetProcAddress, 1)) return -1;
         gl_ready = 1;

@@ -46,10 +46,10 @@ vitaGL, then everything the host logs. Send that file when something goes wrong.
 
 The Vita has no lazy commit, so the guest block is real RAM from the start. The game reserves about 166 MB, but only
 about 90 MB is ever touched; most of the difference is one 64 MB pool it uses from the bottom up (about 5 MB in use).
-So the host reserves `--guest-space` (default 208 MB) of address space but backs only `--guest-backed` (default 144 MB)
+So the host reserves `--guest-space` (default 208 MB) of address space but backs only `--guest-backed` (default 128 MB)
 with real RAM, and places that pool across the end of the backed part with just its first 12 MB real. A game that
-reaches beyond that crashes with a data abort instead of getting memory. The host's own heap is `VITA_HEAP_MB` (48 MB),
-vitaGL takes what is left minus `VITA_RAM_THRESHOLD_MB` (32 MB). All of these are compile-time defaults in `plat_vita.c`
+reaches beyond that crashes with a data abort instead of getting memory. The host's own heap is `VITA_HEAP_MB` (40 MB),
+vitaGL gets a fixed `VITA_VGL_RAM_MB` (6 MB) pool of RAM and 96 MB of video memory. All of these are compile-time defaults in `plat_vita.c`
 (the first two also options in `ss2port.txt`); the log's free-memory lines show what to change.
 
 ## Controls
