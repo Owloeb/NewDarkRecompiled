@@ -110,30 +110,67 @@ void plat_cond_signal(PlatCond *c) { pthread_cond_signal(&c->c); }
 void plat_cond_broadcast(PlatCond *c) { pthread_cond_broadcast(&c->c); }
 
 /* ---------------------------------------------------------------- files (newlib maps these onto sceIo) */
-struct PlatFile { int fd; };
+/* Read-only files are read through a 64 KB window: the game reads in tiny pieces and every sceIoRead has a high fixed cost.
+ * Files opened for writing are not buffered. */
+#define VITA_RDBUF (64u << 10)
+struct PlatFile { int fd; int ro; int64_t pos, size; uint8_t *buf; int64_t bstart; uint32_t blen; };
+/* what the file layer costs (reported with the frame rate by vita_profile_report in plat_vita.c) */
+void vita_profile_tick(uint64_t now);
+uint64_t vp_fs_ns, vp_fs_open, vp_fs_stat, vp_fs_read_calls, vp_fs_sys_reads, vp_fs_bytes;
+static inline uint64_t vp_now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (uint64_t)t.tv_sec * 1000000000u + (uint64_t)t.tv_nsec; }
 struct PlatDir { DIR *d; };
 static int err_of(int e) {
     switch (e) { case ENOENT: return PLAT_E_NOENT; case EEXIST: return PLAT_E_EXIST; case EACCES: case EPERM: case EROFS: return PLAT_E_ACCESS;
                  case ENOTDIR: return PLAT_E_NOTDIR; case EISDIR: return PLAT_E_ISDIR; case ENOTEMPTY: return PLAT_E_NOTEMPTY; default: return PLAT_E_IO; }
 }
 PlatFile *plat_fs_open(const char *path, int flags, int *err) {
+    uint64_t t0 = vp_now(); vp_fs_open++;
     int of = (flags & PLAT_READ) && (flags & PLAT_WRITE) ? O_RDWR : (flags & PLAT_WRITE) ? O_WRONLY : O_RDONLY;
     if (flags & PLAT_CREATE) of |= O_CREAT; if (flags & PLAT_TRUNCATE) of |= O_TRUNC; if (flags & PLAT_EXCLUSIVE) of |= O_EXCL; if (flags & PLAT_APPEND) of |= O_APPEND;
-    struct stat st; if (!stat(path, &st) && S_ISDIR(st.st_mode)) { if (err) *err = PLAT_E_ISDIR; return NULL; }   /* sceIo cannot open folders as files */
     int fd = open(path, of, 0644);
-    if (fd < 0) { if (err) *err = err_of(errno); return NULL; }
-    PlatFile *f = malloc(sizeof *f); f->fd = fd; return f;
+    if (fd < 0) { if (err) *err = err_of(errno); vp_fs_ns += vp_now() - t0; return NULL; }
+    struct stat st; if (fstat(fd, &st) == 0 && S_ISDIR(st.st_mode)) { close(fd); if (err) *err = PLAT_E_ISDIR; vp_fs_ns += vp_now() - t0; return NULL; }   /* folders are not files */
+    PlatFile *f = calloc(1, sizeof *f); f->fd = fd; f->ro = of == O_RDONLY; f->size = (int64_t)st.st_size; f->bstart = -1;
+    if (f->ro) f->buf = malloc(VITA_RDBUF);
+    if (f->ro && !f->buf) f->ro = 0;
+    vp_fs_ns += vp_now() - t0; return f;
 }
-void plat_fs_close(PlatFile *f) { if (f) { close(f->fd); free(f); } }
-int64_t plat_fs_read(PlatFile *f, void *buf, uint64_t n) {
-    uint64_t got = 0; while (got < n) { ssize_t r = read(f->fd, (char *)buf + got, (size_t)(n - got)); if (r < 0) { if (errno == EINTR) continue; return got ? (int64_t)got : -1; } if (!r) break; got += (uint64_t)r; }
+void plat_fs_close(PlatFile *f) { if (f) { close(f->fd); free(f->buf); free(f); } }
+static int64_t raw_read(int fd, void *buf, uint64_t n) {
+    uint64_t got = 0; while (got < n) { vp_fs_sys_reads++; ssize_t r = read(fd, (char *)buf + got, (size_t)(n - got)); if (r < 0) { if (errno == EINTR) continue; return got ? (int64_t)got : -1; } if (!r) break; got += (uint64_t)r; }
     return (int64_t)got;
+}
+int64_t plat_fs_read(PlatFile *f, void *buf, uint64_t n) {
+    uint64_t t0 = vp_now(); vp_fs_read_calls++;
+    int64_t out;
+    if (!f->ro) out = raw_read(f->fd, buf, n);
+    else {
+        uint8_t *d = buf; uint64_t got = 0;
+        while (got < n && f->pos < f->size) {
+            if (f->bstart >= 0 && f->pos >= f->bstart && f->pos < f->bstart + f->blen) {          /* from the window */
+                uint64_t k = (uint64_t)(f->bstart + f->blen - f->pos); if (k > n - got) k = n - got;
+                memcpy(d + got, f->buf + (f->pos - f->bstart), (size_t)k); f->pos += (int64_t)k; got += k; continue;
+            }
+            if (n - got >= VITA_RDBUF) {                                                            /* a big read goes straight to the file */
+                if (lseek(f->fd, (off_t)f->pos, SEEK_SET) < 0) break;
+                int64_t r = raw_read(f->fd, d + got, n - got); if (r <= 0) break; f->pos += r; got += (uint64_t)r; f->bstart = -1; continue;
+            }
+            if (lseek(f->fd, (off_t)f->pos, SEEK_SET) < 0) break;                                   /* refill the window at the current position */
+            int64_t r = raw_read(f->fd, f->buf, VITA_RDBUF); if (r <= 0) break; f->bstart = f->pos; f->blen = (uint32_t)r;
+        }
+        out = (int64_t)got;
+    }
+    if (out > 0) vp_fs_bytes += (uint64_t)out;
+    uint64_t t1 = vp_now(); vp_fs_ns += t1 - t0; vita_profile_tick(t1); return out;      /* also reports while loading, when no frames are drawn */
 }
 int64_t plat_fs_write(PlatFile *f, const void *buf, uint64_t n) {
     uint64_t done = 0; while (done < n) { ssize_t r = write(f->fd, (const char *)buf + done, (size_t)(n - done)); if (r < 0) { if (errno == EINTR) continue; return done ? (int64_t)done : -1; } done += (uint64_t)r; }
     return (int64_t)done;
 }
-int64_t plat_fs_seek(PlatFile *f, int64_t off, int whence) { off_t r = lseek(f->fd, (off_t)off, whence == PLAT_SEEK_SET ? SEEK_SET : whence == PLAT_SEEK_CUR ? SEEK_CUR : SEEK_END); return r < 0 ? -1 : (int64_t)r; }
+int64_t plat_fs_seek(PlatFile *f, int64_t off, int whence) {
+    if (f->ro) { int64_t np = whence == PLAT_SEEK_SET ? off : whence == PLAT_SEEK_CUR ? f->pos + off : f->size + off; if (np < 0) return -1; f->pos = np; return np; }       /* buffered: just move the logical position */
+    off_t r = lseek(f->fd, (off_t)off, whence == PLAT_SEEK_SET ? SEEK_SET : whence == PLAT_SEEK_CUR ? SEEK_CUR : SEEK_END); return r < 0 ? -1 : (int64_t)r;
+}
 int plat_fs_truncate(PlatFile *f, uint64_t size) { return ftruncate(f->fd, (off_t)size) ? PLAT_E_IO : PLAT_OK; }
 int plat_fs_flush(PlatFile *f) { (void)f; return PLAT_OK; }
 static void fill_stat(const struct stat *s, PlatStat *o) {
@@ -142,7 +179,7 @@ static void fill_stat(const struct stat *s, PlatStat *o) {
     o->mtime_ns = (int64_t)s->st_mtime * 1000000000; o->atime_ns = (int64_t)s->st_atime * 1000000000; o->ctime_ns = (int64_t)s->st_ctime * 1000000000;
 }
 int plat_fs_fstat(PlatFile *f, PlatStat *st) { struct stat s; if (fstat(f->fd, &s)) return err_of(errno); fill_stat(&s, st); return PLAT_OK; }
-int plat_fs_stat(const char *path, PlatStat *st) { struct stat s; if (stat(path, &s)) return err_of(errno); fill_stat(&s, st); return PLAT_OK; }
+int plat_fs_stat(const char *path, PlatStat *st) { uint64_t t0 = vp_now(); vp_fs_stat++; struct stat s; int bad = stat(path, &s); int e = errno; vp_fs_ns += vp_now() - t0; if (bad) return err_of(e); fill_stat(&s, st); return PLAT_OK; }
 int plat_fs_mkdir(const char *path) { return mkdir(path, 0755) ? err_of(errno) : PLAT_OK; }
 int plat_fs_rmdir(const char *path) { return rmdir(path) ? err_of(errno) : PLAT_OK; }
 int plat_fs_remove(const char *path) { struct stat s; if (!stat(path, &s) && S_ISDIR(s.st_mode)) return PLAT_E_ISDIR; return unlink(path) ? err_of(errno) : PLAT_OK; }

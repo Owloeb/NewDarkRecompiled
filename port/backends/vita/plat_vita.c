@@ -70,7 +70,26 @@ static void letterbox(int *x, int *y, int *w, int *h) {
     *w = (int)(surf_w * s + 0.5); *h = (int)(surf_h * s + 0.5); *x = (SCREEN_W - *w) / 2; *y = (SCREEN_H - *h) / 2;
 }
 void gl_present_rect(int *x, int *y, int *w, int *h, int *ww, int *wh) { letterbox(x, y, w, h); *ww = SCREEN_W; *wh = SCREEN_H; }
-void gl_swap(void) { vglSwapBuffers(GL_FALSE); }
+/* every 5 s: frame rate, and how the time splits between the file layer, presenting the picture and everything else (the game's CPU work) */
+extern uint64_t vp_fs_ns, vp_fs_open, vp_fs_stat, vp_fs_read_calls, vp_fs_sys_reads, vp_fs_bytes;
+static uint64_t swap_ns; static unsigned frames;
+void vita_profile_tick(uint64_t now) {
+    static uint64_t t0, last_swap, last_fs, o0, st0, rc0, sr0, b0; static unsigned f0;
+    if (!t0) { t0 = now; return; }
+    if (now - t0 < 5000000000ull) return;
+    double dt = (double)(now - t0) / 1e9;
+    vlog("profile: %.1f fps | swap %.0f%% | files %.0f%% (%llu opens, %llu stats, %llu reads -> %llu system reads, %.1f MB) | game cpu %.0f%%", (frames - f0) / dt,
+         100.0 * (double)(swap_ns - last_swap) / (dt * 1e9), 100.0 * (double)(vp_fs_ns - last_fs) / (dt * 1e9), (unsigned long long)(vp_fs_open - o0), (unsigned long long)(vp_fs_stat - st0),
+         (unsigned long long)(vp_fs_read_calls - rc0), (unsigned long long)(vp_fs_sys_reads - sr0), (double)(vp_fs_bytes - b0) / 1048576.0,
+         100.0 - 100.0 * (double)((swap_ns - last_swap) + (vp_fs_ns - last_fs)) / (dt * 1e9));
+    t0 = now; last_swap = swap_ns; last_fs = vp_fs_ns; o0 = vp_fs_open; st0 = vp_fs_stat; rc0 = vp_fs_read_calls; sr0 = vp_fs_sys_reads; b0 = vp_fs_bytes; f0 = frames;
+}
+void gl_swap(void) {
+    struct timespec a, b; clock_gettime(CLOCK_MONOTONIC, &a);
+    vglSwapBuffers(GL_FALSE);
+    clock_gettime(CLOCK_MONOTONIC, &b); swap_ns += (uint64_t)(b.tv_sec - a.tv_sec) * 1000000000u + (uint64_t)(b.tv_nsec - a.tv_nsec); frames++;
+    vita_profile_tick((uint64_t)b.tv_sec * 1000000000u + (uint64_t)b.tv_nsec);
+}
 int plat_video_open(int w, int h, int fullscreen, const char *title) {
     (void)fullscreen; (void)title;
     surf_w = w > 0 ? w : 640; surf_h = h > 0 ? h : 480;
