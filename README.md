@@ -1,77 +1,61 @@
 # darkrecomp
 
-A static recompiler that turns the 32-bit x86 binary of **System Shock 2 (NewDark 2.48)** into portable C, plus a small
-Windows host that builds that C into a native executable you run in place of `SS2.exe`.
+A static recompiler that turns the 32-bit x86 binary of **System Shock 2 (NewDark 2.48)** into portable C, with two ways
+to run the result: a small **Windows host** (native `ss2_native.exe`, in place of `SS2.exe`) and a **portable host** that
+runs it on Linux and, with a small backend, anywhere else.
 
-**Status: playable on flat screen.** Boot, main menu, character creation, all levels, level changes, save/load,
-in-game UI (HUD, inventory), audio, input, fullscreen and cutscenes all run through recompiled code.
-This is a work in progress, not a finished product (see *Known issues*).
+**Status: playable on flat screen.** Boot, menus, character creation, all levels, save/load, HUD, audio, input,
+fullscreen and cutscenes all run through recompiled code. Work in progress (see [Known issues](#known-issues)).
+
+**Jump to:** [Play on Windows](#quick-start-windows) · [Run on Linux or elsewhere](#quick-start-linux-and-other-platforms) ·
+[How it works](#how-it-works) · [Known issues](#known-issues) · [Build on it](#build-on-it) ·
+[Portable host docs](port/README.md) · [Recompiler notes](docs/RECOMPILER.md)
 
 ## Why this exists
 
-System Shock 2's engine source was never released, so the only way to change how the engine works has been patching the
-original binary. This project turns the binary into C that can be rebuilt, read and changed: a **vanilla recompilation**
-that plays exactly like the original, as a foundation for others to build on. Fixes, mods that need engine-level access
-(a VR version is being built as a separate project on top of this one), and ports to other platforms all start from here.
-
-This repository stays vanilla: it reproduces the original game and adds nothing to it.
-
-## What it is, in one paragraph
-
-`lift.py` reads your own `SS2.exe`, finds every function (about 21,000), and emits one C function per x86 function.
-The Windows host (`host/win_host.c`) is linked at the game's original address (0x400000). At start-up it loads your
-`SS2.exe` sections into that range, wires the import table to the real Windows API, and redirects every original function
-to its recompiled version. Window procedures, DirectX callbacks, the C runtime's static constructors and script modules
-that call into the engine land in recompiled code too. The script modules (`allobjs.osm`, the game's object scripts, and
-`Squirrel.osm`, NewDark's Squirrel scripting) are recompiled the same way: when the engine loads one, the host loads the
-file itself, checks it is the exact file that was recompiled, and runs the recompiled code instead (falling back to the
-original if a mod ships its own copy). Both modules want the same address, so `Squirrel.osm` is lifted as if loaded at
-0x30000000 and the host maps and relocates it there. The same goes for the other Looking Glass DLLs the game uses:
-`lgvid.dll` (the cutscene player) and `fmsel.dll` (the fan-mission selector). The 2011 `ffmpeg.dll` that `lgvid.dll`
-used to decode the cutscenes with is no longer needed: a small built-in decoder written in portable C (`video/`) answers
-`lgvid.dll` in its place. What still runs as an original binary is Windows itself.
+System Shock 2's engine source was never released, so changing the engine meant patching the binary. This project turns
+the binary into C that can be rebuilt, read and changed: a **vanilla recompilation** that plays exactly like the
+original, as a foundation for fixes, engine-level mods (a VR version is being built separately on top of this) and
+ports. This repository stays vanilla: it reproduces the original game and adds nothing to it.
 
 ## Legal and ground rules
 
-The tools here are MIT-licensed (see LICENSE). The game, its engine and anything generated from it are not. The Indeo 5
-video decoder in `video/ffmpeg/` is taken unmodified from FFmpeg and is LGPL 2.1 (see `video/README.md`).
+The tools are MIT-licensed (see LICENSE). The game, its engine and anything generated from it are not. The Indeo 5
+decoder in `video/ffmpeg/` is unmodified FFmpeg code under LGPL 2.1 (see `video/README.md`).
 
-- No leaked Dark Engine source was used. Everything is derived from binaries by analysis and testing.
-- The generated C and the built exe are derived from the copyrighted game binary. **They are not distributed.**
-  This repository ships only the tools; you generate everything from a copy of the game you own.
-- You need a legitimate install of System Shock 2 with the NewDark 2.48 executable (the GOG and Steam releases are the usual source).
-  The 25th Anniversary Remaster is a different engine and is out of scope.
+- No leaked Dark Engine source was used; everything is derived from binaries by analysis and testing.
+- The generated C and the built executables are derived from the copyrighted game. **They are not distributed.** This
+  repository ships only the tools; you generate everything from a copy of the game you own.
+- You need a legitimate install of System Shock 2 with the NewDark 2.48 executable (GOG and Steam are the usual source).
+  The 25th Anniversary Remaster is a different engine and out of scope.
 
-## Quick start (Windows / PowerShell)
+## Quick start: Windows
 
-1. Install [Python 3](https://www.python.org/downloads/) (tick "Add python.exe to PATH" in the installer).
-2. Open PowerShell in the folder where you unpacked this project (the folder containing `lift.py`) and install the three
-   Python packages it needs. The compiler (Zig) comes from the `ziglang` package, so there is nothing else to download:
+1. Install [Python 3](https://www.python.org/downloads/) (tick "Add python.exe to PATH").
+2. In PowerShell, in the folder containing `lift.py`, install the packages (the compiler, Zig, comes with `ziglang`):
 
         python -m pip install pefile capstone ziglang
 
-3. Build, pointing at your own NewDark 2.48 `SS2.exe` (put the path in quotes) and adding `--install` to copy the result
-   straight into that folder:
+3. Build against your own `SS2.exe` (quote the path); `--install` copies the result into that folder:
 
         python host\build_win.py "C:\Games\System Shock 2\SS2.exe" --install
 
-   The first build takes about 20 minutes (about 8 to convert the game to C, about 10 to compile). It prints progress as it
-   goes. Later builds only redo what changed. `Data\allobjs.osm`, `osm\Squirrel.osm`, `lgvid.dll` and `fmsel.dll` next to
-   your `SS2.exe` are found and recompiled automatically (`--no-osm` skips them).
+   The first build takes about 20 minutes (8 to convert the game to C, 10 to compile); later builds redo only what
+   changed. `Data\allobjs.osm`, `osm\Squirrel.osm`, `lgvid.dll` and `fmsel.dll` next to `SS2.exe` are found and
+   recompiled automatically (`--no-osm` skips them).
+4. Run `ss2_native.exe` from your System Shock 2 folder instead of `SS2.exe`. Leave everything else where it is (game
+   data, `lgvid.dll`, `fmsel.dll`, `allobjs.osm`, `Squirrel.osm`, config files). Display and audio settings come from the
+   game's own config.
 
-4. Run `ss2_native.exe` from your System Shock 2 folder instead of `SS2.exe`. Leave everything else in that folder where it
-   is: the game's data, `lgvid.dll`, `fmsel.dll`, `allobjs.osm`, `Squirrel.osm` and the config files (`ffmpeg.dll` can
-   stay too; it is only used with the switch file below). Display and audio settings come from the game's own config, so whatever you use in the normal game applies here.
+Without `--install` the exe is left in `build\win\ss2_native.exe`. The exe writes `ss2_native.log` next to itself; after a
+crash it contains a report (last recompiled functions, native calls, stack, loaded modules).
 
-Without `--install` the exe is left in `build\win\ss2_native.exe` and you copy it over yourself. On Linux or macOS the same
-command works with `python3 host/build_win.py /path/to/SS2.exe`. That is the native Windows build, which calls Windows and
-DirectX directly: you can build it there, but `ss2_native.exe` only runs on Windows. To run the game on Linux or elsewhere, use
-the portable host instead: [Other platforms](#other-platforms-the-portable-host).
-
-The exe writes `ss2_native.log` next to itself. In normal use the log is short; if something goes wrong the crash report
-(last recompiled functions, last native calls, stack, loaded modules) is written to it automatically.
+`host/build_win.py` also runs on Linux or macOS (`python3 host/build_win.py /path/to/SS2.exe`), but it builds the native
+Windows executable, which only runs on Windows. To play on Linux, use the portable host below.
 
 ### Switch files
+
+Empty text files placed next to the exe change its behaviour:
 
 Empty text files placed next to the exe change its behaviour:
 
@@ -88,46 +72,78 @@ Empty text files placed next to the exe change its behaviour:
 | `darkrecomp_heapcheck.txt` | validate all heaps after every native call (slow; for tracking corruption) |
 | `darkrecomp_realquery.txt` | use the real D3D frame-limiter query instead of the shortcut |
 
-## How it works (short)
+## Quick start: Linux and other platforms
 
-- **Flat guest memory, identity-mapped.** Guest address `a` is host address `a`. The game's data structures are exactly
-  where the original code expects them, which keeps native Windows DLLs (D3D9, lgvid, scripts) and recompiled code
-  interoperable.
-- **Two directions of calls.** Recompiled code calling a Windows API copies the guest stack arguments to the real stack
-  and measures how many bytes the callee popped. Native code calling back into the game (callbacks, scripts) enters a
-  recompiled function through a dispatcher on a per-thread guest stack.
-- **CPU model.** Registers live in a struct; arithmetic flags are C locals that the compiler folds away; x87 is modelled
-  with `double`. MSVC's x87 intrinsics are emulated host-side.
+The portable host ([`port/`](port/README.md)) runs the same recompiled game without Windows and without an x86 CPU. Shared
+Win32, C runtime and DirectX front ends sit on one small interface, [`port/include/plat.h`](port/include/plat.h); a port
+writes a backend for that interface and nothing else. Included: POSIX (memory, threads, files), Windows (development and
+test target), SDL2 (window, input, audio, OpenGL 2.1 / ES 2.0) and a headless backend.
+
+On Ubuntu, Debian or WSL:
+
+```sh
+sudo apt install -y git build-essential cmake ninja-build python3-venv libsdl2-dev
+git clone https://github.com/Owloeb/NewDarkRecompiled.git && cd NewDarkRecompiled
+python3 -m venv .venv && source .venv/bin/activate && pip install pefile capstone
+python3 port/build.py "/path/to/System Shock 2/SS2.exe"          # about 8 minutes the first time
+cd "/path/to/System Shock 2" && ~/NewDarkRecompiled/build/port/ss2port --windowed SS2.exe
+```
+
+Put options **before** `SS2.exe`; anything after it goes to the game. Under WSL, keep the game on the Linux filesystem
+(reading through `/mnt/c` is slow). Full instructions, options, environment variables and the porting guide are in
+[`port/README.md`](port/README.md).
+
+**Status:** plays through Rickenbacker and Body of the Many on Linux (WSL) and as a 64-bit Windows build. Mouselook is
+verified on Windows only: WSLg cannot capture the pointer and native Linux is untested. **Gaps:** shaders and cube/volume
+textures (the game falls back to fixed-function), C++ exceptions, `fmsel.dll`.
+
+## How it works
+
+`lift.py` reads your own `SS2.exe`, finds every function (about 21,000) and emits one C
+function per x86 function. Registers live in a struct, arithmetic flags are C locals the compiler folds away, and x87 is
+modelled with `double`. Guest memory is flat: guest address `a` lives at host `M + a`.
+
+- **Windows host** (`host/win_host.c`): linked at the game's original address (0x400000), identity-mapped. At start-up it
+  loads the `SS2.exe` sections, wires the import table to the real Windows API and redirects every original function
+  to its recompiled version. Window procedures, DirectX callbacks, the C runtime's static constructors and script
+  modules that call into the engine land in recompiled code too. What still runs as an original binary is Windows itself.
+- **Portable host** (`port/`): implements the Windows API, the C runtime and Direct3D 9 / DirectSound / DirectInput
+  itself on top of a small platform interface, so nothing native is needed.
+- **Script and helper modules.** `allobjs.osm` (object scripts), `Squirrel.osm` (NewDark scripting), `lgvid.dll` (cutscene
+  player) and `fmsel.dll` (fan-mission selector) are recompiled the same way. When the engine loads one, the host checks
+  it is the exact file that was recompiled and runs the recompiled code, falling back to the original if a mod ships its
+  own copy. `Squirrel.osm` is lifted as if loaded at 0x30000000 and relocated there.
+- **Cutscenes without `ffmpeg.dll`.** `lgvid.dll` still asks for the 2011 `ffmpeg.dll` API; `video/lavshim.c` answers
+  with an AVI reader, FFmpeg's Indeo 5 decoder and a YUV-to-RGB scaler, all plain C (details in `video/README.md`).
 - **Self-modifying code.** The software renderer patches its own instructions; the lifter maps every such write to the
   exact instruction field, so the game's own patching keeps working.
 - **Verification.** Every function and every distinct instruction encoding was differential-tested against an x86
-  emulator (numbers below, in the technical notes).
-- **Cutscenes without ffmpeg.dll.** The recompiled `lgvid.dll` still asks for `ffmpeg.dll` and its 2011 API; the host
-  answers with `video/lavshim.c`, which implements exactly the calls and struct layouts `lgvid.dll` uses on top of an AVI
-  reader, FFmpeg's Indeo 5 decoder and a YUV-to-RGB scaler, all plain C (details in `video/README.md`).
+  emulator; numbers and method are in [`docs/RECOMPILER.md`](docs/RECOMPILER.md).
 
 ## Known issues
 
-- **The built-in cutscene decoder plays what the game ships: AVI files with Indeo 5 video and PCM audio.** Mods that replace
-  the cutscenes with other formats (MPEG-4, H.264, MP4/MKV containers, ADPCM audio) won't play with it; the log says why
-  (`LAVSHIM ...` lines). For those, `darkrecomp_native_ffmpeg.txt` switches back to the original `ffmpeg.dll`.
-- With `darkrecomp_native_ffmpeg.txt`, the original `ffmpeg.dll` frees a handful of invalid pointers while opening a video.
-  On the original binary this is tolerated; here the process heap would abort the program, so the host redirects ffmpeg's
-  allocator and skips frees of pointers that aren't valid heap blocks (a few small leaks per session).
-- The game's log (`SS2.log`) shows `Failed to load script module ...` lines for `baseelev.osm`, `traps.osm` and one
-  with an unreadable name (`+x?A.osm`, error 126). All three appear in logs from the retail game too: they are harmless
-  leftovers in the engine's default script list and are safely skipped.
-- C++ exceptions inside recompiled code are not supported (a `throw` would stop the game). `setjmp`/`longjmp` are
-  supported (the Squirrel compiler uses them to report script syntax errors), but unlike MSVC's `longjmp` they don't run
-  C++ destructors of the frames they skip, so such an error may leak a little memory.
-- The engine's SSE code paths are disabled (the recompiler doesn't translate SSE), so it uses its x87 fallbacks, as it
-  would on an old CPU.
-- Windows only (the host is a 32-bit Windows executable; 64-bit Windows 10/11 run it fine). Only tested with NewDark
-  2.48 on an NVIDIA GPU.
-- Many diagnostic hooks from the bring-up are still in `host/win_host.c`; they are inactive unless
-  `darkrecomp_debug.txt` exists.
+**Both hosts**
+- C++ exceptions inside recompiled code are not supported (a `throw` stops the game). `setjmp`/`longjmp` work (the
+  Squirrel compiler uses them for syntax errors) but, unlike MSVC's, don't run C++ destructors of skipped frames, so such
+  an error may leak a little memory.
+- The engine's SSE paths are disabled (the recompiler doesn't translate SSE); it uses its x87 fallbacks, as on an old CPU.
+- The built-in cutscene decoder plays what the game ships: AVI with Indeo 5 video and PCM audio. Mods with other formats
+  (MPEG-4, H.264, MP4/MKV, ADPCM) won't play; the log says why (`LAVSHIM ...` lines).
+- `SS2.log` shows `Failed to load script module ...` for `baseelev.osm`, `traps.osm` and one with an unreadable name
+  (`+x?A.osm`, error 126). The retail game logs the same; they are harmless leftovers in the engine's default script list.
 
-## Names for the recompiled code (symbols)
+**Windows host**
+- It is a 32-bit Windows executable (64-bit Windows 10/11 run it fine). Tested only with NewDark 2.48 on an NVIDIA GPU.
+- For cutscene formats the built-in decoder can't play, `darkrecomp_native_ffmpeg.txt` switches back to the original
+  `ffmpeg.dll`. That DLL frees a few invalid pointers while opening a video (tolerated by the original binary), so the
+  host skips frees of pointers that aren't valid heap blocks (a few small leaks per session).
+- Many bring-up diagnostics remain in `host/win_host.c`; they are inactive unless `darkrecomp_debug.txt` exists.
+
+**Portable host:** see [Status and limitations](port/README.md#status-and-limitations).
+
+## Build on it
+
+### Symbols
 
 The generated C names every function by its original address (`nd_00601430`). The build also harvests names from your
 own `SS2.exe` (`tools/annotate.py`, about 20 seconds):
@@ -145,150 +161,18 @@ function's name and notes above it, plus `functions.txt`, an index, for reading.
 The generated names stay on your machine; only `symbols/manual.sym` (our own findings, keyed by address) is in the
 repository. Contributions to it are welcome: one line per function, `0x<address> func <name>  # what it does`.
 
-## Hooks (for mods)
+### Hooks (for mods)
 
 `build_win.py --hooks hooks.txt --extra-src mymod.c` makes recompiled engine functions call your own C code when they
 are entered, without re-lifting: `tools/apply_hooks.py` inserts the calls into the generated C in seconds, and only the
 touched files recompile. A hooks file has one line per hook, `0x<function address> <void function(CPU *c)>`. This
 repository itself stays vanilla; mods live in their own repositories.
 
-## Roadmap
+### Roadmap
 
 1. Shakedown on more machines (AMD and Intel GPUs, other Windows versions) and with popular mods.
 2. More names: globals and structure layouts, and hand-named functions for the main systems (render, input, physics,
    AI, save/load), in `symbols/manual.sym`.
-3. ~~A platform layer (graphics, audio, input, Windows API) so the recompiled game can run beyond 32-bit Windows.~~
-   Done (on the `platform-layer` branch): see [Other platforms](#other-platforms-the-portable-host) below.
-
-## Other platforms: the portable host
-
-[`port/`](port/README.md) runs the same recompiled game without Windows and without an x86 CPU. Shared Win32, C runtime
-and DirectX front ends sit on one small interface, [`port/include/plat.h`](port/include/plat.h); a port to a new platform
-writes a backend for that interface and nothing else. Included backends: POSIX (memory, threads, files), Windows (the
-same, as a development and test target), SDL2 (window, input, audio, OpenGL 2.1 / OpenGL ES 2.0) and a headless one.
-
-```
-python3 -m pip install pefile capstone          # plus cmake, a C compiler and libsdl2-dev
-python3 port/build.py "/path/to/System Shock 2/SS2.exe"                     # Linux (and other POSIX systems)
-python3 port/build.py "/path/to/System Shock 2/SS2.exe" --target windows    # 64-bit Windows exe, cross-built with Zig
-```
-
-Step-by-step instructions for Ubuntu/Debian/WSL (packages, Python environment, running, tips):
-[Linux quick start](port/README.md#linux-quick-start-ubuntu--debian-including-wsl).
-
-Status: the game plays (tested through Rickenbacker and Body of the Many) on Linux under WSL and as a 64-bit Windows
-build; mouselook verified on Windows (WSLg cannot capture the pointer). Known gaps: shaders and cube/volume textures
-(the game falls back to its fixed-function path), C++ exceptions, `fmsel.dll`; native Linux mouselook not yet tested.
-Details, the porting guide and the test suite: [`port/README.md`](port/README.md).
-
-## Technical notes: the recompiler
-
-### Layout
-
-```
-lift.py               PE -> C: function discovery, CFG, C emission, jump tables, import/indirect dispatch,
-                      self-modifying-code analysis (--smc), interprocedural flags analysis
-runtime/rt.h          guest CPU state, guest memory access, x87 helpers, call/return macros
-harness/hx.c          test host: runs one recompiled function on a given state (faults -> outcomes)
-harness/difftest.py   function-level differential test vs Unicorn running the original x86
-harness/insnfuzz.py   per-instruction differential fuzzer (every distinct encoding in both binaries)
-harness/smc_test.py   targeted test for self-modifying renderer code (live patch values + renderer globals)
-harness/tracecmp.py   lockstep trace: first instruction where C and Unicorn diverge (needs a trace build)
-build.sh              build generated C + harness into a shared library
-build_trace.sh        same, with per-instruction state tracing (RT_TRACE)
-```
-
-### Recompiler usage
-
-```sh
-python3 lift.py --smc SS2.exe ss out/ss2                  # ~2 min: 16,395 functions -> 111 C files
-./build.sh out/ss2 build/ss build/libss.so ss             # ~3 min
-python3 lift.py --smc allobjs.osm ao out/allobjs          # ~10 s: 3,716 functions -> 26 C files
-./build.sh out/allobjs build/ao build/libao.so ao
-
-python3 harness/difftest.py SS2.exe out/ss2/ss_meta.json build/libss.so --trials 4 --report ss.json
-SMC_SMALL=1 SMC_PREPATCH=1 python3 harness/smc_test.py SS2.exe out/ss2/ss_meta.json build/libss.so out/ss2
-python3 harness/insnfuzz.py gen out/fz allobjs.osm SS2.exe && ./build.sh out/fz build/fz build/libfz.so fz
-python3 harness/insnfuzz.py run out/fz build/libfz.so --trials 24
-
-./build_trace.sh out/ss2 build/sst build/libsst.so ss
-python3 harness/tracecmp.py SS2.exe out/ss2/ss_meta.json build/libsst.so 0x<function> <trial>
-```
-
-Needs python3, pefile, capstone, unicorn and gcc/clang. Set `UC_IGNORE_REG_BREAK=1` to silence a Unicorn
-deprecation warning.
-
-### Translation model
-
-- Guest memory is flat: guest address `a` lives at host `M + a`. Registers live in `CPU`; arithmetic flags are C
-  locals per function, so dead ones fold away. x87 is modelled with `double`, matching MSVC's default 53-bit
-  precision.
-- Each guest function becomes `void <prefix>_<va>(CPU *c)`. `call` pushes the real return address and calls the C
-  function; `ret` pops and returns. Tail jumps become tail calls.
-- Jump tables (including negative-index and gapped MSVC `memcpy` tables) become C `switch`. Other indirect
-  calls go through a sorted address table, falling back to `rt_call_external`.
-- Imports call `rt_call_import(c, idx)`. IAT slots hold magic addresses, so `mov reg, [IAT]; call reg` resolves too.
-- **Flags across calls.** A whole-program fixpoint finds functions that read flags on entry or return results in
-  flags (the CRT float helpers return NaN/Inf in ZF). Spills and reloads are emitted only at those boundaries.
-  Indirect calls are treated as flag boundaries.
-- **Self-modifying code.** Every absolute write into code is mapped to the exact instruction field it patches.
-  SS2.exe has 237 such fields: 4-byte displacements (texture addresses), 4-byte immediates (masks), 1-byte
-  immediates (shift counts) and one patched `jg` displacement. A patched instruction reads that field from guest
-  memory at runtime, so the game's own patch writes need no translation. The patched branch becomes a `switch`
-  over every value the code stores there. Ambiguous overlapping decodes are resolved by linear decode from the
-  nearest real function start.
-- `fs:` addressing uses `c->fs_base` (TIB; `fs:[0]` = SEH chain).
-- Build modes: `RT_SHADOW` verifies return addresses with a shadow stack, `RT_BUDGET` bounds execution,
-  `RT_TRACE` records state before every instruction.
-
-### Verification status
-
-**SS2.exe**, function level (16,395 functions x 4 random states; registers, x87 stack and all writable memory,
-code included, compared on completion and at the faulting instruction):
-- 7,421 functions match on completed runs and 8,845 match exactly at the fault point.
-- 51 contain only junk decodes, 39 only reach identical faults, and 7 always exhaust the step budget.
-- All 8 remaining failures are explained:
-  - 80-bit vs double exponent range (3)
-  - NaN sign (1)
-  - dead faulting loads removed by GCC (3; verified identical in the trace build)
-  - a junk decode (1)
-- 10 functions differ only in state at the faulting instruction; lockstep traces agree up to the fault in every case.
-- 14 functions write through random pointers into code. Sampled cases are generic copy/clear loops fed pointers
-  from data, not self-modification.
-
-**Self-modifying renderer** (20 functions that write to or contain patched code; patch fields and renderer globals
-pre-loaded with live values, 48 runs each):
-- 459 passing runs executed patched instructions with live values, covering 18 of the 20 functions.
-- There are no plain mismatches. All 48 runs of the hardest case agree instruction for instruction in lockstep traces.
-
-**allobjs.osm** (3,716 functions x 8): 1,995 match on completion, 1,711 at the fault point, 5 contain only junk
-decodes. The 2 failures are a NaN payload and an `fxam` on an empty x87 register.
-
-**Instruction level** (12,892 stubs / 6,414 shapes from both binaries, 24 states each):
-- 308,039 of 308,049 comparable trials pass.
-- The 3 failing shapes are a Unicorn bug (`fyl2x` with input <= 0) and subnormal `fmul`.
-
-**Negative control:** a planted `sar`-as-`shr` bug is caught in 13 of 13 `sar` shapes.
-
-### Bugs found by the verification (all fixed)
-
-- Flags returned across `ret`/`call` by CRT assembly. Fixed by the interprocedural flags analysis.
-- MSVC `memcpy` jump tables with negative indices and an unused first slot.
-- x87 `fsin`/`fcos`/`fptan`/`fsincos` with |x| >= 2^63 must leave the operand unchanged and set C2.
-- Pointer scanning of code sections in relocation-less images created thousands of fake function entries,
-  including at every patch target.
-- Unicorn harness: leftover emulator state across faulting runs, 16-bit stack segment after GDT setup.
-
-### Known gaps
-
-- x87 tag word (empty registers) isn't modelled; `fxam` on an empty slot differs (CRT math-error path only).
-- AF flag isn't modelled (no BCD instructions in reached code; `pushfd` reports AF=0).
-- x87 precision control is ignored (always 53-bit). Direct3D sets 24-bit on device creation, so renderer math
-  will be slightly *more* precise than on Windows. NaN payloads, subnormals and the 80-bit exponent range differ.
-- At a fault, multi-step instructions aren't atomic, and GCC may drop or reorder faulting dead loads.
-  This only matters for code that is crashing anyway.
-- Return addresses don't steer control flow, so setjmp/longjmp and C++ exception unwinding need explicit runtime
-  support.
-- The mapper variant at 0x52e100-0x52e650 has no references in the exe and is treated as dead. If it's ever
-  called, the dispatch fails loudly.
-- No optimisation pass yet: flag locals, registers resident in the struct, memcpy-based memory access.
+3. ~~A platform layer so the recompiled game can run beyond 32-bit Windows.~~ Done: see the
+   [portable host](port/README.md).
+4. Next for the portable host: shaders and cube/volume textures, native Linux mouselook testing, further backends.
