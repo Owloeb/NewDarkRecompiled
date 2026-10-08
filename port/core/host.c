@@ -198,7 +198,7 @@ void rt_call_external(CPU *c, uint32_t t) {
     if (thunk_is(t)) { thunk_run(c, (t - THUNK_BASE) / 16); return; }
     guest_fn f = nd_lookup(t); if (f) { f(c); return; }
     if (mod_call(c, t)) return;
-    port_die("call or jump to %08x, which is neither recompiled code nor a host function", t);
+    char md[160]; port_die("call or jump to %08x, which is neither recompiled code nor a host function%s", t, mod_describe(t, md, sizeof md));
 }
 void rt_fault(CPU *c, uint32_t addr, int kind) {
     static const char *names[] = { "?", "unimplemented instruction", "divide error", "trap", "bad jump", "bad return" };

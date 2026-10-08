@@ -166,6 +166,7 @@ uint32_t mod_load(CPU *c, const char *name);    /* module handle (its base addre
 int      mod_free(CPU *c, uint32_t h);          /* 1 when h was a recompiled module */
 uint32_t mod_export(uint32_t h, const char *name, int *is_mod);
 uint32_t mod_handle_of(const char *name);
+const char *mod_describe(uint32_t t, char *buf, size_t n);   /* " (inside allobjs.osm: loaded, ...)" or "" */
 int      mod_call(CPU *c, uint32_t target);     /* run target if it lies in a loaded recompiled module */
 void     mod_reserve_all(void);                 /* marks every recompiled module's address range as used */
 
