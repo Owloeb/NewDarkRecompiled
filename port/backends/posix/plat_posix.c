@@ -33,7 +33,9 @@ void plat_log_write(PlatLogLevel level, const char *line) {
 #endif
 void *plat_mem_reserve(uint64_t size) {
     void *p = mmap(NULL, (size_t)size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
-    return p == MAP_FAILED ? NULL : p;
+    if (p == MAP_FAILED) return NULL;
+    if (g_plat_backed && g_plat_backed < size) mprotect((char *)p + g_plat_backed, (size_t)(size - g_plat_backed), PROT_NONE);     /* the unbacked tail faults, as it would on a host without it */
+    return p;
 }
 void plat_mem_release(void *base, uint64_t size) { munmap(base, (size_t)size); }
 void plat_mem_discard(void *addr, uint64_t size) {

@@ -229,6 +229,16 @@ static void test_win32(void) {
     p = HeapReAlloc(ph, 0, p, 100000); CHECK(p && p[0] == 'k'); CHECKI(HeapSize(ph, 0, p), 100000); CHECK(HeapFree(ph, 0, p));
     char *v = VirtualAlloc(NULL, 1 << 20, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE); CHECK(v != 0); CHECK(((DWORD)v & 0xFFFF) == 0);
     if (v) { v[0] = 1; v[(1 << 20) - 1] = 2; CHECK(v[(1 << 20) - 1] == 2); CHECK(VirtualFree(v, 0, MEM_RELEASE)); }
+    {   /* a big pool used from the bottom (as the game does with its 64 MB one), then more allocations beside it, then everything released */
+        char *big = VirtualAlloc(NULL, 64 << 20, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE); CHECK(big != 0);
+        if (big) {
+            for (int i = 0; i < (8 << 20); i += 4096) big[i] = (char)(i >> 12);
+            char *o = VirtualAlloc(NULL, 2 << 20, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE); CHECK(o != 0);
+            if (o) { o[0] = 7; o[(2 << 20) - 1] = 8; CHECK(o[0] == 7 && big[4096] == 1 && big[(4 << 20)] == (char)(1024)); CHECK(VirtualFree(o, 0, MEM_RELEASE)); }
+            CHECK(VirtualFree(big, 0, MEM_RELEASE));
+            big = VirtualAlloc(NULL, 64 << 20, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE); CHECK(big != 0 && big[0] == 0 && big[4096] == 0); if (big) CHECK(VirtualFree(big, 0, MEM_RELEASE));
+        }
+    }
     DWORD t = TlsAlloc(); CHECK(t != TLS_OUT_OF_INDEXES); CHECK(TlsSetValue(t, (void *)0x1234)); CHECK(TlsGetValue(t) == (void *)0x1234); TlsFree(t);
     volatile LONG l = 5; CHECKI(InterlockedIncrement(&l), 6); CHECKI(InterlockedDecrement(&l), 5); CHECKI(InterlockedExchange(&l, 9), 5); CHECKI(InterlockedCompareExchange(&l, 1, 9), 9); CHECKI(l, 1); CHECKI(InterlockedCompareExchange(&l, 3, 9), 1); CHECKI(l, 1);
     WCHAR w[16]; char a[16]; CHECKI(MultiByteToWideChar(CP_ACP, 0, "abc", -1, w, 16), 4); CHECK(w[0] == 'a' && w[3] == 0); CHECKI(WideCharToMultiByte(CP_ACP, 0, w, -1, a, 16, NULL, NULL), 4); CHECKS(a, "abc");

@@ -48,6 +48,7 @@ void vita_log_free_memory(const char *when) {
 }
 void *plat_mem_reserve(uint64_t size) {
     if (guest_block >= 0 || size > 0xFFFFFFFFull) return NULL;
+    if (g_plat_backed && g_plat_backed < size) size = g_plat_backed;               /* the rest of the address space is never touched */
     uint32_t sz = (uint32_t)((size + 0xFFFFu) & ~0xFFFFull);
     vita_log_free_memory("before the guest block");
     guest_block = sceKernelAllocMemBlock("ss2 guest", SCE_KERNEL_MEMBLOCK_TYPE_USER_RW, sz, NULL);

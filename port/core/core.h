@@ -30,6 +30,7 @@ typedef struct {
     char cmdline[1024];            /* the guest's command line (GetCommandLineA) */
     uint32_t max_frames;           /* stop after this many presented frames (0: never) */
     int windowed;                  /* force windowed mode */
+    uint64_t guest_backed;         /* bytes of it that are real memory (0: all); see vm_alloc */
     uint64_t guest_space;          /* bytes of guest address space to reserve (0: the default for this host) */
 } PortConfig;
 extern PortConfig g_cfg;

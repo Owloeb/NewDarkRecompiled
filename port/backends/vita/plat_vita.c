@@ -3,7 +3,7 @@
  *
  * Files on the memory card, all in ux0:data/ss2/ (VITA_GAME_DIR):
  *   SS2.exe and the rest of the game, exactly as on the PC the build was generated from
- *   ss2port.txt  optional: options for the host, one or more per line, e.g. "--guest-space 256 --verbose"
+ *   ss2port.txt  optional: options for the host, one or more per line, e.g. "--guest-space 208 --guest-backed 144 --verbose"
  *                plus the Vita-only options below
  *   ss2port.log  everything the host and the renderer log (rewritten on every start)
  *
@@ -40,7 +40,13 @@
 #define VITA_GAME_DIR "ux0:data/ss2"
 #endif
 #ifndef VITA_HEAP_MB                 /* newlib heap for the host (file buffers, tables, the renderer's CPU-side data) */
-#define VITA_HEAP_MB 96
+#define VITA_HEAP_MB 48
+#endif
+#ifndef VITA_GUEST_SPACE_MB_STR       /* guest address space, and how much of it is real RAM (see vm_alloc: the game's 64 MB startup pool is mostly never touched) */
+#define VITA_GUEST_SPACE_MB_STR "208"
+#endif
+#ifndef VITA_GUEST_BACKED_MB_STR
+#define VITA_GUEST_BACKED_MB_STR "144"
 #endif
 #ifndef VITA_RAM_THRESHOLD_MB        /* RAM vitaGL leaves free when it sizes its pools (thread stacks are allocated later) */
 #define VITA_RAM_THRESHOLD_MB 32
@@ -225,12 +231,12 @@ int main(int argc, char **argv) {
     for (int i = 0; i < nopt; i++) {
         if (!strcmp(opt[i], "--swap-sticks")) { swap_sticks = 1; continue; }
         if (!strcmp(opt[i], "--look-speed") && i + 1 < nopt) { look_speed = (float)atof(opt[++i]) / 100.0f; continue; }
-        if (!strcmp(opt[i], "--guest-space")) have_space = 1;
+        if (!strcmp(opt[i], "--guest-space") || !strcmp(opt[i], "--guest-backed")) have_space = 1;
         if (ends_with_exe(opt[i])) have_exe = 1;
         if (ac < 76) av[ac++] = opt[i];
     }
     if (!have_space) {                                   /* must come before the exe: everything after it goes to the game */
-        memmove(av + 3, av + 1, (size_t)(ac - 1) * sizeof *av); av[1] = "--guest-space"; av[2] = "256"; ac += 2;
+        memmove(av + 5, av + 1, (size_t)(ac - 1) * sizeof *av); av[1] = "--guest-space"; av[2] = VITA_GUEST_SPACE_MB_STR; av[3] = "--guest-backed"; av[4] = VITA_GUEST_BACKED_MB_STR; ac += 4;
     }
     if (!have_exe) av[ac++] = VITA_GAME_DIR "/SS2.exe";
     av[ac] = NULL;

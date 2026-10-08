@@ -20,6 +20,7 @@ extern const SymEnt nd_symtab[] __attribute__((weak)); extern const unsigned nd_
 
 uint8_t *M;
 uint64_t g_space;
+uint64_t g_plat_backed;            /* bytes at the start of the guest block that are real memory (0: all of it); see vm_init */
 uint32_t g_thunk_base = 0xF0000000u;
 PortConfig g_cfg;
 int port_verbose, port_trace;
@@ -122,13 +123,23 @@ static int vm_free_range(uint32_t p, uint32_t n) { if (p + n > vm_pages) return 
 static void vm_take(uint32_t p, uint32_t n) { memset(vm_used + p, 1, n); vm_len[p] = n; }
 static int vm_quiet;
 uint32_t vm_alloc_quiet(uint32_t size) { vm_quiet = 1; uint32_t a = vm_alloc(size, 0, "heap arena"); vm_quiet = 0; return a; }
+static uint32_t vm_back_pages;   /* pages of the address space that are real memory; the rest only exists for oversized regions (see vm_alloc) */
+#define VM_STRADDLE_MB 48        /* a VirtualAlloc this big is placed across the end of the backed memory ... */
+#define VM_KEEP_MB 12            /* ... with only this much of it (from its start) backed: the game uses such pools from the bottom up */
 uint32_t vm_alloc(uint32_t size, uint32_t want, const char *what) {
     uint32_t n = (uint32_t)(((uint64_t)size + VM_GRAN - 1) / VM_GRAN); if (!n) n = 1;
     if (want) { uint32_t p = want / VM_GRAN; if (want % VM_GRAN == 0 && vm_free_range(p, n)) { vm_take(p, n); return want; } return 0; }
-    for (uint32_t p = 1; p + n <= vm_pages; p++) {
+    if (vm_back_pages < vm_pages && !strcmp(what, "VirtualAlloc") && (uint64_t)n * VM_GRAN >= ((uint64_t)VM_STRADDLE_MB << 20)) {
+        uint32_t keep = VM_KEEP_MB * (1u << 20) / VM_GRAN;
+        for (uint32_t p = vm_back_pages - keep; p >= 1; p--) {
+            if (p + n > vm_pages || !vm_free_range(p, n)) continue;
+            vm_take(p, n); port_debug("vm: %s %08x +%x (only the first %u MB are backed)", what, p * VM_GRAN, n * VM_GRAN, (unsigned)VM_KEEP_MB); return p * VM_GRAN;
+        }
+    }
+    for (uint32_t p = 1; p + n <= vm_back_pages; p++) {
         if (vm_used[p]) continue;
         uint32_t k = 0; while (k < n && !vm_used[p + k]) k++;
-        if (k == n) { vm_take(p, n); port_debug("vm: %s %08x +%x", what, p * VM_GRAN, n * VM_GRAN); return p * VM_GRAN; }
+        if (k == n) { vm_take(p, n); port_debug("vm: %s %08x +%x", what, p * VM_GRAN, n * VM_GRAN); return p * VM_GRAN; }    /* fresh guest memory reads as zero (see plat_mem_discard) */
         p += k;
     }
     if (!vm_quiet) port_warn("guest address space exhausted (%s, %u KB)", what, size >> 10);
@@ -137,7 +148,9 @@ uint32_t vm_alloc(uint32_t size, uint32_t want, const char *what) {
 void vm_free(uint32_t a) {
     uint32_t p = a / VM_GRAN; if (a % VM_GRAN || p >= vm_pages || !vm_len[p]) return;
     uint32_t n = vm_len[p]; vm_len[p] = 0; memset(vm_used + p, 0, n);
-    plat_mem_discard(GP(a), (uint64_t)n * VM_GRAN);
+    uint64_t len = (uint64_t)n * VM_GRAN, lim = (uint64_t)vm_back_pages * VM_GRAN;        /* never touch the unbacked tail */
+    if (a >= lim) len = 0; else if (a + len > lim) len = lim - a;
+    if (len) plat_mem_discard(GP(a), len);
 }
 uint32_t vm_region_size(uint32_t a) { uint32_t p = a / VM_GRAN; return p < vm_pages && a % VM_GRAN == 0 ? vm_len[p] * VM_GRAN : 0; }
 int vm_mark(uint32_t lo, uint32_t hi, const char *what) {
@@ -153,17 +166,21 @@ static void vm_init(uint64_t need_hi) {
     if (want < need_hi) port_die("the guest address space (%llu MB) is smaller than the game's images need (%llu MB); raise --guest-space",
                                  (unsigned long long)(want >> 20), (unsigned long long)(need_hi >> 20));
     want = (want + VM_GRAN - 1) & ~(uint64_t)(VM_GRAN - 1);
+    uint64_t backed = g_cfg.guest_backed; if (backed && backed < want) { backed = (backed + VM_GRAN - 1) & ~(uint64_t)(VM_GRAN - 1); g_plat_backed = backed; } else backed = want;
     M = plat_mem_reserve(want);
     if (!M) port_die("could not reserve %llu MB of address space for the game", (unsigned long long)(want >> 20));
-    g_space = want; vm_pages = (uint32_t)(want / VM_GRAN);
+    g_space = want; vm_pages = (uint32_t)(want / VM_GRAN); vm_back_pages = (uint32_t)(backed / VM_GRAN);
     vm_len = calloc(vm_pages, sizeof *vm_len); vm_used = calloc(vm_pages, 1);
     vm_used[0] = 1;                                      /* the first 64 KB stay unmapped for the guest: null pointers */
     if (g_space > 0xF0000000u) vm_mark(THUNK_BASE, (uint32_t)(g_space - 1) & ~(VM_GRAN - 1), "host function thunks");
-    else {                                               /* small guest space: keep the thunk range inside it, 256 KB (16384 thunks) below the top */
+    else if (vm_back_pages < vm_pages) {                 /* partly backed: the thunk range sits right behind the images, in real memory */
+        g_thunk_base = (uint32_t)((need_hi + VM_GRAN - 1) & ~(uint64_t)(VM_GRAN - 1));
+        if (!vm_mark(g_thunk_base, g_thunk_base + 0x40000u, "host function thunks")) port_die("the guest address space is too small for the host function thunks");
+    } else {                                             /* small guest space: keep the thunk range inside it, 256 KB (16384 thunks) below the top */
         g_thunk_base = (uint32_t)(g_space - 0x40000u) & ~(VM_GRAN - 1);
         if (g_thunk_base < need_hi || !vm_mark(g_thunk_base, g_thunk_base + 0x40000u, "host function thunks")) port_die("the guest address space is too small for the host function thunks");
     }
-    port_debug("guest address space: %llu MB at %p", (unsigned long long)(g_space >> 20), (void *)M);
+    port_debug("guest address space: %llu MB at %p (%llu MB backed)", (unsigned long long)(g_space >> 20), (void *)M, (unsigned long long)(backed >> 20));
 }
 
 /* ---------------------------------------------------------------- thunks */
@@ -326,6 +343,7 @@ static void usage(void) {
         "  --frames N        stop after N presented frames\n"
         "  --windowed        force a window\n"
         "  --guest-space MB  guest address space to reserve (default: 4096 on 64-bit hosts)\n"
+        "  --guest-backed MB only this much of it is real memory (the rest serves oversized pools, see vm_alloc); default: all\n"
         "  --verbose         more logging; --trace: record import calls (first 8192 and last 4096, printed on exit/crash/Ctrl-C)\n"
         "  --trace-only a,b  record only these imports (e.g. fopen,fread,fseek)\n"
         "  --list-missing    list the game's imports the host does not implement\n"
@@ -353,6 +371,7 @@ int port_main(int argc, char **argv) {
         else if (!strcmp(a, "--windowed")) g_cfg.windowed = 1;
         else if (!strcmp(a, "--frames") && i + 1 < argc) g_cfg.max_frames = (uint32_t)strtoul(argv[++i], NULL, 10);
         else if (!strcmp(a, "--guest-space") && i + 1 < argc) g_cfg.guest_space = (uint64_t)strtoull(argv[++i], NULL, 10) << 20;
+        else if (!strcmp(a, "--guest-backed") && i + 1 < argc) g_cfg.guest_backed = (uint64_t)strtoull(argv[++i], NULL, 10) << 20;
         else if (a[0] == '-' && a[1] == '-') usage();
         else exe = a;
     }
