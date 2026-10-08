@@ -8,7 +8,7 @@ runs it on Linux and, with a small backend, anywhere else.
 fullscreen and cutscenes all run through recompiled code. Work in progress (see [Known Issues](#known-issues)).
 
 **Jump to:** [Play on Windows](#quick-start-windows) · [Run on Linux or Elsewhere](#quick-start-linux-and-other-platforms) ·
-[How It Works](#how-it-works) · [Known Issues](#known-issues) · [Build On It](#build-on-it) ·
+[How It Works](#how-it-works) · [Known Issues](#known-issues) · [Build On It!](#build-on-it) ·
 [Portable Host Docs](port/README.md) · [Recompiler notes](docs/RECOMPILER.md)
 
 ## Why This Exists
