@@ -39,7 +39,7 @@ static void gil_init(void) { if (!gil_m) { gil_m = plat_mutex_new(); gil_cv = pl
 void gil_acquire(GuestThread *t) {
     plat_mutex_lock(gil_m);
     uint64_t my = gil_next++;
-    if (my != gil_serving) { __atomic_store_n(&rt_preempt_req, 1, __ATOMIC_RELAXED); while (my != gil_serving) plat_cond_wait(gil_cv, gil_m); }
+    if (my != gil_serving) { __atomic_store_n(&rt_preempt_req, 1, __ATOMIC_RELAXED); while (my != gil_serving) plat_cond_wait_ns(gil_cv, gil_m, 10000000u); }   /* re-check every 10 ms: a lost wake-up must not hang the game */
     __atomic_store_n(&rt_preempt_req, gil_next != gil_serving + 1, __ATOMIC_RELAXED);   /* someone is still queued behind us */
     plat_mutex_unlock(gil_m);
     g_cur = t; slice_start = plat_time_ns(); slice_tick = 0;

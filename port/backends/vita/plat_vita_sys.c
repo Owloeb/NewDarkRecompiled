@@ -100,14 +100,14 @@ void plat_mutex_free(PlatMutex *m) { pthread_mutex_destroy(&m->m); free(m); }
 void plat_mutex_lock(PlatMutex *m) { pthread_mutex_lock(&m->m); }
 void plat_mutex_unlock(PlatMutex *m) { pthread_mutex_unlock(&m->m); }
 PlatCond *plat_cond_new(void) {
-    PlatCond *c = calloc(1, sizeof *c); pthread_condattr_t a; pthread_condattr_init(&a);
-    pthread_condattr_setclock(&a, CLOCK_MONOTONIC);             /* pthread-embedded's Vita port supports it */
-    pthread_cond_init(&c->c, &a); pthread_condattr_destroy(&a); return c;
+    /* pthread-embedded accepts pthread_condattr_setclock but ignores it: every deadline is measured against the wall
+     * clock. So no clock attribute here, and plat_cond_wait_ns builds its deadline from CLOCK_REALTIME. */
+    PlatCond *c = calloc(1, sizeof *c); pthread_cond_init(&c->c, NULL); return c;
 }
 void plat_cond_free(PlatCond *c) { pthread_cond_destroy(&c->c); free(c); }
 void plat_cond_wait(PlatCond *c, PlatMutex *m) { pthread_cond_wait(&c->c, &m->m); }
 int plat_cond_wait_ns(PlatCond *c, PlatMutex *m, uint64_t ns) {
-    struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t);
+    struct timespec t; clock_gettime(CLOCK_REALTIME, &t);              /* see plat_cond_new */
     uint64_t total = (uint64_t)t.tv_nsec + ns % 1000000000u; t.tv_sec += (time_t)(ns / 1000000000u + total / 1000000000u); t.tv_nsec = (long)(total % 1000000000u);
     return pthread_cond_timedwait(&c->c, &m->m, &t) == ETIMEDOUT;
 }
