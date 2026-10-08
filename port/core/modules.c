@@ -58,7 +58,7 @@ uint32_t mod_load(CPU *c, const char *name) {
     const RecompModDesc *d = recomp_mods[k];
     if (ieq(d->name, "fmsel.dll")) { port_log("%s (the fan-mission selector, a GDI/shell user interface) is not loaded by the portable host", name); return 0; }
     if (!st[k].reserved) return 0;
-    if (st[k].refs) { st[k].refs++; port_log("%s: LoadLibrary again (references %d, thread %u%s)", d->name, st[k].refs, cur_thread_id(), st[k].unloading ? ", during its unload" : ""); return d->base; }
+    if (st[k].refs) { st[k].refs++; port_debug("%s: LoadLibrary again (references %d, thread %u%s)", d->name, st[k].refs, cur_thread_id(), st[k].unloading ? ", during its unload" : ""); return d->base; }
     char hp[1200]; vfs_map(name, hp, sizeof hp); long n; uint8_t *file = slurp(hp, &n);
     if (!file) { port_log("%s: could not be opened (%s)", name, hp); return 0; }
     uint32_t lf = *(uint32_t *)(file + 0x3c); const uint8_t *nt = file + lf;
@@ -100,13 +100,13 @@ uint32_t mod_load(CPU *c, const char *name) {
 int mod_free(CPU *c, uint32_t h) {
     int k = find_by_handle(h);
     if (k < 0) { for (int i = 0; recomp_mods[i] && i < 16; i++) if (recomp_mods[i]->base == h) { port_log("%s: FreeLibrary on a module that is not loaded (thread %u)", recomp_mods[i]->name, cur_thread_id()); return 1; } return 0; }
-    port_log("%s: FreeLibrary (references %d, thread %u%s)", recomp_mods[k]->name, st[k].refs, cur_thread_id(), st[k].unloading ? ", during its own unload" : "");
+    port_debug("%s: FreeLibrary (references %d, thread %u%s)", recomp_mods[k]->name, st[k].refs, cur_thread_id(), st[k].unloading ? ", during its own unload" : "");
     if (st[k].refs > 1) { st[k].refs--; return 1; }
     if (st[k].unloading) return 1;                          /* FreeLibrary again from inside DllMain(DETACH): already going away */
     st[k].unloading = 1;
     uint32_t r = g_call(c, recomp_mods[k]->entry, 3, h, 0u, 0u);   /* DllMain(DLL_PROCESS_DETACH) while the module still counts as loaded: its code must stay callable */
     st[k].unloading = 0; st[k].refs = 0; memset(GP(recomp_mods[k]->base), 0, recomp_mods[k]->size);
-    port_log("%s: unloaded (DllMain -> %u)", recomp_mods[k]->name, r);
+    port_debug("%s: unloaded (DllMain -> %u)", recomp_mods[k]->name, r);
     return 1;
 }
 const char *mod_describe(uint32_t t, char *buf, size_t n) {   /* for error messages: which module an address belongs to, and its state */
