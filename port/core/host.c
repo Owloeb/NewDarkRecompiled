@@ -106,7 +106,7 @@ uint32_t vm_alloc(uint32_t size, uint32_t want, const char *what) {
     for (uint32_t p = 1; p + n <= vm_pages; p++) {
         if (vm_used[p]) continue;
         uint32_t k = 0; while (k < n && !vm_used[p + k]) k++;
-        if (k == n) { vm_take(p, n); memset(GP(p * VM_GRAN), 0, (size_t)n * VM_GRAN); port_debug("vm: %s %08x +%x", what, p * VM_GRAN, n * VM_GRAN); return p * VM_GRAN; }
+        if (k == n) { vm_take(p, n); port_debug("vm: %s %08x +%x", what, p * VM_GRAN, n * VM_GRAN); return p * VM_GRAN; }
         p += k;
     }
     if (!vm_quiet) port_warn("guest address space exhausted (%s, %u KB)", what, size >> 10);
