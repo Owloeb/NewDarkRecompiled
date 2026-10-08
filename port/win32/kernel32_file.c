@@ -5,7 +5,7 @@
 #include "core.h"
 
 /* ---------------------------------------------------------------- file objects */
-typedef struct { KObj k; PlatFile *f; int console; char host[1024]; } KFile;
+typedef struct { KObj k; PlatFile *f; int console; volatile int busy; char host[1024]; } KFile;   /* busy: a read is running without the guest lock */
 static void kf_destroy(KObj *o) { KFile *f = (KFile *)o; if (f->f) plat_fs_close(f->f); free(f); }
 static int kf_sig(KObj *o, GuestThread *t) { (void)o; (void)t; return 1; }
 static uint32_t new_file(PlatFile *pf, int console, const char *host) {
@@ -13,7 +13,11 @@ static uint32_t new_file(PlatFile *pf, int console, const char *host) {
     if (host) snprintf(f->host, sizeof f->host, "%s", host);
     return handle_new(&f->k);
 }
-static KFile *FH(uint32_t h) { return (KFile *)handle_get(h, K_FILE); }
+static KFile *FH(uint32_t h) {            /* waits while another thread is reading the same handle (see ReadFile) */
+    KFile *f = (KFile *)handle_get(h, K_FILE);
+    while (f && f->busy) { BLOCKING(plat_thread_yield()); f = (KFile *)handle_get(h, K_FILE); }
+    return f;
+}
 /* the console: lines go to the host log */
 static char con_buf[2][1024]; static size_t con_n[2];
 void console_write(int err, const void *p, uint32_t n) {
@@ -50,7 +54,9 @@ SHIM(CreateFileA) {
 SHIM(ReadFile) {
     KFile *f = FH(A(0)); if (A(3)) WR32(A(3), 0);
     if (!f || !f->f) { set_last_error(6); RET(0); return; }
-    int64_t n = plat_fs_read(f->f, GP(A(1)), A(2)); if (n < 0) { set_last_error(30); RET(0); return; }
+    /* the read runs without the guest lock, so other guest threads (the main loop) keep running during slow I/O */
+    int64_t n; f->busy = 1; kobj_ref(&f->k); BLOCKING(n = plat_fs_read(f->f, GP(A(1)), A(2))); f->busy = 0; kobj_unref(&f->k);
+    if (n < 0) { set_last_error(30); RET(0); return; }
     if (A(3)) WR32(A(3), (uint32_t)n); RET(1);
 }
 SHIM(WriteFile) {
