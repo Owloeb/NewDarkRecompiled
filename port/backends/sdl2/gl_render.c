@@ -188,7 +188,7 @@ static GLuint compile(GLenum type, const char *src) {
     char head[96]; snprintf(head, sizeof head, "%s", !gles ? "#version 120\n" : type == GL_FRAGMENT_SHADER ? "#version 100\nprecision mediump float;\n" : "#version 100\n");
     const char *parts[2] = { head, src }; GLuint s = glCreateShader(type); glShaderSource(s, 2, parts, NULL); glCompileShader(s);
     GLint ok = 0; glGetShaderiv(s, GL_COMPILE_STATUS, &ok);
-    if (!ok) { char log[2048]; glGetShaderInfoLog(s, sizeof log, NULL, log); fprintf(stderr, "[gl] shader compile failed:\n%s\n%s\n", log, src); }
+    if (!ok) { char log[2048] = "(this GL has no glGetShaderInfoLog)"; if (glGetShaderInfoLog) glGetShaderInfoLog(s, sizeof log, NULL, log); fprintf(stderr, "[gl] shader compile failed:\n%s\n%s\n", log, src); }
     return s;
 }
 static GLuint link(const char *vs, const char *fs) {
@@ -196,7 +196,7 @@ static GLuint link(const char *vs, const char *fs) {
     glAttachShader(p, v); glAttachShader(p, f);
     glBindAttribLocation(p, 0, "a_pos"); glBindAttribLocation(p, 1, "a_diff"); glBindAttribLocation(p, 2, "a_spec"); glBindAttribLocation(p, 3, "a_fog"); glBindAttribLocation(p, 4, "a_uv");
     glLinkProgram(p); GLint ok = 0; glGetProgramiv(p, GL_LINK_STATUS, &ok);
-    if (!ok) { char log[2048]; glGetProgramInfoLog(p, sizeof log, NULL, log); fprintf(stderr, "[gl] program link failed: %s\n", log); }
+    if (!ok) { char log[2048] = "(this GL has no glGetProgramInfoLog)"; if (glGetProgramInfoLog) glGetProgramInfoLog(p, sizeof log, NULL, log); fprintf(stderr, "[gl] program link failed: %s\n", log); }
     glDeleteShader(v); glDeleteShader(f); return p;
 }
 typedef struct { uint8_t key[24]; GLuint prog; GLint u_t0, u_t1, u_tf, u_fogc, u_aref, u_zbias; } Prog;
