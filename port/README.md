@@ -52,6 +52,8 @@ next to `SS2.exe`, so `./ss2port --windowed` works from there.
 
 ## Options
 
+The complete list of every option in the project (build, run, Vita, tools) is in [`docs/FLAGS.md`](../docs/FLAGS.md).
+
 Command line, before the exe:
 
 | Option | Effect |

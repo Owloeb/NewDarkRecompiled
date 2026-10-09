@@ -57,8 +57,6 @@ Windows executable, which only runs on Windows. To play on Linux, use the portab
 
 Empty text files placed next to the exe change its behaviour:
 
-Empty text files placed next to the exe change its behaviour:
-
 | File | Effect |
 | --- | --- |
 | `darkrecomp_debug.txt` | verbose diagnostics: per-frame draw statistics, call tracing, heartbeat, and a few backbuffer screenshots (`darkrecomp_*.bmp`) |
@@ -140,6 +138,9 @@ modelled with `double`. Guest memory is flat: guest address `a` lives at host `M
 - Many bring-up diagnostics remain in `host/win_host.c`; they are inactive unless `darkrecomp_debug.txt` exists.
 
 **Portable Host:** see [Status and Limitations](port/README.md#status-and-limitations).
+
+**Every option in one place:** [`docs/FLAGS.md`](docs/FLAGS.md) lists all build options, command-line flags, environment
+variables, switch files and developer tools.
 
 ## Build On It!
 

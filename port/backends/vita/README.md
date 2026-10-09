@@ -61,6 +61,8 @@ watchdog crashes it on purpose so the Vita writes a core dump showing where it h
 The log also shows it shows the free memory at start, after the guest block and after
 vitaGL, then everything the host logs. Send that file when something goes wrong.
 
+All options, including the Vita ones, are also listed in [`docs/FLAGS.md`](../../../docs/FLAGS.md).
+
 ## Memory
 
 The Vita has no lazy commit, so the guest block is real RAM from the start. The game reserves about 166 MB, but only
