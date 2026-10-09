@@ -178,7 +178,13 @@ static void thunk_run(CPU *c, unsigned i) {
     ring_ret[ring_n & 15] = RD32(c->esp); ring_names[ring_n++ & 15] = t->name;
     g_targ = t->arg;
     const char *tname = t->name; uint32_t tpop = (uint32_t)t->pop;
+#ifdef RT_PROF
+    const char *prof_prev = rt_prof_cur; rt_prof_cur = tname;      /* profiling build: time inside the host is charged to the import, not to the caller */
+#endif
     t->fn(c);                  /* may create thunks (GetProcAddress, LoadLibrary, COM vtables) and move the table: t is stale after this */
+#ifdef RT_PROF
+    rt_prof_cur = prof_prev;
+#endif
     if (tr) {
         char pm[64] = "";      /* the record the first argument points to (a POINT or RECT out / in parameter), when it is one */
         if (ta[0] && ta[0] < THUNK_BASE && g_valid(ta[0], 16) && (!strcmp(tname, "GetCursorPos") || !strcmp(tname, "ClipCursor") || !strcmp(tname, "GetClipCursor")))
@@ -352,6 +358,7 @@ int port_main(int argc, char **argv) {
     int missing = 0; bind_imports(0, &missing); fill_iat();
     GuestThread *mt = thread_main_init();
     CPU *c = cur_cpu(); (void)mt;
+    { void port_prof_start(void); port_prof_start(); }
     port_log("running the recompiled entry point %08x (%u imports, %d without an implementation)", hd_entry, hd_nimports, missing);
     PUSH32(c, 0xFEEDF00Du);
     nd_call(c, hd_entry);

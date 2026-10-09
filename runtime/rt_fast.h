@@ -83,6 +83,8 @@ static inline void   MSTF64_(uint8_t *mb, uint32_t a, double d){ uint64_t v; mem
 /* loop heads and function entries: like BUDGET(), with the registers handed over when the host takes control */
 #if defined(RT_BUDGET)
 #define MBUDGET() do { if (--c->budget < 0) { SPILLALL_; rt_budget_exhausted(c); } } while (0)
+#elif defined(RT_PROF)
+#define MBUDGET() do { rt_prof_cur = __func__; if (__builtin_expect(__atomic_load_n(&rt_preempt_req, __ATOMIC_RELAXED), 0)) { SPILLALL_; rt_preempt(c); RELOAD_; } } while (0)
 #elif defined(RT_PREEMPT)
 #define MBUDGET() do { if (__builtin_expect(__atomic_load_n(&rt_preempt_req, __ATOMIC_RELAXED), 0)) { SPILLALL_; rt_preempt(c); RELOAD_; } } while (0)
 #else

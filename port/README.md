@@ -92,6 +92,12 @@ cmake --build build/port
 - **CMake options:** `PORT_PREEMPT` (default ON: other guest threads may run at loop heads, needed for games that
   spin-wait), `PORT_VIDEO` (default ON: built-in Indeo 5 cutscene decoder, LGPL code from `video/`),
   `PORT_BACKEND`, `PORT_SYSTEM` (`posix` or `win32`).
+- **Experimental speed switch:** `build.py --cache-regs` lifts with `lift.py --cache-regs`: guest registers live in C locals
+  inside each function, and indirect calls go through a small target cache. Off by default (the default lifted code is
+  unchanged); switching it relifts everything. Measured on a PS Vita: roughly +20% frame rate; not yet measured on PC.
+- **Profiling:** `-DPORT_PROF=ON` builds a sampling profiler (`core/prof.c`): every 20 s the log lists the 30 guest
+  functions and host imports that took the most time (`[port] PROF 12.3% nd_0068bff0`). `tools/fnprof.py <exe> <log>`
+  averages those tables and describes the hottest guest functions.
 - **Windows target** (`--target windows`): cross-compiles a 64-bit `ss2port.exe` from Linux or WSL with Zig
   (`pip install ziglang`; SDL2 is fetched and checksum-verified). In the game folder run `.\ss2port.exe --windowed SS2.exe`.
   It exercises the shared code on a real Windows mouse, keyboard and debugger; it is a development and test target, not
