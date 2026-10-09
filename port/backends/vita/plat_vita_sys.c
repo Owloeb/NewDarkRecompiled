@@ -138,12 +138,31 @@ static inline uint64_t vp_now(void) { struct timespec t; clock_gettime(CLOCK_MON
 uint64_t vita_now_ns(void) { return vp_now(); }
 struct PlatDir { DIR *d; };
 /* the file call in progress (for the hang watchdog): what, which file, how many bytes, since when */
-static volatile int op_on; static char op_what[16], op_name[96]; static volatile uint64_t op_bytes, op_t0;
-static void op_begin(const char *what, const char *name, uint64_t bytes) { snprintf(op_what, sizeof op_what, "%s", what); snprintf(op_name, sizeof op_name, "%s", name); op_bytes = bytes; op_t0 = vp_now(); op_on = 1; }
-static void op_end(void) { op_on = 0; }
+/* one slot per kind: reads run on several threads at once, writes and opens only on the thread holding the guest lock */
+enum { OP_READ, OP_WRITE, OP_OPEN, OP_KINDS };
+static const char *const op_kind[OP_KINDS] = { "read", "write", "open" };
+static volatile int op_on[OP_KINDS]; static char op_name[OP_KINDS][96]; static volatile uint64_t op_bytes[OP_KINDS], op_t0[OP_KINDS];
+static void op_begin(int k, const char *name, uint64_t bytes) { snprintf(op_name[k], sizeof op_name[k], "%s", name); op_bytes[k] = bytes; op_t0[k] = vp_now(); op_on[k] = 1; }
+static void op_end(int k) { op_on[k] = 0; }
+/* every open file, so the watchdog can list them */
+#define VITA_MAXFILES 128
+static PlatFile *open_files[VITA_MAXFILES]; static pthread_mutex_t open_m = PTHREAD_MUTEX_INITIALIZER;
+static void reg_file(PlatFile *f, int add) {
+    pthread_mutex_lock(&open_m);
+    for (int i = 0; i < VITA_MAXFILES; i++) if (add ? !open_files[i] : open_files[i] == f) { open_files[i] = add ? f : NULL; break; }
+    pthread_mutex_unlock(&open_m);
+}
 void vita_log_inflight(void) {
-    char b[240]; if (!op_on) { plat_log_write(PLAT_LOG_INFO, "[vita] no file call in progress"); return; }
-    snprintf(b, sizeof b, "[vita] file call in progress: %s '%s' (%llu bytes) for %u s", op_what, op_name, (unsigned long long)op_bytes, (unsigned)((vp_now() - op_t0) / 1000000000u)); plat_log_write(PLAT_LOG_WARN, b);
+    char b[240]; int any = 0;
+    for (int k = 0; k < OP_KINDS; k++) if (op_on[k]) {
+        any = 1; snprintf(b, sizeof b, "[vita] file call in progress: %s '%s' (%llu bytes) for %u s", op_kind[k], op_name[k], (unsigned long long)op_bytes[k], (unsigned)((vp_now() - op_t0[k]) / 1000000000u)); plat_log_write(PLAT_LOG_WARN, b);
+    }
+    if (!any) plat_log_write(PLAT_LOG_INFO, "[vita] no file call in progress");
+    pthread_mutex_lock(&open_m);
+    for (int i = 0; i < VITA_MAXFILES; i++) if (open_files[i]) {
+        PlatFile *f = open_files[i]; snprintf(b, sizeof b, "[vita] open file: '%s' %s (fd %08x, %u bytes not yet written)", f->name, f->ro ? "read-only" : "writable", (unsigned)f->fd, f->wlen); plat_log_write(PLAT_LOG_INFO, b);
+    }
+    pthread_mutex_unlock(&open_m);
 }
 static int err_of(int e) {
     switch (e) { case ENOENT: return PLAT_E_NOENT; case EEXIST: return PLAT_E_EXIST; case EACCES: case EPERM: case EROFS: return PLAT_E_ACCESS;
@@ -154,13 +173,15 @@ PlatFile *plat_fs_open(const char *path, int flags, int *err) {
     uint64_t t0 = vp_now(); vp_fs_open++;
     int of = (flags & PLAT_READ) && (flags & PLAT_WRITE) ? O_RDWR : (flags & PLAT_WRITE) ? O_WRONLY : O_RDONLY;
     if (flags & PLAT_CREATE) of |= O_CREAT; if (flags & PLAT_TRUNCATE) of |= O_TRUNC; if (flags & PLAT_EXCLUSIVE) of |= O_EXCL; if (flags & PLAT_APPEND) of |= O_APPEND;
-    op_begin("open", path, 0); int fd = open(path, of, 0644); op_end();
+    op_begin(OP_OPEN, path, 0); int fd = open(path, of, 0644); op_end(OP_OPEN);
     if (fd < 0) { if (err) *err = err_of(errno); vp_fs_ns += vp_now() - t0; return NULL; }
     struct stat st; if (fstat(fd, &st) == 0 && S_ISDIR(st.st_mode)) { close(fd); if (err) *err = PLAT_E_ISDIR; vp_fs_ns += vp_now() - t0; return NULL; }   /* folders are not files */
     PlatFile *f = calloc(1, sizeof *f); snprintf(f->name, sizeof f->name, "%s", path); f->fd = fd; f->ro = of == O_RDONLY; f->size = (int64_t)st.st_size; f->bstart = -1;
     if (f->ro) f->buf = malloc(VITA_RDBUF);
     if (f->ro && !f->buf) f->ro = 0;
-    if (!f->ro) f->wbuf = malloc(VITA_WRBUF);               /* tiny writes each cost a full sceIoWrite: gather them */
+    if (!f->ro) f->wbuf = malloc(VITA_WRBUF);
+    reg_file(f, 1);
+    if (!f->ro) { char b[200]; snprintf(b, sizeof b, "[vita] file: opened for writing '%s' (flags %x, fd %08x, %lld bytes)", path, flags, (unsigned)fd, (long long)f->size); plat_log_write(PLAT_LOG_INFO, b); }               /* tiny writes each cost a full sceIoWrite: gather them */
     uint64_t t1 = vp_now(); vp_fs_ns += t1 - t0; if (t1 - t0 > 500000000u) slow_note("open", path, t1 - t0); return f;
 }
 /* a file call that takes long is named in the log, so a hang can be traced to its file */
@@ -169,18 +190,22 @@ static void slow_note(const char *what, const char *name, uint64_t ns) {
 }
 static int flush_w(PlatFile *f) {                           /* pending writes go to the file at its current position */
     if (!f->wlen) return 0;
-    uint64_t t0 = vp_now(); uint32_t done = 0; op_begin("write", f->name, f->wlen);
+    uint64_t t0 = vp_now(); uint32_t done = 0; op_begin(OP_WRITE, f->name, f->wlen);
     while (done < f->wlen) { ssize_t r = write(f->fd, f->wbuf + done, f->wlen - done); if (r < 0) { if (errno == EINTR) continue; f->werr = 1; break; } done += (uint32_t)r; }
-    op_end(); f->wlen = 0; uint64_t d = vp_now() - t0; vp_fs_ns += d; if (d > 500000000u) slow_note("write", f->name, d);
+    op_end(OP_WRITE); f->wlen = 0; uint64_t d = vp_now() - t0; vp_fs_ns += d; if (d > 500000000u) slow_note("write", f->name, d);
     return f->werr ? -1 : 0;
 }
-void plat_fs_close(PlatFile *f) { if (f) { flush_w(f); close(f->fd); free(f->buf); free(f->wbuf); free(f); } }
+void plat_fs_close(PlatFile *f) {
+    if (!f) return;
+    if (!f->ro) { char b[160]; snprintf(b, sizeof b, "[vita] file: closing '%s' (%u bytes to write)", f->name, f->wlen); plat_log_write(PLAT_LOG_INFO, b); }
+    reg_file(f, 0);
+    { flush_w(f); close(f->fd); free(f->buf); free(f->wbuf); free(f); } }
 static int64_t raw_read(int fd, void *buf, uint64_t n) {
     uint64_t got = 0; while (got < n) { vp_fs_sys_reads++; ssize_t r = read(fd, (char *)buf + got, (size_t)(n - got)); if (r < 0) { if (errno == EINTR) continue; return got ? (int64_t)got : -1; } if (!r) break; got += (uint64_t)r; }
     return (int64_t)got;
 }
 int64_t plat_fs_read(PlatFile *f, void *buf, uint64_t n) {
-    uint64_t t0 = vp_now(); vp_fs_read_calls++; op_begin("read", f->name, n);
+    uint64_t t0 = vp_now(); vp_fs_read_calls++; op_begin(OP_READ, f->name, n);
     int64_t out;
     if (!f->ro) { flush_w(f); out = raw_read(f->fd, buf, n); }
     else {
@@ -199,7 +224,7 @@ int64_t plat_fs_read(PlatFile *f, void *buf, uint64_t n) {
         }
         out = (int64_t)got;
     }
-    op_end(); if (out > 0) vp_fs_bytes += (uint64_t)out;
+    op_end(OP_READ); if (out > 0) vp_fs_bytes += (uint64_t)out;
     uint64_t t1 = vp_now(); vp_fs_ns += t1 - t0; vita_profile_tick(t1); return out;      /* also reports while loading, when no frames are drawn */
 }
 int64_t plat_fs_write(PlatFile *f, const void *buf, uint64_t n) {
@@ -209,15 +234,17 @@ int64_t plat_fs_write(PlatFile *f, const void *buf, uint64_t n) {
         memcpy(f->wbuf + f->wlen, buf, (size_t)n); f->wlen += (uint32_t)n; return (int64_t)n;
     }
     if (flush_w(f)) return -1;
-    op_begin("write", f->name, n);
-    uint64_t done = 0; while (done < n) { ssize_t r = write(f->fd, (const char *)buf + done, (size_t)(n - done)); if (r < 0) { if (errno == EINTR) continue; op_end(); return done ? (int64_t)done : -1; } done += (uint64_t)r; }
-    op_end(); return (int64_t)done;
+    op_begin(OP_WRITE, f->name, n);
+    uint64_t done = 0; while (done < n) { ssize_t r = write(f->fd, (const char *)buf + done, (size_t)(n - done)); if (r < 0) { if (errno == EINTR) continue; op_end(OP_WRITE); return done ? (int64_t)done : -1; } done += (uint64_t)r; }
+    op_end(OP_WRITE); return (int64_t)done;
 }
 int64_t plat_fs_seek(PlatFile *f, int64_t off, int whence) {
     if (f->ro) { int64_t np = whence == PLAT_SEEK_SET ? off : whence == PLAT_SEEK_CUR ? f->pos + off : f->size + off; if (np < 0) return -1; f->pos = np; return np; }       /* buffered: just move the logical position */
     if (f->wlen && whence == PLAT_SEEK_CUR && off == 0) { off_t c = lseek(f->fd, 0, SEEK_CUR); return c < 0 ? -1 : (int64_t)c + f->wlen; }    /* position query: no flush */
     flush_w(f);
-    off_t r = lseek(f->fd, (off_t)off, whence == PLAT_SEEK_SET ? SEEK_SET : whence == PLAT_SEEK_CUR ? SEEK_CUR : SEEK_END); return r < 0 ? -1 : (int64_t)r;
+    off_t r = lseek(f->fd, (off_t)off, whence == PLAT_SEEK_SET ? SEEK_SET : whence == PLAT_SEEK_CUR ? SEEK_CUR : SEEK_END);
+    if (r > (off_t)(64 << 20)) { char m[200]; snprintf(m, sizeof m, "[vita] file: seek to %lld in '%s' (a write there fills the gap)", (long long)r, f->name); plat_log_write(PLAT_LOG_WARN, m); }
+    return r < 0 ? -1 : (int64_t)r;
 }
 int plat_fs_truncate(PlatFile *f, uint64_t size) { flush_w(f); return ftruncate(f->fd, (off_t)size) ? PLAT_E_IO : PLAT_OK; }
 int plat_fs_flush(PlatFile *f) { return flush_w(f) ? PLAT_E_IO : PLAT_OK; }
