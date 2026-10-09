@@ -192,7 +192,7 @@ cmds = {}
 for lo, hi in data:
     for a in range(lo, hi - 24, 4):
         nm_, typ, h, hlp, z1, z2 = struct.unpack_from('<6I', img, a - base)
-        if h in fset and z1 == 0 and z2 == 0 and typ in _ARG and nm_ >= base:
+        if h in fset and z1 in (0, 0xffffffff) and z2 == 0 and typ in _ARG and nm_ >= base:
             n = _cstr(nm_)
             if n and re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', n) and (hlp == 0 or _cstr(hlp)):
                 cmds.setdefault(h, (n, _cstr(hlp) if hlp else '', typ))
