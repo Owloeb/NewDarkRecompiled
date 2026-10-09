@@ -73,6 +73,7 @@ static void letterbox(int *x, int *y, int *w, int *h) {
 void gl_present_rect(int *x, int *y, int *w, int *h, int *ww, int *wh) { letterbox(x, y, w, h); *ww = SCREEN_W; *wh = SCREEN_H; }
 /* every 5 s: frame rate, and how the time splits between the file layer, presenting the picture and everything else (the game's CPU work) */
 extern uint64_t vp_fs_ns, vp_fs_open, vp_fs_stat, vp_fs_read_calls, vp_fs_sys_reads, vp_fs_bytes;
+extern volatile uint64_t vp_fs_activity;
 uint64_t gl_prof_ns, gl_prof_draws;
 static uint64_t swap_ns; static unsigned frames;
 void vita_log_guest_highwater(const char *when);
@@ -243,17 +244,17 @@ static void *game_thread(void *p) {
  * no dump for a hang, so crash on purpose: the dump then holds the game thread's registers and stack, which show where it
  * is stuck. Counted in 1-second sleeps, so time spent suspended (PS button) does not count. --no-watchdog turns it off. */
 #ifndef VITA_WATCHDOG_S
-#define VITA_WATCHDOG_S 45
+#define VITA_WATCHDOG_S 90
 #endif
 static int watchdog_on = 1;
 static void *watchdog(void *u) {
     (void)u; unsigned last_f = 0; uint64_t last_r = 0; int idle = 0;
     for (;;) {
         sceKernelDelayThread(1000000);
-        unsigned f = *(volatile unsigned *)&frames; uint64_t r = *(volatile uint64_t *)&vp_fs_read_calls;
+        unsigned f = *(volatile unsigned *)&frames; uint64_t r = *(volatile uint64_t *)&vp_fs_read_calls + vp_fs_activity;
         if (f != last_f || r != last_r || !f) { last_f = f; last_r = r; idle = 0; continue; }
         if (++idle == VITA_WATCHDOG_S) {
-            vlog("watchdog: no frame and no file read for %d s; the game has hung. Crashing on purpose so the Vita writes a core dump (send it with this log)", VITA_WATCHDOG_S);
+            vlog("watchdog: no frame and no file call for %d s; the game has hung. Crashing on purpose so the Vita writes a core dump (send it with this log)", VITA_WATCHDOG_S);
             vita_log_inflight(); vita_log_guest_highwater("at the hang");
             { const char *w = vita_where; if (w) vlog("renderer call in progress: %s (for %u s)", w, (unsigned)((vita_now_ns() - vita_where_t0) / 1000000000u)); else vlog("no renderer call in progress"); }
             sceKernelDelayThread(200000);

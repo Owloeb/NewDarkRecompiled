@@ -126,13 +126,18 @@ void plat_cond_broadcast(PlatCond *c) { pthread_cond_broadcast(&c->c); }
 
 /* ---------------------------------------------------------------- files (newlib maps these onto sceIo) */
 /* Read-only files are read through a 64 KB window: the game reads in tiny pieces and every sceIoRead has a high fixed cost.
- * Files opened for writing gather their writes in a 64 KB buffer (flushed on read, seek, close, flush); a file call over 0.5 s is logged. */
+ * A file created empty for writing (a save, the level state in current/) is kept in memory and written out in one go on close or
+ * flush: the game writes those in small pieces with a seek between them, and each sceIoWrite/lseek costs milliseconds.
+ * Other files opened for writing gather their writes in a 64 KB buffer (flushed on read, seek, close, flush).
+ * A file call over 0.5 s is logged. */
+#define VITA_MEMFILE_MAX (32u << 20)
 #define VITA_RDBUF (64u << 10)
 #define VITA_WRBUF (64u << 10)
-struct PlatFile { int fd; int ro; int64_t pos, size; uint8_t *buf; int64_t bstart; uint32_t blen; uint8_t *wbuf; uint32_t wlen; int werr; char name[96]; };
+struct PlatFile { int fd; int ro; int64_t pos, size; uint8_t *buf; int64_t bstart; uint32_t blen; uint8_t *wbuf; uint32_t wlen; int werr; int mem, dirty; uint8_t *mbuf; uint64_t mcap; char name[96]; };
 /* what the file layer costs (reported with the frame rate by vita_profile_report in plat_vita.c) */
 void vita_profile_tick(uint64_t now);
 uint64_t vp_fs_ns, vp_fs_open, vp_fs_stat, vp_fs_read_calls, vp_fs_sys_reads, vp_fs_bytes;
+volatile uint64_t vp_fs_activity;                           /* any file call: the hang watchdog counts these as progress */
 uint64_t vita_now_ns(void);
 static inline uint64_t vp_now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (uint64_t)t.tv_sec * 1000000000u + (uint64_t)t.tv_nsec; }
 uint64_t vita_now_ns(void) { return vp_now(); }
@@ -180,13 +185,36 @@ PlatFile *plat_fs_open(const char *path, int flags, int *err) {
     if (f->ro) f->buf = malloc(VITA_RDBUF);
     if (f->ro && !f->buf) f->ro = 0;
     if (!f->ro) f->wbuf = malloc(VITA_WRBUF);
-    reg_file(f, 1);
-    if (!f->ro) { char b[200]; snprintf(b, sizeof b, "[vita] file: opened for writing '%s' (flags %x, fd %08x, %lld bytes)", path, flags, (unsigned)fd, (long long)f->size); plat_log_write(PLAT_LOG_INFO, b); }               /* tiny writes each cost a full sceIoWrite: gather them */
+    if (!f->ro && st.st_size == 0 && !(flags & PLAT_APPEND)) f->mem = 1;
+    reg_file(f, 1); vp_fs_activity++;
+    if (!f->ro) { char b[200]; snprintf(b, sizeof b, "[vita] file: opened for writing '%s' (flags %x, fd %08x, %lld bytes%s)", path, flags, (unsigned)fd, (long long)f->size, f->mem ? ", kept in memory" : ""); plat_log_write(PLAT_LOG_INFO, b); }               /* tiny writes each cost a full sceIoWrite: gather them */
     uint64_t t1 = vp_now(); vp_fs_ns += t1 - t0; if (t1 - t0 > 500000000u) slow_note("open", path, t1 - t0); return f;
 }
 /* a file call that takes long is named in the log, so a hang can be traced to its file */
 static void slow_note(const char *what, const char *name, uint64_t ns) {
     char b[200]; snprintf(b, sizeof b, "[vita] slow file call: %s '%s' took %u ms", what, name, (unsigned)(ns / 1000000u)); plat_log_write(PLAT_LOG_WARN, b);
+}
+static int mem_out(PlatFile *f) {                          /* a memory file goes to disk as a whole */
+    if (!f->mem || !f->dirty) return 0;
+    uint64_t t0 = vp_now(); op_begin(OP_WRITE, f->name, (uint64_t)f->size); int bad = 0;
+    if (lseek(f->fd, 0, SEEK_SET) < 0) bad = 1;
+    uint64_t done = 0; while (!bad && done < (uint64_t)f->size) { ssize_t r = write(f->fd, f->mbuf + done, (size_t)((uint64_t)f->size - done)); if (r < 0) { if (errno == EINTR) continue; bad = 1; break; } done += (uint64_t)r; }
+    if (!bad && ftruncate(f->fd, (off_t)f->size)) bad = 1;
+    op_end(OP_WRITE); uint64_t d = vp_now() - t0; vp_fs_ns += d; if (d > 500000000u) slow_note("write", f->name, d);
+    if (bad) { f->werr = 1; return -1; }
+    f->dirty = 0; return 0;
+}
+static int mem_room(PlatFile *f, uint64_t need) {          /* 0, or -1 when the file has to leave memory */
+    if (need <= f->mcap) return 0;
+    if (need > VITA_MEMFILE_MAX) return -1;
+    uint64_t c = f->mcap ? f->mcap : 65536; while (c < need) c *= 2; if (c > VITA_MEMFILE_MAX) c = VITA_MEMFILE_MAX;
+    uint8_t *n = realloc(f->mbuf, (size_t)c); if (!n) return -1;
+    memset(n + f->mcap, 0, (size_t)(c - f->mcap)); f->mbuf = n; f->mcap = c; return 0;
+}
+static int mem_leave(PlatFile *f) {                         /* too big for memory: write it out, carry on as a plain file */
+    f->dirty = 1; if (mem_out(f)) return -1;
+    f->mem = 0; free(f->mbuf); f->mbuf = NULL; f->mcap = 0;
+    return lseek(f->fd, (off_t)f->pos, SEEK_SET) < 0 ? -1 : 0;
 }
 static int flush_w(PlatFile *f) {                           /* pending writes go to the file at its current position */
     if (!f->wlen) return 0;
@@ -197,9 +225,10 @@ static int flush_w(PlatFile *f) {                           /* pending writes go
 }
 void plat_fs_close(PlatFile *f) {
     if (!f) return;
-    if (!f->ro) { char b[160]; snprintf(b, sizeof b, "[vita] file: closing '%s' (%u bytes to write)", f->name, f->wlen); plat_log_write(PLAT_LOG_INFO, b); }
-    reg_file(f, 0);
-    { flush_w(f); close(f->fd); free(f->buf); free(f->wbuf); free(f); } }
+    if (!f->ro) { char b[160]; snprintf(b, sizeof b, "[vita] file: closing '%s' (%u bytes to write)", f->name, f->mem && f->dirty ? (unsigned)f->size : f->wlen); plat_log_write(PLAT_LOG_INFO, b); }
+    reg_file(f, 0); vp_fs_activity++;
+    mem_out(f); flush_w(f); close(f->fd); free(f->buf); free(f->wbuf); free(f->mbuf); free(f);
+}
 static int64_t raw_read(int fd, void *buf, uint64_t n) {
     uint64_t got = 0; while (got < n) { vp_fs_sys_reads++; ssize_t r = read(fd, (char *)buf + got, (size_t)(n - got)); if (r < 0) { if (errno == EINTR) continue; return got ? (int64_t)got : -1; } if (!r) break; got += (uint64_t)r; }
     return (int64_t)got;
@@ -207,7 +236,8 @@ static int64_t raw_read(int fd, void *buf, uint64_t n) {
 int64_t plat_fs_read(PlatFile *f, void *buf, uint64_t n) {
     uint64_t t0 = vp_now(); vp_fs_read_calls++; op_begin(OP_READ, f->name, n);
     int64_t out;
-    if (!f->ro) { flush_w(f); out = raw_read(f->fd, buf, n); }
+    if (f->mem) { int64_t k = f->size - f->pos; if (k < 0) k = 0; if ((uint64_t)k > n) k = (int64_t)n; if (k) memcpy(buf, f->mbuf + f->pos, (size_t)k); f->pos += k; out = k; }
+    else if (!f->ro) { flush_w(f); out = raw_read(f->fd, buf, n); }
     else {
         uint8_t *d = buf; uint64_t got = 0;
         while (got < n && f->pos < f->size) {
@@ -229,6 +259,14 @@ int64_t plat_fs_read(PlatFile *f, void *buf, uint64_t n) {
 }
 int64_t plat_fs_write(PlatFile *f, const void *buf, uint64_t n) {
     if (f->werr) return -1;
+    vp_fs_activity++;
+    if (!n) return 0;
+    if (f->mem) {
+        if (!mem_room(f, (uint64_t)f->pos + n)) {           /* a gap left by a seek past the end reads back as zeros (mem_room clears new space) */
+            memcpy(f->mbuf + f->pos, buf, (size_t)n); f->pos += (int64_t)n; if (f->pos > f->size) f->size = f->pos; f->dirty = 1; return (int64_t)n;
+        }
+        if (mem_leave(f)) return -1;
+    }
     if (f->wbuf && n < VITA_WRBUF) {
         if (f->wlen + n > VITA_WRBUF && flush_w(f)) return -1;
         memcpy(f->wbuf + f->wlen, buf, (size_t)n); f->wlen += (uint32_t)n; return (int64_t)n;
@@ -239,22 +277,28 @@ int64_t plat_fs_write(PlatFile *f, const void *buf, uint64_t n) {
     op_end(OP_WRITE); return (int64_t)done;
 }
 int64_t plat_fs_seek(PlatFile *f, int64_t off, int whence) {
-    if (f->ro) { int64_t np = whence == PLAT_SEEK_SET ? off : whence == PLAT_SEEK_CUR ? f->pos + off : f->size + off; if (np < 0) return -1; f->pos = np; return np; }       /* buffered: just move the logical position */
+    vp_fs_activity++;
+    if (f->ro || f->mem) { int64_t np = whence == PLAT_SEEK_SET ? off : whence == PLAT_SEEK_CUR ? f->pos + off : f->size + off; if (np < 0) return -1; f->pos = np; return np; }       /* buffered: just move the logical position */
     if (f->wlen && whence == PLAT_SEEK_CUR && off == 0) { off_t c = lseek(f->fd, 0, SEEK_CUR); return c < 0 ? -1 : (int64_t)c + f->wlen; }    /* position query: no flush */
     flush_w(f);
     off_t r = lseek(f->fd, (off_t)off, whence == PLAT_SEEK_SET ? SEEK_SET : whence == PLAT_SEEK_CUR ? SEEK_CUR : SEEK_END);
     if (r > (off_t)(64 << 20)) { char m[200]; snprintf(m, sizeof m, "[vita] file: seek to %lld in '%s' (a write there fills the gap)", (long long)r, f->name); plat_log_write(PLAT_LOG_WARN, m); }
     return r < 0 ? -1 : (int64_t)r;
 }
-int plat_fs_truncate(PlatFile *f, uint64_t size) { flush_w(f); return ftruncate(f->fd, (off_t)size) ? PLAT_E_IO : PLAT_OK; }
-int plat_fs_flush(PlatFile *f) { return flush_w(f) ? PLAT_E_IO : PLAT_OK; }
+int plat_fs_truncate(PlatFile *f, uint64_t size) {
+    if (f->mem) {
+        if (size > (uint64_t)f->size && mem_room(f, size) && mem_leave(f)) return PLAT_E_IO;
+        if (f->mem) { if (size < (uint64_t)f->size) memset(f->mbuf + size, 0, (size_t)((uint64_t)f->size - size)); f->size = (int64_t)size; f->dirty = 1; return PLAT_OK; }
+    }
+    flush_w(f); return ftruncate(f->fd, (off_t)size) ? PLAT_E_IO : PLAT_OK; }
+int plat_fs_flush(PlatFile *f) { return mem_out(f) || flush_w(f) ? PLAT_E_IO : PLAT_OK; }
 static void fill_stat(const struct stat *s, PlatStat *o) {
     o->size = (uint64_t)s->st_size; o->is_dir = S_ISDIR(s->st_mode); o->readonly = !(s->st_mode & S_IWUSR);
     /* the Vita's newlib has plain time_t fields (SVR4 layout), no timespec members: whole seconds only */
     o->mtime_ns = (int64_t)s->st_mtime * 1000000000; o->atime_ns = (int64_t)s->st_atime * 1000000000; o->ctime_ns = (int64_t)s->st_ctime * 1000000000;
 }
-int plat_fs_fstat(PlatFile *f, PlatStat *st) { flush_w(f); struct stat s; if (fstat(f->fd, &s)) return err_of(errno); fill_stat(&s, st); return PLAT_OK; }
-int plat_fs_stat(const char *path, PlatStat *st) { uint64_t t0 = vp_now(); vp_fs_stat++; struct stat s; int bad = stat(path, &s); int e = errno; vp_fs_ns += vp_now() - t0; if (bad) return err_of(e); fill_stat(&s, st); return PLAT_OK; }
+int plat_fs_fstat(PlatFile *f, PlatStat *st) { flush_w(f); struct stat s; if (fstat(f->fd, &s)) return err_of(errno); fill_stat(&s, st); if (f->mem) st->size = (uint64_t)f->size; return PLAT_OK; }
+int plat_fs_stat(const char *path, PlatStat *st) { uint64_t t0 = vp_now(); vp_fs_stat++; vp_fs_activity++; struct stat s; int bad = stat(path, &s); int e = errno; vp_fs_ns += vp_now() - t0; if (bad) return err_of(e); fill_stat(&s, st); return PLAT_OK; }
 int plat_fs_mkdir(const char *path) { return mkdir(path, 0755) ? err_of(errno) : PLAT_OK; }
 int plat_fs_rmdir(const char *path) { return rmdir(path) ? err_of(errno) : PLAT_OK; }
 int plat_fs_remove(const char *path) { struct stat s; if (!stat(path, &s) && S_ISDIR(s.st_mode)) return PLAT_E_ISDIR; return unlink(path) ? err_of(errno) : PLAT_OK; }

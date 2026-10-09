@@ -40,7 +40,7 @@ Result: `build/vita/ss2port.vpk`. It contains code built from the game: never sh
 - Set the game's resolution low (640x480) in its config to begin with.
 
 Every start rewrites `ux0:data/ss2/ss2port.log`. Every 5 seconds it adds a `profile:` line (frame rate, and the share of time
-in the renderer, the file layer and the game's own code). If the game neither draws nor reads a file for 45 seconds, a
+in the renderer, the file layer and the game's own code). If the game neither draws nor touches a file for 90 seconds, a
 watchdog crashes it on purpose so the Vita writes a core dump showing where it hung (`--no-watchdog` turns that off).
 The log also shows it shows the free memory at start, after the guest block and after
 vitaGL, then everything the host logs. Send that file when something goes wrong.
