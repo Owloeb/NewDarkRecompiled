@@ -152,6 +152,8 @@ codes for keys.
   checks). It also runs clean under ASan, UBSan and TSan, and as a 32-bit build with a small guest space.
   `--cache-regs` runs the same checks on code lifted with `lift.py --cache-regs`.
   `--target windows --wrap wine` builds and runs the Windows exe (under Wine, or natively on Windows).
+  Verified on Windows (cross-built 64-bit exe launched from WSL, NVIDIA OpenGL 4.6): 476/476 on `null` and 503/503 on
+  `sdl2`, each both plain and with `--cache-regs`.
 - Four independent review passes (core, Win32/CRT, DirectX, backends and tooling) found issues that are fixed and covered
   by regression checks in the conformance suite.
 
