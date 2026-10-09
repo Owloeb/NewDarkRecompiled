@@ -40,3 +40,19 @@ Where the port stands and what has been tried, so work can resume without the co
 4. Reduce `fread` cost (read-ahead / larger window for the streams the game reads during play).
 5. Lower in-game settings (resolution, view distance, sound channels), skip cutscenes, cache negative `stat` probes at startup.
 6. Compiler experiments: -O2/-Os, ARM instead of Thumb (low expected value).
+
+## Debugging hangs and crashes (what we learned)
+- The watchdog (`plat_vita.c`) fires when the game neither draws nor touches a file for 90 s. It logs what was in flight (each file
+  call kind, every open file, the renderer call in progress, a guest-memory high-water mark) and then crashes on purpose so the Vita
+  writes a `.psp2dmp` core dump. `--no-watchdog` in `ss2port.txt` turns it off.
+- Reading a dump: the file is gzip'd, so `zcat` it first. Symbolize with
+  `arm-vita-eabi-nm -n -S build/vita/ss2port > ~/ss2port.syms.txt` from the SAME build as the dump. The load address differs from
+  the ELF: ELF-linked address = 0x81000000 + (runtime address - the code segment base). Convert once only; converting twice
+  gives garbage names.
+- The level-change hang: the level-exit save wrote the level file in thousands of tiny pieces with seeks, each a slow `sceIo`
+  call, and the watchdog did not count writes as progress. Fix: files created empty for writing are kept in RAM (up to 32 MB)
+  and written whole on close or flush; the watchdog counts any file activity. A 64 KB write-behind buffer alone did NOT fix it,
+  and redirecting stdout to a file was a wrong guess (the vitaGL build is release and logs nothing).
+- Vita file layer facts: `sceIo` calls are slow, so reads use a 64 KB window and writes a 64 KB buffer. Free user RAM is about
+  30 MB after vitaGL; the guest block uses `--guest-space 208 --guest-backed 128` and its highest used page sits flat near 116 MB.
+- `ss2port.txt` is optional and does not exist by default; `ss2port.log` is the log, `SS2.log` the game's own log.
