@@ -1353,10 +1353,20 @@ class Lifter:
               f'        if ({self.prefix}_table[mid].va < va) lo = mid + 1; else hi = mid; }}',
               f'    return (lo < {len(ents)} && {self.prefix}_table[lo].va == va) ? {self.prefix}_table[lo].fn : 0;',
               '}',
-              f'void {self.prefix}_call(CPU *c, uint32_t t) {{',
-              f'    guest_fn f = {self.prefix}_lookup(t);',
-              '    if (f) f(c); else rt_call_external(c, t);',
-              '}']
+              ]
+        if self.cache_regs:   # indirect calls (virtual calls, callbacks) are hot: remember recent targets instead of a binary search over every function
+            t += ['typedef struct { uint32_t va; guest_fn fn; } rc_cent;', 'static rc_cent rc_cache[2048];',
+                  f'void {self.prefix}_call(CPU *c, uint32_t t) {{',
+                  '    rc_cent *e = &rc_cache[(t ^ (t >> 11)) & 2047];',
+                  '    if (e->va == t && e->fn) { e->fn(c); return; }',
+                  f'    guest_fn f = {self.prefix}_lookup(t);',
+                  '    if (f) { e->va = t; e->fn = f; f(c); } else rt_call_external(c, t);',
+                  '}']
+        else:
+            t += [f'void {self.prefix}_call(CPU *c, uint32_t t) {{',
+                  f'    guest_fn f = {self.prefix}_lookup(t);',
+                  '    if (f) f(c); else rt_call_external(c, t);',
+                  '}']
         open(os.path.join(outdir, f'{self.prefix}_table.c'), 'w').write('\n'.join(t) + '\n')
         files.append(f'{self.prefix}_table.c')
         meta = dict(prefix=self.prefix, base=self.img.base, entry=self.img.entry,
