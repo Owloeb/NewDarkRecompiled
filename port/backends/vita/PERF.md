@@ -40,6 +40,15 @@ Where the port stands and what has been tried, so work can resume without the co
   of ~32 KB, on the game thread. File reads in play are a real cost, separate from the CPU work.
 - Loading: one loader function takes 44% of a 20 s window; the level load itself is now fast.
 
+## Results log 2 (PORT_PROF with import attribution + read-ahead build)
+- Time inside imports is now charged to the import. In play: `IDirect3DDevice9::DrawPrimitiveUP` 10-17% (most of it the GL draw calls
+  inside it, the "render" figure), `fread` 9-13% in windows with resource loading, `Present` ~1-3%. Guest code itself stays flat.
+- Draw calls per frame vary from 25 to 250 depending on the view, and frame time follows them (rough fit: ~64 ms + ~1 ms per draw).
+- Read-ahead found nothing to do: the resource archives (OBJ/IFACE/SND2/BITMAP/MESH .CRF) are read at random (0-1% sequential).
+  Each such read costs ~7.5 ms: the card moves ~10-12 MB/s, and a 64 KB window was fetched for ~31 KB requests, wasting half.
+  Fix: a file read at random now fetches only what was asked for (16-64 KB); sequential files keep the 64 KB window and read-ahead.
+- During level loads the guest spends up to ~25% of samples in `Sleep` (the game sleeping, not computing): worth finding out who sleeps.
+
 ## Ideas, in rough order of expected value
 1. (done, see results) indirect-call cache.
 1b. Read-ahead for file reads during play (a prefetch thread or bigger window) to take the 6-16% file wait off the game thread.

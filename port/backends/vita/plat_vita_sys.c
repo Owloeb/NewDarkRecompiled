@@ -133,7 +133,7 @@ void plat_cond_broadcast(PlatCond *c) { pthread_cond_broadcast(&c->c); }
 #define VITA_MEMFILE_MAX (32u << 20)
 #define VITA_RDBUF (64u << 10)
 #define VITA_WRBUF (64u << 10)
-struct PlatFile { int fd, pfd; int64_t lastend; int ro; int64_t pos, size; uint8_t *buf; int64_t bstart; uint32_t blen; uint8_t *wbuf; uint32_t wlen; int werr; int mem, dirty; uint8_t *mbuf; uint64_t mcap; char name[96]; };
+struct PlatFile { int fd, pfd, warm; int64_t lastend; int ro; int64_t pos, size; uint8_t *buf; int64_t bstart; uint32_t blen; uint8_t *wbuf; uint32_t wlen; int werr; int mem, dirty; uint8_t *mbuf; uint64_t mcap; char name[96]; };
 /* what the file layer costs (reported with the frame rate by vita_profile_report in plat_vita.c) */
 void vita_profile_tick(uint64_t now);
 uint64_t vp_fs_ns, vp_fs_open, vp_fs_stat, vp_fs_read_calls, vp_fs_sys_reads, vp_fs_bytes;
@@ -328,8 +328,11 @@ int64_t plat_fs_read(PlatFile *f, void *buf, uint64_t n) {
             if (r > 0) hitn++;
             else {
                 if (lseek(f->fd, (off_t)f->pos, SEEK_SET) < 0) break;                                /* refill the window at the current position */
-                r = raw_read(f->fd, f->buf, VITA_RDBUF); if (r <= 0) break;
+                uint32_t len = VITA_RDBUF;                                                          /* a file read at random gets what was asked for (the card moves ~10 MB/s, so a 64 KB window for a 30 KB request wastes half the time) */
+                if (!adj && !f->warm) { uint64_t need = n - got; len = (uint32_t)((need + 4095u) & ~4095ull); if (len < (16u << 10)) len = 16u << 10; if (len > VITA_RDBUF) len = VITA_RDBUF; }
+                r = raw_read(f->fd, f->buf, len); if (r <= 0) break;
             }
+            f->warm = adj;
             f->bstart = f->pos; f->blen = (uint32_t)r;
             if (adj) pf_post(f, f->bstart + (int64_t)f->blen);                                       /* start on the window after it */
         }
