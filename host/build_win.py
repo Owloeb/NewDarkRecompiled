@@ -131,7 +131,7 @@ def main():
     vidflags = ["-Ivideo", "-Ivideo/ffmpeg/compat", "-Ivideo/ffmpeg/libavcodec", "-O2"]
     zig = [PY, "-m", "ziglang", "cc"]
     jobs = []
-    run(zig + ["-target", "x86-windows-gnu", "-c", os.path.join("host", "guest_region.s"), "-o", os.path.join("build", "win", "00_guest_region.o")], "guest region")
+    run(zig + ["-target", "x86-windows-gnu", "-c", os.path.join("host", "guest_region.s"), "-o", os.path.join(os.path.relpath(objd, ROOT), "00_guest_region.o")], "guest region")
     srcs = sorted(glob.glob(os.path.join(gen, "*.c"))) + [c for _, md in mods for c in sorted(glob.glob(os.path.join(md, "*.c")))] + [modsc, os.path.join(ROOT, "host", "win_host.c")] + vidsrc + extra
     deps = os.path.getmtime(os.path.join(ROOT, "runtime", "rt.h"))
     stamp = os.path.join(objd, "host_flags.txt"); hf = " ".join(hostflags)
