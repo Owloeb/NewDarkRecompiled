@@ -223,7 +223,13 @@ static void thunk_run(CPU *c, unsigned i) {
     ring_ret[ring_n & 15] = RD32(c->esp); ring_names[ring_n++ & 15] = t->name;
     g_targ = t->arg;
     const char *tname = t->name; uint32_t tpop = (uint32_t)t->pop;
+#ifdef RT_PROF
+    const char *prof_prev = rt_prof_cur; rt_prof_cur = tname;      /* profiling build: time inside the host is charged to the import, not to the caller */
+#endif
     t->fn(c);                  /* may create thunks (GetProcAddress, LoadLibrary, COM vtables) and move the table: t is stale after this */
+#ifdef RT_PROF
+    rt_prof_cur = prof_prev;
+#endif
     if (tr) {
         char pm[64] = "";      /* the record the first argument points to (a POINT or RECT out / in parameter), when it is one */
         if (ta[0] && ta[0] < THUNK_BASE && g_valid(ta[0], 16) && (!strcmp(tname, "GetCursorPos") || !strcmp(tname, "ClipCursor") || !strcmp(tname, "GetClipCursor")))
