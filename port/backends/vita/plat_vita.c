@@ -280,6 +280,10 @@ int main(int argc, char **argv) {
     mkdir(VITA_GAME_DIR, 0777);
     if (!freopen(VITA_GAME_DIR "/ss2port.log", "w", stderr)) freopen("ux0:data/ss2port.log", "w", stderr);
     setvbuf(stderr, NULL, _IOLBF, 1024);
+    /* Anything printed to stdout goes to sceIoWrite on the system's debug stream, which can block for good once nothing drains it
+     * (a debug build of vitaGL prints there). Send it to a file instead. */
+    if (!freopen(VITA_GAME_DIR "/ss2out.log", "w", stdout)) freopen("ux0:data/ss2out.log", "w", stdout);
+    setvbuf(stdout, NULL, _IOFBF, 16384);
     scePowerSetArmClockFrequency(444); scePowerSetBusClockFrequency(222); scePowerSetGpuClockFrequency(222); scePowerSetGpuXbarClockFrequency(166);
     sceCtrlSetSamplingMode(SCE_CTRL_MODE_ANALOG_WIDE);
     sceTouchSetSamplingState(SCE_TOUCH_PORT_FRONT, SCE_TOUCH_SAMPLING_STATE_START);
