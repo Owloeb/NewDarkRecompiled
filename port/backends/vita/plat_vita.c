@@ -75,6 +75,8 @@ void gl_present_rect(int *x, int *y, int *w, int *h, int *ww, int *wh) { letterb
 extern uint64_t vp_fs_ns, vp_fs_open, vp_fs_stat, vp_fs_read_calls, vp_fs_sys_reads, vp_fs_bytes;
 uint64_t gl_prof_ns, gl_prof_draws;
 static uint64_t swap_ns; static unsigned frames;
+void vita_log_guest_highwater(const char *when);
+void vita_log_inflight(void);
 void vita_profile_tick(uint64_t now) {
     static uint64_t t0, last_swap, last_fs, last_gl, d0, o0, st0, rc0, sr0, b0; static unsigned f0;
     if (!t0) { t0 = now; return; }
@@ -86,6 +88,7 @@ void vita_profile_tick(uint64_t now) {
          100.0 * fs / (dt * 1e9), (unsigned long long)(vp_fs_open - o0), (unsigned long long)(vp_fs_stat - st0),
          (unsigned long long)(vp_fs_read_calls - rc0), (unsigned long long)(vp_fs_sys_reads - sr0), (double)(vp_fs_bytes - b0) / 1048576.0,
          100.0 - 100.0 * (gl + fs) / (dt * 1e9));
+    { static int n; if (++n % 3 == 0) vita_log_guest_highwater("now"); }
     t0 = now; last_swap = swap_ns; last_fs = vp_fs_ns; last_gl = gl_prof_ns; d0 = gl_prof_draws; o0 = vp_fs_open; st0 = vp_fs_stat; rc0 = vp_fs_read_calls; sr0 = vp_fs_sys_reads; b0 = vp_fs_bytes; f0 = frames;
 }
 void gl_swap(void) {
@@ -247,6 +250,7 @@ static void *watchdog(void *u) {
         if (f != last_f || r != last_r || !f) { last_f = f; last_r = r; idle = 0; continue; }
         if (++idle == VITA_WATCHDOG_S) {
             vlog("watchdog: no frame and no file read for %d s; the game has hung. Crashing on purpose so the Vita writes a core dump (send it with this log)", VITA_WATCHDOG_S);
+            vita_log_inflight(); vita_log_guest_highwater("at the hang");
             sceKernelDelayThread(200000);
             *(volatile int *)0 = 0;
         }
