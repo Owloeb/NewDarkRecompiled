@@ -160,7 +160,7 @@ def main():
     run([PY, os.path.join("host", "fix_pe.py"), out], "fix_pe")
     print(f"\nBuilt {out}  ({(time.time() - t0) / 60:.1f} min)")
     if a.install:
-        dst = os.path.join(os.path.dirname(exe), "ss2_native.exe"); shutil.copy2(out, dst); print(f"Copied to {dst}")
+        dst = os.path.join(os.path.dirname(exe), os.path.basename(out)); shutil.copy2(out, dst); print(f"Copied to {dst}")
     else:
         print(f'Next: copy it into your System Shock 2 folder (next to SS2.exe) and run it, or re-run with --install.')
 
