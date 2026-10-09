@@ -38,7 +38,7 @@ experimental or for debugging only, it says so. If you add an option, add it her
 | `--jobs N` | Parallel compile jobs [all CPU cores]. |
 | `--build DIR` | Build directory [`build/port`, or `build/port-win` for `--target windows`]. |
 | `--install` | Copy the result next to `SS2.exe`. |
-| `--cache-regs` | **Experimental.** Lift with `lift.py --cache-regs` (guest registers in C locals, indirect calls through a target cache); about +20% frame rate measured on the Vita. Switching it on or off relifts everything (~8 minutes). |
+| `--cache-regs` | **Experimental.** Lift with `lift.py --cache-regs`. Normally guest registers live in a struct and every guest memory store forces the C compiler to reload them. This keeps each function's registers in C locals (written back only around calls, faults and returns) and routes indirect calls through a small target cache instead of a binary search. Expected effect: Vita about +20% frame rate (mostly the call cache); x86-64 about +5%; 32-bit Windows hosts probably the best case but unmeasured; ARM under qemu was ~7% *slower* (qemu isn't a reliable speed guide). Passes the full conformance suite (plain and cache-regs), sanitizers clean; never measured in the real game on a PC. Switching it on or off relifts everything (~8 minutes). |
 | `--low-dll-bases` | Lift the game's DLLs for load addresses below 32 MB. Only for hosts with a small guest address space (the PS Vita). |
 
 Lifting is skipped when nothing it depends on changed. Don't interrupt it: it deletes the old output first.
