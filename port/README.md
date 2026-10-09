@@ -154,6 +154,7 @@ codes for keys.
   `--target windows --wrap wine` builds and runs the Windows exe (under Wine, or natively on Windows).
   Verified on Windows (cross-built 64-bit exe launched from WSL, NVIDIA OpenGL 4.6): 476/476 on `null` and 503/503 on
   `sdl2`, each both plain and with `--cache-regs`.
+  The `--target windows` game build (`ss2port.exe`) was also played on Windows: intro cutscene, main menu and a level all worked.
 - Four independent review passes (core, Win32/CRT, DirectX, backends and tooling) found issues that are fixed and covered
   by regression checks in the conformance suite.
 
