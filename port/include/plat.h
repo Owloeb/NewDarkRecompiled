@@ -33,6 +33,7 @@ void plat_log_write(PlatLogLevel level, const char *line);            /* one lin
 /* Reserve `size` bytes of address space for the guest, readable and writable, zero-filled. The core asks for 4 GB on
  * 64-bit hosts (so every 32-bit guest address is backed and wild guest pointers cannot reach host memory) and for the
  * configured size elsewhere. Pages may be committed lazily. Returns NULL on failure. */
+extern uint64_t g_plat_backed;   /* set before plat_mem_reserve: only this many bytes from the start need to be real memory (0: all). A backend may honour it or ignore it (then everything is backed) */
 void *plat_mem_reserve(uint64_t size);
 void  plat_mem_release(void *base, uint64_t size);
 /* Optional hint that a guest range is no longer used (VirtualFree MEM_DECOMMIT/RELEASE); the contents must read back as

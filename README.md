@@ -178,5 +178,5 @@ repository itself stays vanilla; mods live in their own repositories.
 4. Next for the portable host: shaders and cube/volume textures, native Linux mouselook testing, further backends.
 5. Speed: `port/build.py --cache-regs` (experimental, off by default) and a sampling profiler (`-DPORT_PROF=ON`) are in
    the portable host; see [Build details](port/README.md#build-details). A PS Vita backend was tried on the
-   `vita-backend` branch: it plays, level changes included, but the Vita's CPU manages only about 6 to 20 fps, so it is
-   shelved. Its findings are in `port/backends/vita/PERF.md` on that branch.
+   [`port/backends/vita/`](port/backends/vita/README.md): it plays, level changes included, but the Vita's CPU manages only
+   about 6 to 20 fps, so it is shelved there as a documented starting point ([`PERF.md`](port/backends/vita/PERF.md)).
