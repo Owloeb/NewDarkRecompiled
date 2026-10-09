@@ -7,16 +7,33 @@ runs it on Linux and, with a small backend, anywhere else.
 **Status: playable on flat screen.** Boot, menus, character creation, all levels, save/load, HUD, audio, input,
 fullscreen and cutscenes all run through recompiled code. Work in progress (see [Known Issues](#known-issues)).
 
-**Jump to:** [Play on Windows](#quick-start-windows) · [Run on Linux or Elsewhere](#quick-start-linux-and-other-platforms) ·
-[How It Works](#how-it-works) · [Known Issues](#known-issues) · [Build On It!](#build-on-it) ·
-[Portable Host Docs](port/README.md) · [Recompiler notes](docs/RECOMPILER.md)
+This repository is a **vanilla recompilation**: it plays exactly like the original and adds nothing to it. System Shock 2's
+engine source was never released, so this turns the binary into C that can be rebuilt, read and changed, as a foundation
+for fixes, engine-level mods and ports. Mods (including a VR version) live in separate repositories.
 
-## Why This Exists
+## What do you want to do?
 
-System Shock 2's engine source was never released, so changing the engine meant patching the binary. This project turns
-the binary into C that can be rebuilt, read and changed: a **vanilla recompilation** that plays exactly like the
-original, as a foundation for fixes, engine-level mods (a VR version is being built separately on top of this) and
-ports. This repository stays vanilla: it reproduces the original game and adds nothing to it.
+| I want to... | Run this | Details |
+| --- | --- | --- |
+| **Play on Windows** | `python host\build_win.py "C:\...\SS2.exe" --install` | [Play on Windows](#play-on-windows) |
+| **Play on Linux or WSL** | `python3 port/build.py "/path/to/SS2.exe"` | [Play on Linux](#play-on-linux-and-other-platforms) |
+| **Help name functions** | `python host\build_win.py "C:\...\SS2.exe" --record` | [docs/NAMING.md](docs/NAMING.md) |
+| **Make a mod** | `python host\build_win.py ... --hooks hooks.txt` | [docs/MODDING.md](docs/MODDING.md) |
+| **Port to a new platform** | (write a backend) | [port/README.md](port/README.md) |
+| **Find out what a flag or file does** | | [docs/FLAGS.md](docs/FLAGS.md) |
+| **Understand how it works** | | [How it works](#how-it-works), [docs/RECOMPILER.md](docs/RECOMPILER.md) |
+
+**Two scripts, two programs.** They are separate on purpose, and their options are different:
+
+| | `host/build_win.py` | `port/build.py` |
+| --- | --- | --- |
+| Builds | `ss2_native.exe`, a 32-bit Windows program | `ss2port`, which runs on Linux, WSL and (for testing) 64-bit Windows |
+| Use it to | play on Windows, record, mod | play on Linux, port |
+| Needs | Python and `pip install pefile capstone ziglang` | Python, CMake, a C compiler, SDL2 |
+| Runs on | Windows, or Ubuntu (it still builds a Windows exe) | Linux, WSL, macOS |
+
+If you only want to play, you need one script and the three or four options in the quick start. Everything else is
+optional.
 
 ## Legal and Ground Rules
 
@@ -29,7 +46,7 @@ decoder in `video/ffmpeg/` is unmodified FFmpeg code under LGPL 2.1 (see `video/
 - You need a legitimate install of System Shock 2 with the NewDark 2.48 executable (GOG and Steam are the usual source).
   The 25th Anniversary Remaster is a different engine and out of scope.
 
-## Quick Start: Windows
+## Play on Windows
 
 1. Install [Python 3](https://www.python.org/downloads/) (tick "Add python.exe to PATH").
 2. In PowerShell, in the folder containing `lift.py`, install the packages (the compiler, Zig, comes with `ziglang`):
@@ -50,27 +67,21 @@ decoder in `video/ffmpeg/` is unmodified FFmpeg code under LGPL 2.1 (see `video/
 Without `--install` the exe is left in `build\win\ss2_native.exe`. The exe writes `ss2_native.log` next to itself; after a
 crash it contains a report (last recompiled functions, native calls, stack, loaded modules).
 
-`host/build_win.py` also runs on Linux or macOS (`python3 host/build_win.py /path/to/SS2.exe`), but it builds the native
-Windows executable, which only runs on Windows. To play on Linux, use the portable host below.
+`host/build_win.py` also runs on Linux or macOS, but it still builds the Windows executable. To play on Linux, use the portable host below.
 
-### Switch Files
+### Switch files
 
-Empty text files placed next to the exe change its behaviour:
+Empty text files placed next to the exe change its behaviour. The three you are most likely to want:
 
 | File | Effect |
 | --- | --- |
-| `darkrecomp_debug.txt` | verbose diagnostics: per-frame draw statistics, call tracing, heartbeat, and a few backbuffer screenshots (`darkrecomp_*.bmp`) |
 | `darkrecomp_windowed.txt` | force windowed mode |
-| `darkrecomp_nomsaa.txt` | force multisampling off |
 | `darkrecomp_novsync.txt` | present without vsync |
-| `darkrecomp_nolgvid.txt` | hide the video decoder (skips cutscenes) |
-| `darkrecomp_native_osm.txt` | use the original `allobjs.osm`, `Squirrel.osm`, `lgvid.dll` and `fmsel.dll` instead of the recompiled ones |
-| `darkrecomp_apistats.txt` | record which Direct3D / DirectSound / DirectInput calls the game makes (counts, formats, pools) into `darkrecomp_api_usage.txt`; input for the platform layer (`port/`) |
-| `darkrecomp_native_ffmpeg.txt` | decode cutscenes with the original `ffmpeg.dll` instead of the built-in decoder (needed only for movies in formats the built-in one doesn't play; see *Known issues*) |
-| `darkrecomp_heapcheck.txt` | validate all heaps after every native call (slow; for tracking corruption) |
-| `darkrecomp_realquery.txt` | use the real D3D frame-limiter query instead of the shortcut |
+| `darkrecomp_debug.txt` | verbose diagnostics, for bug reports |
 
-## Quick Start: Linux and Other Platforms
+All ten are listed in [docs/FLAGS.md](docs/FLAGS.md#windows-exe-switch-files).
+
+## Play on Linux and other platforms
 
 The portable host ([`port/`](port/README.md)) runs the same recompiled game without Windows and without an x86 CPU. Shared
 Win32, C runtime and DirectX front ends sit on one small interface, [`port/include/plat.h`](port/include/plat.h); a port
@@ -142,56 +153,18 @@ modelled with `double`. Guest memory is flat: guest address `a` lives at host `M
 **Every option in one place:** [`docs/FLAGS.md`](docs/FLAGS.md) lists all build options, command-line flags, environment
 variables, switch files and developer tools.
 
-## Build On It!
+## Where things are
 
-### Symbols
+| Folder or file | What it is |
+| --- | --- |
+| `lift.py` | The recompiler (x86 to C). The build scripts call it for you. |
+| `host/` | The Windows host and `build_win.py`. |
+| `port/` | The portable host, its backends and `build.py`. |
+| `tools/` | Naming, hooks and analysis tools ([list](docs/FLAGS.md#tools)). |
+| `symbols/manual.sym` | Hand-verified function names ([how names work](docs/NAMING.md)). |
+| `docs/` | [FLAGS.md](docs/FLAGS.md) (every option), [NAMING.md](docs/NAMING.md), [MODDING.md](docs/MODDING.md), [RECOMPILER.md](docs/RECOMPILER.md) |
 
-The generated C names every function by its original address (`nd_00601430`). The build also harvests names from your
-own `SS2.exe` (`tools/annotate.py`, about 20 seconds):
-
-- **RTTI:** the engine is C++ with runtime type information, so every polymorphic class and its vtable can be found;
-  each virtual method becomes `Class::vfN` (COM-style classes get `QueryInterface`/`AddRef`/`Release`).
-- **Constructors/destructors:** functions that store a class's vtable into an object.
-- **Console commands:** the engine registers its commands (`cycle_ammo`, `set_vsync`, ...) from a static table; each handler becomes `cmd_<name>`, with the help text as a note.
-- **Import thunks** and the **string literals** each function uses (log messages, config variable names), as notes.
-
-That names about a third of the roughly 21,000 functions automatically. `symbols/manual.sym` holds names found by hand
-(the render camera, the movie I/O callbacks, the SIMD detection, ...) and overrides the generated ones. Crash reports in
-`ss2_native.log` print these names. `--named-sources` also writes `out/nd_named/`: a copy of the generated C with each
-function's name and notes above it, plus `functions.txt`, an index, for reading.
-
-The generated names stay on your machine; only `symbols/manual.sym` (our own findings, keyed by address) is in the
-repository. Contributions to it are welcome: one line per function, `0x<address> func <name>  # what it does`.
-
-### Naming functions by playing (the recorder)
-
-Static analysis names a third of the functions. The rest are easiest to name by watching the game run. A recorder build logs,
-while you play, which engine functions run, how often, who calls them, which readable strings they are given (file names, config
-variables, log text) and which Windows/DirectX calls each place in the engine makes:
-
-    python host/build_win.py "C:\\Games\\System Shock 2\\SS2.exe" --record        # builds build/win/ss2_native_rec.exe (separate from the normal build)
-
-Copy `ss2_native_rec.exe` next to `SS2.exe`, run it and play. **Hold Ctrl+Alt and press F1..F11 to mark what you are doing** (a beep
-confirms; F12 goes back to tag 0): everything the game does next is counted under that tag. Walk around under tag 1, fire a weapon
-under tag 2, open the inventory under tag 3, and so on, and keep a note of what each tag meant. The game writes
-`darkrecomp_record.txt` next to the exe every 30 seconds and when it exits (it also writes `darkrecomp_api_usage.txt`, the Direct3D /
-DirectSound / DirectInput usage list). Then:
-
-    python tools/suggest_names.py darkrecomp_record.txt out/nd/nd_meta.json --sym out/nd/auto.sym --sym symbols/manual.sym --tags tags.txt --report report.md --emit out/recorded.sym
-
-`tags.txt` has one line per tag (`2 fired the pistol`). The report lists the functions that ran only under each tag, the hottest
-functions, unnamed functions that call into the OS or DirectX (with the file names they open), and the files and settings the engine
-touched. It is a work list with evidence; the actual names go into `symbols/manual.sym` after looking at the code. The recorder slows
-the game a little, so use the normal build to play.
-
-### Hooks (for mods)
-
-`build_win.py --hooks hooks.txt --extra-src mymod.c` makes recompiled engine functions call your own C code when they
-are entered, without re-lifting: `tools/apply_hooks.py` inserts the calls into the generated C in seconds, and only the
-touched files recompile. A hooks file has one line per hook, `0x<function address> <void function(CPU *c)>`. This
-repository itself stays vanilla; mods live in their own repositories.
-
-### Roadmap
+## Roadmap
 
 1. Shakedown on more machines (AMD and Intel GPUs, other Windows versions) and with popular mods.
 2. More names: globals and structure layouts, and hand-named functions for the main systems (render, input, physics,
