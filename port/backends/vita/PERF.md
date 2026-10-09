@@ -33,8 +33,16 @@ Where the port stands and what has been tried, so work can resume without the co
   cannot be inlined.
 - Loading: a few functions take 40%+ of the CPU during level loads (probably loader code), worth a look for load times.
 
+## Results log (same save, busy area, --cache-regs + PORT_PROF build; fps = 5 s windows in play, loading excluded)
+- Before the indirect-call cache: mean 7.9 fps (range 4.6-13.9). After (a94675e): mean 9.6 fps (range 4.8-14.1). About +20%, but the
+  walking route differed, so treat as roughly "a bit better", not exact.
+- The CRT `fread` wrapper is still the top entry (6-16% of samples; higher in windows with 110+ reads per 5 s): about 7 ms per read
+  of ~32 KB, on the game thread. File reads in play are a real cost, separate from the CPU work.
+- Loading: one loader function takes 44% of a 20 s window; the level load itself is now fast.
+
 ## Ideas, in rough order of expected value
-1. Measure the indirect-call cache (relift with `--cache-regs`, same area, compare fps and the profile).
+1. (done, see results) indirect-call cache.
+1b. Read-ahead for file reads during play (a prefetch thread or bigger window) to take the 6-16% file wait off the game thread.
 2. Inline tiny functions (lifter, or LTO / fewer files for the generated code).
 3. x87 `top` tracking at lift time (st[] as locals); callee-saved register elision.
 4. Reduce `fread` cost (read-ahead / larger window for the streams the game reads during play).
