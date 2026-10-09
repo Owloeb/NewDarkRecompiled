@@ -1,5 +1,10 @@
 # Vita performance notes
 
+**Status (2026-10-09): port shelved.** It runs and plays (level changes included) at roughly 6-20 fps, CPU-bound in the recompiled
+code. The generic pieces (`--cache-regs`, the portable profiler, reads without the guest lock, the guest-lock re-check) went to the
+`port-salvage` branch for `main`. This branch stays as the record. Last result: random-access reads now cost ~5-6 ms instead of
+~7.5 ms (the per-read latency of the card dominates, so fetching less only helped ~30%).
+
 Where the port stands and what has been tried, so work can resume without the conversation history. Everything here is about the
 `vita-backend` branch; `main` is not affected by any of it (all Vita-specific or experimental pieces are off by default).
 
