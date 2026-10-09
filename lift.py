@@ -3,7 +3,7 @@
 
 usage: lift.py <pe> <prefix> <outdir> [--funcs-per-file N]
 """
-import sys, os, struct, collections, argparse, json
+import sys, os, re, struct, collections, argparse, json
 import pefile
 from capstone import Cs, CS_ARCH_X86, CS_MODE_32
 from capstone.x86 import *
@@ -293,6 +293,53 @@ def discover(img):
 
 # ------------------------------------------------------------------ emission
 
+# --cache-regs: guest registers and the memory base live in locals of each function (see runtime/rt_fast.h).
+# Applied as a rewrite of the emitted C, so the default output is untouched.
+_CR_REG = re.compile(r'c->(eax|ecx|edx|ebx|esp|ebp|esi|edi)\b')
+_CR_MEM = re.compile(r'\b(RD8|RD16|RD32|RD64|WR8|WR16|WR32|WR64|LDF32|LDF64|LDF80|STF32|STF64|STF80)\(')
+_CR_RET = re.compile(r'\breturn;')
+
+
+_CR_NAMES = ('eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi')
+_CR_WR = re.compile(r'\br_(eax|ecx|edx|ebx|esp|ebp|esi|edi)\s*(?:[-+*/%&|^]|<<|>>)?=(?!=)')
+_CR_INC = re.compile(r'(?:\+\+|--)\s*r_(eax|ecx|edx|ebx|esp|ebp|esi|edi)\b|\br_(eax|ecx|edx|ebx|esp|ebp|esi|edi)\s*(?:\+\+|--)')
+
+
+def cache_regs_writes(line):
+    """the cached registers a rewritten line assigns"""
+    w = set(_CR_WR.findall(line))
+    for a, b in _CR_INC.findall(line): w.add(a or b)
+    if 'MPUSH32(' in line or 'MPOP32(' in line or 'MCALLPUSH(' in line: w.add('esp')
+    return w
+
+
+def cache_regs_spill(regs):
+    if not regs: return '((void)0)'
+    return '((void)(' + ', '.join(f'c->{r} = r_{r}' for r in _CR_NAMES if r in regs) + '))'
+
+
+def cache_regs_reload(regs):
+    if not regs: return '((void)0)'
+    return '((void)(' + ', '.join(f'r_{r} = c->{r}' for r in _CR_NAMES if r in regs) + '))'
+
+
+_CR_TOK = re.compile(r'\br_(eax|ecx|edx|ebx|esp|ebp|esi|edi)\b')
+
+
+def cache_regs(line, prefix):
+    l = _CR_REG.sub(r'r_\1', line)
+    l = _CR_MEM.sub(r'M\1(', l)
+    l = l.replace('CALLPUSH(c, ', 'MCALLPUSH(').replace('PUSH32(c, ', 'MPUSH32(').replace('POP32(c)', 'MPOP32()') \
+         .replace('RETCHK(c)', 'MRETCHK()').replace('BUDGET()', 'MBUDGET()')
+    # control leaves for the host or another guest function: registers go back to the CPU struct, and come back after
+    l = re.sub(r'\b((?:rt_call_import|rt_cpuid|%s_call|%s_[0-9a-f]{8})\(c(?:, [^;]*)?\);)' % (prefix, prefix),
+               r'{ SPILL_; \1 RELOAD_; }', l)
+    l = re.sub(r'\bRT_SETJMP\(c\);', '{ SPILL_; RT_SETJMP(c); RELOAD_; }', l)
+    l = re.sub(r'\b((?:rt_longjmp\(c\)|rt_fault\(c, [^;]*\));)', r'{ SPILLALL_; \1 }', l)
+    l = _CR_RET.sub('{ SPILL_; return; }', l)
+    return l
+
+
 class Fn:
     def __init__(self, lifter, entry):
         self.L = lifter
@@ -414,8 +461,10 @@ class Fn:
                '    (void)CF; (void)ZF; (void)SF; (void)OF; (void)PF;',
                f'    {self.fl_load(self.L.fl_in.get(self.entry, 0))}BUDGET(); goto L_{self.entry:x};']
         addrs = sorted(self.insns)
+        span = {}
         for k, va in enumerate(addrs):
             i = self.insns[va]
+            span[va] = len(out)
             out.append(f'L_{va:x}: ;' if (va in self.labels or k == 0 or addrs[k - 1] + (self.insns[addrs[k - 1]].size if self.insns[addrs[k - 1]] else 0) != va or True) else '')
             if va in self.labels and va != self.entry:
                 out.append('    BUDGET();')
@@ -438,7 +487,57 @@ class Fn:
                     out.append(f'    goto L_{nxt:x};')
         out.append('}')
         # every label referenced must exist: labels are all insns here, so fine
+        if self.L.cache_regs:
+            out = self.cache_regs_rewrite(out, addrs, span)
         return '\n'.join(l for l in out if l != '')
+
+    def cache_regs_rewrite(self, out, addrs, span):
+        """--cache-regs: rewrite the function, then decide per instruction which registers its calls/returns must store:
+        those it may have changed since the last point where locals and the CPU struct agreed (function entry, or after a
+        direct call, which stores and reloads unconditionally). A forward may-analysis over the instruction graph."""
+        new = [out[0], '    RT_LOCALS;'] + [cache_regs(l, self.L.prefix) for l in out[1:]]
+        owner = [None] * len(new)
+        bounds = [span[va] for va in addrs] + [len(out) - 1]
+        for k, va in enumerate(addrs):
+            for j in range(bounds[k], bounds[k + 1]): owner[j + 1] = va      # +1: RT_LOCALS inserted
+        writes = collections.defaultdict(set)
+        for j, l in enumerate(new):
+            if owner[j] is not None: writes[owner[j]] |= cache_regs_writes(l)
+        succ, callee = {}, {}
+        ALL = frozenset(_CR_NAMES)
+        for va in addrs:
+            i = self.insns[va]
+            if i is None: succ[va] = []; continue
+            tg, ft = successors(self.img, i, self.L.entries, self.entry)
+            s = [t for t in list(tg) + list(self.L.smc_branch.get(va, ())) if t in self.insns]
+            if ft and va + i.size in self.insns: s.append(va + i.size)
+            succ[va] = s
+            if i.mnemonic == 'call':       # what the called function may read and write (ALL when unknown)
+                op = i.operands[0]; t = op.imm & 0xFFFFFFFF if op.type == X86_OP_IMM else None
+                callee[va] = self.L.reg_sum.get(t, (ALL, ALL)) if t is not None and t not in self.L.setjmp_fns \
+                    and t not in self.L.longjmp_fns else (ALL, ALL)
+        din = {va: set() for va in addrs}
+        work = list(addrs)
+        while work:
+            va = work.pop()
+            if va in callee:               # after the call, registers it may touch are in sync again
+                R, W = callee[va]; dout = (din[va] | writes[va]) - R - W
+            else:
+                dout = din[va] | writes[va]
+            for s in succ[va]:
+                if not dout <= din[s]:
+                    din[s] |= dout; work.append(s)
+        for j, l in enumerate(new):
+            va = owner[j]
+            if va in callee:
+                R, W = callee[va]
+                l = l.replace('SPILL_;', cache_regs_spill((din[va] | writes[va]) & (R | W)) + ';')
+                l = l.replace('RELOAD_;', cache_regs_reload(W) + ';')
+            if 'SPILL_;' in l:
+                regs = set(_CR_NAMES) if va is None else din[va] | writes[va]
+                l = l.replace('SPILL_;', cache_regs_spill(regs) + ';')
+            new[j] = l
+        return new
 
     def insn(self, i):
         m = i.mnemonic
@@ -1008,6 +1107,8 @@ class Lifter:
         self.smc_problems = []
         self.fl_in, self.fl_out = {}, {}      # per function: flags read before written / flags exported at ret
         self.fl_ind_in = self.fl_ind_out = 0  # same, for indirect calls (union over address-taken functions)
+        self.cache_regs = False               # --cache-regs (runtime/rt_fast.h)
+        self.reg_sum = {}                     # --cache-regs: function -> (registers it may read, may write)
 
     def smc_analyze(self, max_iter=4):
         """find absolute writes into code; map each to the instruction field it patches. Iterates because
@@ -1174,6 +1275,40 @@ class Lifter:
         self.fl_ind_in, self.fl_ind_out = ind_in, ind_out
         return it
 
+    def regs_analyze(self, max_iter=60):
+        """--cache-regs: per function, which guest registers it (and everything it calls) may read and may write, taken
+        from the C it is emitted as. Calls to the host, indirect calls and anything not understood count as all."""
+        ALL = frozenset(_CR_NAMES)
+        own, edges = {}, {}
+        callre = re.compile(r'\b%s_([0-9a-f]{8})\(c\)' % self.prefix)
+        for e in self.entries:
+            f = Fn(self, e); f.walk()
+            R, W, ed, unknown = set(), set(), set(), False
+            for va, i in f.insns.items():
+                if i is None: continue
+                try: body = f.insn(i)
+                except Unsupported: continue                   # becomes rt_fault (stores everything)
+                for raw in body:
+                    l = cache_regs(raw, self.prefix)
+                    R |= set(_CR_TOK.findall(l)); W |= cache_regs_writes(l)
+                    if any(k in l for k in ('rt_call_import', 'rt_cpuid', 'RT_SETJMP', 'rt_longjmp', f'{self.prefix}_call(c')):
+                        unknown = True
+                    ed |= {int(x, 16) for x in callre.findall(l)}
+            R.add('esp'); W.add('esp')
+            own[e] = ALL if unknown else frozenset(R), ALL if unknown else frozenset(W)
+            edges[e] = ed
+        sumR = {e: set(own[e][0]) for e in own}; sumW = {e: set(own[e][1]) for e in own}
+        for it in range(max_iter):
+            changed = False
+            for e in own:
+                for t in edges[e]:
+                    if t not in own: sumR[e] |= ALL; sumW[e] |= ALL; continue
+                    if not sumR[t] <= sumR[e]: sumR[e] |= sumR[t]; changed = True
+                    if not sumW[t] <= sumW[e]: sumW[e] |= sumW[t]; changed = True
+            if not changed: break
+        self.reg_sum = {e: (frozenset(sumR[e]), frozenset(sumW[e])) for e in own}
+        return it
+
     def fname(self, va):
         return f'{self.prefix}_{va:08x}'
 
@@ -1187,7 +1322,7 @@ class Lifter:
         unimpl = collections.Counter()
         unimpl_funcs = collections.defaultdict(list)
         total_insns = 0
-        hdr = [f'/* generated by darkrecomp */', '#include "rt.h"']
+        hdr = [f'/* generated by darkrecomp */', '#include "rt_fast.h"' if self.cache_regs else '#include "rt.h"']
         decl = hdr + [f'void {self.prefix}_call(CPU *c, uint32_t t);'] + [f'void {self.fname(e)}(CPU *c);' for e in ents]
         open(os.path.join(outdir, f'{self.prefix}_decls.h'), 'w').write('\n'.join(decl) + '\n')
         files = []
@@ -1246,11 +1381,13 @@ if __name__ == '__main__':
     ap.add_argument('--funcs-per-file', type=int, default=150)
     ap.add_argument('--smc', action='store_true', help='analyse and translate self-modifying code')
     ap.add_argument('--rebase', type=lambda v: int(v, 0), help='lift a DLL as if loaded at this base (applies its relocations first)')
+    ap.add_argument('--cache-regs', action='store_true', help='keep guest registers in C locals inside each function (faster; needs runtime/rt_fast.h)')
     ap.add_argument('--iat-indirect', action='store_true', help='for DLLs loaded by Windows: call imports through their IAT slot as plain indirect calls (the slot holds the real address)')
     a = ap.parse_args()
     img = Image(a.pe, a.rebase)
     img.iat_indirect = a.iat_indirect   # imports stay known by name (setjmp/longjmp), but are called through the IAT
     L = Lifter(a.pe, a.prefix, img)
+    L.cache_regs = a.cache_regs
     if a.smc:
         w = L.smc_analyze()
         print(f'SMC: {len(w)} code writes -> {sum(len(v) for v in L.smc_sites.values())} patched fields in '
@@ -1261,6 +1398,10 @@ if __name__ == '__main__':
           f'indirect in/out = {L.fl_ind_in:#x}/{L.fl_ind_out:#x} ({it + 1} iterations)')
     for e in sorted(set(L.fl_in) | set(L.fl_out))[:40]:
         print(f'   {e:08x} in={"".join(flagset(L.fl_in.get(e, 0)))} out={"".join(flagset(L.fl_out.get(e, 0)))}')
+    if L.cache_regs:
+        it = L.regs_analyze()
+        full = sum(1 for r, w in L.reg_sum.values() if len(w) == 8)
+        print(f'cache-regs: {len(L.reg_sum)} functions summarised, {full} may change every register ({it + 1} iterations)')
     meta = L.run(a.outdir, a.funcs_per_file)
     print(f"functions={meta['functions']} insns(with dup)={meta['insns']} files={len(meta['files'])}")
     print('unimpl:', meta['unimpl'])

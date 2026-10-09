@@ -31,6 +31,11 @@ cmake --build build/vita
 
 Result: `build/vita/ss2port.vpk`. It contains code built from the game: never share it.
 
+Experimental: `python3 port/build.py <SS2.exe> --backend null --cache-regs` lifts with `lift.py --cache-regs`, which keeps
+the guest registers in C locals inside each recompiled function (see `runtime/rt_fast.h`). It passes the conformance suite
+(also on ARM) but is not yet known to be faster on the Vita; compare the profile lines in `ss2port.log` with and without it.
+Switching it on or off relifts everything.
+
 ## 3. Install
 
 - Install `ss2port.vpk` with VitaShell.
