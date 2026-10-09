@@ -46,6 +46,7 @@ def main():
     ap.add_argument("--target", default="linux", choices=["linux", "windows"], help="linux: this machine (any POSIX system); windows: cross-compile a Windows exe")
     ap.add_argument("--install", action="store_true", help="copy the result next to SS2.exe")
     ap.add_argument("--cache-regs", action="store_true", help="lift with lift.py --cache-regs (experimental)")
+    ap.add_argument("--symbols", action="store_true", help="embed a function-name table (tools/annotate.py + symbols/manual.sym) so crash reports show names instead of addresses; adds a few hundred KB, so it is off by default")
     ap.add_argument("--low-dll-bases", action="store_true", help="lift the game's DLLs for load addresses below 32 MB (hosts with a small guest space, e.g. the PS Vita backend)")
     a = ap.parse_args(); exe = os.path.abspath(a.ss2exe)
     win = a.target == "windows"
@@ -68,6 +69,13 @@ def main():
         shutil.rmtree(nd, ignore_errors=True); run([PY, "lift.py", "--smc"] + cr + [exe, "nd", nd], "lift SS2.exe"); open(sigf, "w").write(s)
     else: print("  SS2.exe: already lifted")
     run([PY, os.path.join("host", "gen_hostdata.py"), os.path.join(nd, "nd_meta.json"), exe, os.path.join(nd, "nd_hostdata.c")], "host data")
+    symc = os.path.join(nd, "nd_symtab.c")                       # compiled in when present (the host treats the table as optional)
+    if a.symbols:
+        auto = os.path.join(nd, "auto.sym")
+        if not os.path.exists(auto) or os.path.getmtime(auto) < max(os.path.getmtime(os.path.join(ROOT, "tools", "annotate.py")), os.path.getmtime(os.path.join(nd, "nd_meta.json"))):
+            print("  harvesting function names (about 20 seconds)"); run([PY, os.path.join("tools", "annotate.py"), exe, nd, auto], "annotate")
+        run([PY, os.path.join("host", "gen_symtab.py"), "--functions", os.path.join(nd, "nd_meta.json"), exe, symc, auto, os.path.join(ROOT, "symbols", "manual.sym")], "symbol table")
+    elif os.path.exists(symc): os.remove(symc)
     mods = []
     for fname, sub, pfx, rebase in (MODULES_LOW if a.low_dll_bases else MODULES):
         src = find_ci(os.path.dirname(exe), sub, fname); md = os.path.join(OUT, pfx)

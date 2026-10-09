@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
-"""gen_symtab.py <SS2.exe> <out.c> <file.sym>...
+"""gen_symtab.py [--functions nd_meta.json] <SS2.exe> <out.c> <file.sym>...
 Builds the name table the host uses in crash reports. Later files override earlier ones (pass symbols/manual.sym last).
-Files whose header names a different exe (crc32) are skipped."""
-import sys, re, zlib
-exe, out, files = sys.argv[1], sys.argv[2], sys.argv[3:]
+Files whose header names a different exe (crc32) are skipped.
+--functions: also list every other function entry with no name (name NULL), so a host can find the function that contains an
+address (the portable host does; the Windows host only looks up exact entry addresses)."""
+import sys, re, zlib, json
+argv = sys.argv[1:]; allfn = None
+if argv and argv[0] == '--functions': allfn = json.load(open(argv[1]))['entries']; argv = argv[2:]
+exe, out, files = argv[0], argv[1], argv[2:]
 crc = zlib.crc32(open(exe, 'rb').read()) & 0xffffffff
 names = {}
 for f in files:
@@ -20,6 +24,8 @@ for f in files:
     print(f'  {f}: {n} names')
 def cstr(s): return '"' + s.replace('\\', '\\\\').replace('"', '\\"') + '"'
 L = ['#include <stdint.h>', 'typedef struct { uint32_t va; const char *name; } SymEnt;', 'const SymEnt nd_symtab[] = {']
-L += [f'    {{0x{va:08x}u, {cstr(n)}}},' for va, n in sorted(names.items())]
-L += ['    {0xffffffffu, 0}', '};', f'const unsigned nd_symtab_n = {len(names)};']
+entries = {va: cstr(n) for va, n in names.items()}
+for va in (allfn or []): entries.setdefault(va, '0')
+L += [f'    {{0x{va:08x}u, {n}}},' for va, n in sorted(entries.items())]
+L += ['    {0xffffffffu, 0}', '};', f'const unsigned nd_symtab_n = {len(entries)};']
 open(out, 'w').write('\n'.join(L) + '\n')

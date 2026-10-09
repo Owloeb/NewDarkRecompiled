@@ -34,11 +34,16 @@ void port_log(const char *fmt, ...) { va_list ap; va_start(ap, fmt); vlog(PLAT_L
 void port_warn(const char *fmt, ...) { va_list ap; va_start(ap, fmt); vlog(PLAT_LOG_WARN, "[port] warning: ", fmt, ap); va_end(ap); }
 void port_debug(const char *fmt, ...) { if (!port_verbose) return; va_list ap; va_start(ap, fmt); vlog(PLAT_LOG_DEBUG, "[port] ", fmt, ap); va_end(ap); }
 static const char *ring_names[16]; static uint32_t ring_ret[16]; static unsigned ring_n;
-const char *guest_symbol(uint32_t va) {
+const char *guest_symbol(uint32_t va) {      /* the named function containing va ("name" or "name+0x1c"); needs a table built with --symbols */
     if (!nd_symtab || !&nd_symtab_n) return NULL;
-    unsigned lo = 0, hi = nd_symtab_n;
-    while (lo < hi) { unsigned mid = (lo + hi) / 2; if (nd_symtab[mid].va < va) lo = mid + 1; else hi = mid; }
-    return lo < nd_symtab_n && nd_symtab[lo].va == va ? nd_symtab[lo].name : NULL;
+    unsigned lo = 0, hi = nd_symtab_n;               /* first entry above va */
+    while (lo < hi) { unsigned mid = (lo + hi) / 2; if (nd_symtab[mid].va <= va) lo = mid + 1; else hi = mid; }
+    if (!lo) return NULL;
+    const SymEnt *e = &nd_symtab[lo - 1];
+    if (!e->name || va - e->va > 0x8000) return NULL;
+    if (va == e->va) return e->name;
+    static char buf[4][128]; static unsigned k; char *o = buf[k++ & 3];
+    snprintf(o, 128, "%s+0x%x", e->name, va - e->va); return o;
 }
 /* --trace keeps the last TRACE_N calls in memory (never streams: a spinning game would fill the disk) and prints them on a
    crash, on SIGINT / SIGTERM (Ctrl-C, `timeout`), or at exit. */
