@@ -91,9 +91,13 @@ void vita_profile_tick(uint64_t now) {
     { static int n; if (++n % 3 == 0) vita_log_guest_highwater("now"); }
     t0 = now; last_swap = swap_ns; last_fs = vp_fs_ns; last_gl = gl_prof_ns; d0 = gl_prof_draws; o0 = vp_fs_open; st0 = vp_fs_stat; rc0 = vp_fs_read_calls; sr0 = vp_fs_sys_reads; b0 = vp_fs_bytes; f0 = frames;
 }
+uint64_t vita_now_ns(void);
+const char *volatile vita_where; volatile uint64_t vita_where_t0;
 void gl_swap(void) {
     struct timespec a, b; clock_gettime(CLOCK_MONOTONIC, &a);
+    const char *outer = vita_where; vita_where = "vglSwapBuffers";
     vglSwapBuffers(GL_FALSE);
+    vita_where = outer;
     clock_gettime(CLOCK_MONOTONIC, &b); swap_ns += (uint64_t)(b.tv_sec - a.tv_sec) * 1000000000u + (uint64_t)(b.tv_nsec - a.tv_nsec); frames++;
     vita_profile_tick((uint64_t)b.tv_sec * 1000000000u + (uint64_t)b.tv_nsec);
 }
@@ -251,6 +255,7 @@ static void *watchdog(void *u) {
         if (++idle == VITA_WATCHDOG_S) {
             vlog("watchdog: no frame and no file read for %d s; the game has hung. Crashing on purpose so the Vita writes a core dump (send it with this log)", VITA_WATCHDOG_S);
             vita_log_inflight(); vita_log_guest_highwater("at the hang");
+            { const char *w = vita_where; if (w) vlog("renderer call in progress: %s (for %u s)", w, (unsigned)((vita_now_ns() - vita_where_t0) / 1000000000u)); else vlog("no renderer call in progress"); }
             sceKernelDelayThread(200000);
             *(volatile int *)0 = 0;
         }

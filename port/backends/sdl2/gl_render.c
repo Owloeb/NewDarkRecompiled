@@ -151,8 +151,9 @@ static void tex_storage(PlatTexture *t) {
 /* Vita: time spent in the renderer (GL calls included), for the performance report. Nothing elsewhere. */
 #ifdef __vita__
 extern uint64_t gl_prof_ns, gl_prof_draws; uint64_t vita_now_ns(void);
-static inline void glp_done(uint64_t *t0) { gl_prof_ns += vita_now_ns() - *t0; }
-#define GLP uint64_t glp_t0 __attribute__((cleanup(glp_done))) = vita_now_ns()
+extern const char *volatile vita_where; extern volatile uint64_t vita_where_t0;     /* the renderer call in progress, for the hang watchdog */
+static inline void glp_done(uint64_t *t0) { gl_prof_ns += vita_now_ns() - *t0; vita_where = 0; }
+#define GLP uint64_t glp_t0 __attribute__((cleanup(glp_done))) = (vita_where = __func__, vita_where_t0 = vita_now_ns())
 #else
 #define GLP (void)0
 #endif
