@@ -27,6 +27,7 @@
 #include <pthread.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <time.h>
 #include <psp2/ctrl.h>
 #include <psp2/touch.h>
 #include <psp2/audioout.h>
@@ -63,6 +64,39 @@ void vita_log_free_memory(const char *when);
 static void vlog(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 #include <stdarg.h>
 static void vlog(const char *fmt, ...) { char b[300]; int n = snprintf(b, sizeof b, "[vita] "); va_list ap; va_start(ap, fmt); vsnprintf(b + n, sizeof b - (size_t)n, fmt, ap); va_end(ap); plat_log_write(PLAT_LOG_INFO, b); }
+
+/* ---------------------------------------------------------------- sampling profiler (cmake -DPORT_PROF=ON)
+ * Recompiled functions and loop heads store their name in rt_prof_cur; this thread reads it every ~1 ms and every 20 s logs the
+ * functions seen most. A function is charged for the time until the next function entry or loop head, so a callee's time
+ * returns to it (not to its caller) and straight-line code after a call is charged to the callee. Good enough to find hot spots. */
+const char *volatile rt_prof_cur;
+#ifdef RT_PROF
+#define PROF_SLOTS 4096
+static const char *prof_key[PROF_SLOTS]; static unsigned prof_cnt[PROF_SLOTS];
+static void *prof_thread(void *arg) {
+    (void)arg; unsigned total = 0, rounds = 0; time_t t0 = time(NULL);
+    for (;;) {
+        usleep(1000);
+        const char *k = rt_prof_cur; if (!k) continue;
+        unsigned h = (unsigned)(((uintptr_t)k >> 2) * 2654435761u) % PROF_SLOTS, n = 0;
+        while (prof_key[h] && prof_key[h] != k && n++ < PROF_SLOTS) h = (h + 1) % PROF_SLOTS;
+        if (n >= PROF_SLOTS) continue;
+        prof_key[h] = k; prof_cnt[h]++; total++;
+        if (time(NULL) - t0 >= 20 && total) {
+            t0 = time(NULL); rounds++;
+            vlog("PROF %u samples; top guest functions:", total);
+            for (int r = 0; r < 30; r++) {
+                int best = -1; for (int i = 0; i < PROF_SLOTS; i++) if (prof_cnt[i] && (best < 0 || prof_cnt[i] > prof_cnt[best])) best = i;
+                if (best < 0) break;
+                vlog("PROF %5.1f%% %s", 100.0 * prof_cnt[best] / total, prof_key[best]);
+                prof_cnt[best] = 0;
+            }
+            memset(prof_key, 0, sizeof prof_key); memset(prof_cnt, 0, sizeof prof_cnt); total = 0;
+        }
+    }
+    return NULL;
+}
+#endif
 
 /* ---------------------------------------------------------------- display */
 static int surf_w = 640, surf_h = 480, gl_ready, rel_mode;
@@ -319,6 +353,9 @@ int main(int argc, char **argv) {
     MainArgs a = { ac, av, 1 }; pthread_t t; pthread_attr_t at; pthread_attr_init(&at); pthread_attr_setstacksize(&at, 8u << 20);
     if (pthread_create(&t, &at, game_thread, &a)) { vlog("could not start the game thread"); return 1; }
     if (watchdog_on) { pthread_t w; pthread_attr_t wa; pthread_attr_init(&wa); pthread_attr_setstacksize(&wa, 64u << 10); pthread_create(&w, &wa, watchdog, NULL); pthread_attr_destroy(&wa); }
+#ifdef RT_PROF
+    { pthread_t pt; pthread_attr_t pa; pthread_attr_init(&pa); pthread_attr_setstacksize(&pa, 64u << 10); pthread_create(&pt, &pa, prof_thread, NULL); pthread_attr_destroy(&pa); vlog("sampling profiler on"); }
+#endif
     pthread_join(t, NULL);
     vlog("exit %d", a.ret);
     sceKernelExitProcess(a.ret);
