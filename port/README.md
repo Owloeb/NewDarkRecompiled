@@ -82,7 +82,7 @@ Environment variables:
 `port/build.py` lifts `SS2.exe` and its DLLs to C, then builds with CMake:
 
 ```sh
-python3 port/build.py "/path/to/SS2.exe" [--backend sdl2|null] [--jobs N] [--target linux|windows] [--install]
+python3 port/build.py "/path/to/SS2.exe" [--backend sdl2|null] [--jobs N] [--target linux|windows] [--install] [--cache-regs]
 # by hand, from already lifted output:
 cmake -S port -B build/port -DPORT_GENERATED=out/port [-DPORT_BACKEND=sdl2|null]
 cmake --build build/port
@@ -148,6 +148,7 @@ codes for keys.
 - `tests/run_conformance.py` builds a game-free 32-bit Windows test program, lifts it with `lift.py` (the same recompiler
   as the game) and runs it on the chosen backend: 469 checks on `null`, 496 on `sdl2` (which adds pixel-exact rendering
   checks). It also runs clean under ASan, UBSan and TSan, and as a 32-bit build with a small guest space.
+  `--cache-regs` runs the same checks on code lifted with `lift.py --cache-regs`.
   `--target windows --wrap wine` builds and runs the Windows exe (under Wine, or natively on Windows).
 - Four independent review passes (core, Win32/CRT, DirectX, backends and tooling) found issues that are fixed and covered
   by regression checks in the conformance suite.
@@ -159,5 +160,7 @@ codes for keys.
 - **Mouselook:** verified on the Windows build. Under WSLg it cannot be judged (no pointer lock); native Linux is untried.
 - **Rendering is fixed-function only:** the game asks for shaders, is told there are none, and uses its fixed-function
   path. Cube and volume textures are not drawn; `ProcessVertices` is not implemented.
+- **PS Vita:** tried on the `vita-backend` branch (not merged). It runs and plays, but at about 6 to 20 fps, limited by
+  the CPU running the recompiled code; shelved. Notes and measurements: `port/backends/vita/PERF.md` on that branch.
 - **Not done:** C++ exceptions and structured exception handling, SSE and lock-prefixed instructions in the lifter,
   `fmsel.dll` (intentionally refused), a size-optimised build for small devices.
