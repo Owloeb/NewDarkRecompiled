@@ -133,7 +133,7 @@ void plat_cond_broadcast(PlatCond *c) { pthread_cond_broadcast(&c->c); }
 #define VITA_MEMFILE_MAX (32u << 20)
 #define VITA_RDBUF (64u << 10)
 #define VITA_WRBUF (64u << 10)
-struct PlatFile { int fd; int ro; int64_t pos, size; uint8_t *buf; int64_t bstart; uint32_t blen; uint8_t *wbuf; uint32_t wlen; int werr; int mem, dirty; uint8_t *mbuf; uint64_t mcap; char name[96]; };
+struct PlatFile { int fd, pfd; int64_t lastend; int ro; int64_t pos, size; uint8_t *buf; int64_t bstart; uint32_t blen; uint8_t *wbuf; uint32_t wlen; int werr; int mem, dirty; uint8_t *mbuf; uint64_t mcap; char name[96]; };
 /* what the file layer costs (reported with the frame rate by vita_profile_report in plat_vita.c) */
 void vita_profile_tick(uint64_t now);
 uint64_t vp_fs_ns, vp_fs_open, vp_fs_stat, vp_fs_read_calls, vp_fs_sys_reads, vp_fs_bytes;
@@ -181,7 +181,7 @@ PlatFile *plat_fs_open(const char *path, int flags, int *err) {
     op_begin(OP_OPEN, path, 0); int fd = open(path, of, 0644); op_end(OP_OPEN);
     if (fd < 0) { if (err) *err = err_of(errno); vp_fs_ns += vp_now() - t0; return NULL; }
     struct stat st; if (fstat(fd, &st) == 0 && S_ISDIR(st.st_mode)) { close(fd); if (err) *err = PLAT_E_ISDIR; vp_fs_ns += vp_now() - t0; return NULL; }   /* folders are not files */
-    PlatFile *f = calloc(1, sizeof *f); snprintf(f->name, sizeof f->name, "%s", path); f->fd = fd; f->ro = of == O_RDONLY; f->size = (int64_t)st.st_size; f->bstart = -1;
+    PlatFile *f = calloc(1, sizeof *f); snprintf(f->name, sizeof f->name, "%s", path); f->fd = fd; f->pfd = -1; f->ro = of == O_RDONLY; f->size = (int64_t)st.st_size; f->bstart = -1;
     if (f->ro) f->buf = malloc(VITA_RDBUF);
     if (f->ro && !f->buf) f->ro = 0;
     if (!f->ro) f->wbuf = malloc(VITA_WRBUF);
@@ -223,11 +223,85 @@ static int flush_w(PlatFile *f) {                           /* pending writes go
     op_end(OP_WRITE); f->wlen = 0; uint64_t d = vp_now() - t0; vp_fs_ns += d; if (d > 500000000u) slow_note("write", f->name, d);
     return f->werr ? -1 : 0;
 }
+static void pf_forget(PlatFile *f);
+static int64_t pf_take(PlatFile *f);
+static void pf_post(PlatFile *f, int64_t off);
+static void rs_note(PlatFile *f, uint64_t ns, int64_t bytes, int seq, unsigned refills, unsigned adj, unsigned hits);
 void plat_fs_close(PlatFile *f) {
     if (!f) return;
     if (!f->ro) { char b[160]; snprintf(b, sizeof b, "[vita] file: closing '%s' (%u bytes to write)", f->name, f->mem && f->dirty ? (unsigned)f->size : f->wlen); plat_log_write(PLAT_LOG_INFO, b); }
     reg_file(f, 0); vp_fs_activity++;
-    mem_out(f); flush_w(f); close(f->fd); free(f->buf); free(f->wbuf); free(f->mbuf); free(f);
+    pf_forget(f); mem_out(f); flush_w(f); close(f->fd); free(f->buf); free(f->wbuf); free(f->mbuf); free(f);
+}
+
+/* ---- read-ahead: when a file is read straight through (each window starts where the last one ended), a worker thread reads the
+ * next 64 KB window while the game works on this one. One request at a time, one shared buffer, the worker has its own handle per file.
+ * Also per-file read statistics, logged every 15 s: which files cost the time, and how much of it is sequential. */
+int vita_readahead = 1;
+static struct { PlatFile *f; int64_t off; uint32_t want; int state; int64_t got; uint8_t *buf; int started; } pf;   /* state: 0 idle, 1 reading, 2 done */
+static pthread_mutex_t pf_m = PTHREAD_MUTEX_INITIALIZER; static pthread_cond_t pf_c = PTHREAD_COND_INITIALIZER;
+static void *pf_worker(void *arg) {
+    (void)arg;
+    for (;;) {
+        pthread_mutex_lock(&pf_m);
+        while (pf.state != 1) pthread_cond_wait(&pf_c, &pf_m);
+        PlatFile *f = pf.f; int64_t off = pf.off; uint32_t want = pf.want;
+        if (f->pfd < 0) f->pfd = open(f->name, O_RDONLY);
+        int fd = f->pfd; pthread_mutex_unlock(&pf_m);
+        int64_t got = -1;
+        if (fd >= 0 && lseek(fd, (off_t)off, SEEK_SET) >= 0) {
+            got = 0; while ((uint64_t)got < want) { ssize_t r = read(fd, pf.buf + got, want - (uint32_t)got); if (r < 0 && errno == EINTR) continue; if (r <= 0) break; got += r; }
+        }
+        pthread_mutex_lock(&pf_m); pf.got = got; pf.state = 2; pthread_mutex_unlock(&pf_m);
+    }
+    return NULL;
+}
+static void pf_post(PlatFile *f, int64_t off) {
+    if (!vita_readahead || off >= f->size) return;
+    pthread_mutex_lock(&pf_m);
+    if (pf.state != 1) {
+        if (!pf.started) {
+            pf.buf = malloc(VITA_RDBUF); pthread_t t; pthread_attr_t a; pthread_attr_init(&a); pthread_attr_setstacksize(&a, 64u << 10);
+            if (pf.buf && !pthread_create(&t, &a, pf_worker, NULL)) pf.started = 1; pthread_attr_destroy(&a);
+        }
+        if (pf.started) { pf.f = f; pf.off = off; pf.want = (uint32_t)(f->size - off < VITA_RDBUF ? f->size - off : VITA_RDBUF); pf.state = 1; pthread_cond_signal(&pf_c); }
+    }
+    pthread_mutex_unlock(&pf_m);
+}
+static int64_t pf_take(PlatFile *f) {                       /* the window at f->pos, if it was read ahead (waits if it is on its way) */
+    int64_t r = -1; pthread_mutex_lock(&pf_m);
+    while (pf.f == f && pf.off == f->pos && pf.state == 1) { pthread_mutex_unlock(&pf_m); sceKernelDelayThread(300); pthread_mutex_lock(&pf_m); }
+    if (pf.f == f && pf.off == f->pos && pf.state == 2 && pf.got > 0) { memcpy(f->buf, pf.buf, (size_t)pf.got); r = pf.got; pf.state = 0; pf.f = NULL; }
+    pthread_mutex_unlock(&pf_m); return r;
+}
+static void pf_forget(PlatFile *f) {                        /* before the file closes */
+    pthread_mutex_lock(&pf_m);
+    while (pf.f == f && pf.state == 1) { pthread_mutex_unlock(&pf_m); sceKernelDelayThread(300); pthread_mutex_lock(&pf_m); }
+    if (pf.f == f) { pf.f = NULL; pf.state = 0; }
+    int pfd = f->pfd; f->pfd = -1; pthread_mutex_unlock(&pf_m); if (pfd >= 0) close(pfd);
+}
+typedef struct { char name[48]; uint64_t calls, bytes, ns, seq, refills, adj, hits; } RStat;
+static RStat rst[64]; static int nrst; static pthread_mutex_t rst_m = PTHREAD_MUTEX_INITIALIZER;
+static void rs_note(PlatFile *f, uint64_t ns, int64_t bytes, int seq, unsigned refills, unsigned adj, unsigned hits) {
+    const char *b = strrchr(f->name, '/'); b = b ? b + 1 : f->name; int i;
+    pthread_mutex_lock(&rst_m);
+    for (i = 0; i < nrst && strncmp(rst[i].name, b, sizeof rst[i].name - 1); i++) {}
+    if (i == nrst && nrst < 64) { snprintf(rst[i].name, sizeof rst[i].name, "%s", b); nrst++; }
+    if (i < nrst) { RStat *r = &rst[i]; r->calls++; r->bytes += bytes > 0 ? (uint64_t)bytes : 0; r->ns += ns; r->seq += (uint64_t)seq; r->refills += refills; r->adj += adj; r->hits += hits; }
+    pthread_mutex_unlock(&rst_m);
+}
+void vita_log_readstats(void) {                             /* the six files that cost the most read time since the last call */
+    pthread_mutex_lock(&rst_m);
+    for (int k = 0; k < 6; k++) {
+        int best = -1; for (int i = 0; i < nrst; i++) if (rst[i].ns && (best < 0 || rst[i].ns > rst[best].ns)) best = i;
+        if (best < 0) break; RStat *r = &rst[best]; char b[260];
+        snprintf(b, sizeof b, "[vita] reads %-24s %5.0f ms | %llu calls, %.1f MB | %llu%% sequential | %llu window refills, %llu in sequence, %llu read ahead",
+                 r->name, (double)r->ns / 1e6, (unsigned long long)r->calls, (double)r->bytes / 1048576.0, (unsigned long long)(r->calls ? 100 * r->seq / r->calls : 0),
+                 (unsigned long long)r->refills, (unsigned long long)r->adj, (unsigned long long)r->hits);
+        plat_log_write(PLAT_LOG_INFO, b); r->ns = 0;
+    }
+    for (int i = 0; i < nrst; i++) { rst[i].calls = rst[i].bytes = rst[i].ns = rst[i].seq = rst[i].refills = rst[i].adj = rst[i].hits = 0; }
+    pthread_mutex_unlock(&rst_m);
 }
 static int64_t raw_read(int fd, void *buf, uint64_t n) {
     uint64_t got = 0; while (got < n) { vp_fs_sys_reads++; ssize_t r = read(fd, (char *)buf + got, (size_t)(n - got)); if (r < 0) { if (errno == EINTR) continue; return got ? (int64_t)got : -1; } if (!r) break; got += (uint64_t)r; }
@@ -235,7 +309,7 @@ static int64_t raw_read(int fd, void *buf, uint64_t n) {
 }
 int64_t plat_fs_read(PlatFile *f, void *buf, uint64_t n) {
     uint64_t t0 = vp_now(); vp_fs_read_calls++; op_begin(OP_READ, f->name, n);
-    int64_t out;
+    int64_t out; unsigned refills = 0, adjn = 0, hitn = 0; int seq = f->pos == f->lastend;
     if (f->mem) { int64_t k = f->size - f->pos; if (k < 0) k = 0; if ((uint64_t)k > n) k = (int64_t)n; if (k) memcpy(buf, f->mbuf + f->pos, (size_t)k); f->pos += k; out = k; }
     else if (!f->ro) { flush_w(f); out = raw_read(f->fd, buf, n); }
     else {
@@ -249,13 +323,21 @@ int64_t plat_fs_read(PlatFile *f, void *buf, uint64_t n) {
                 if (lseek(f->fd, (off_t)f->pos, SEEK_SET) < 0) break;
                 int64_t r = raw_read(f->fd, d + got, n - got); if (r <= 0) break; f->pos += r; got += (uint64_t)r; f->bstart = -1; continue;
             }
-            if (lseek(f->fd, (off_t)f->pos, SEEK_SET) < 0) break;                                   /* refill the window at the current position */
-            int64_t r = raw_read(f->fd, f->buf, VITA_RDBUF); if (r <= 0) break; f->bstart = f->pos; f->blen = (uint32_t)r;
+            int adj = f->bstart >= 0 && f->pos == f->bstart + (int64_t)f->blen; refills++; adjn += adj;   /* sequential: the next window starts where this one ended */
+            int64_t r = adj ? pf_take(f) : -1;                                                       /* already read ahead? */
+            if (r > 0) hitn++;
+            else {
+                if (lseek(f->fd, (off_t)f->pos, SEEK_SET) < 0) break;                                /* refill the window at the current position */
+                r = raw_read(f->fd, f->buf, VITA_RDBUF); if (r <= 0) break;
+            }
+            f->bstart = f->pos; f->blen = (uint32_t)r;
+            if (adj) pf_post(f, f->bstart + (int64_t)f->blen);                                       /* start on the window after it */
         }
         out = (int64_t)got;
     }
     op_end(OP_READ); if (out > 0) vp_fs_bytes += (uint64_t)out;
-    uint64_t t1 = vp_now(); vp_fs_ns += t1 - t0; vita_profile_tick(t1); return out;      /* also reports while loading, when no frames are drawn */
+    f->lastend = f->pos;
+    uint64_t t1 = vp_now(); vp_fs_ns += t1 - t0; rs_note(f, t1 - t0, out, seq, refills, adjn, hitn); vita_profile_tick(t1); return out;      /* also reports while loading, when no frames are drawn */
 }
 int64_t plat_fs_write(PlatFile *f, const void *buf, uint64_t n) {
     if (f->werr) return -1;

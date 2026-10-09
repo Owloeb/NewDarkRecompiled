@@ -112,6 +112,7 @@ uint64_t gl_prof_ns, gl_prof_draws;
 static uint64_t swap_ns; static unsigned frames;
 void vita_log_guest_highwater(const char *when);
 void vita_log_inflight(void);
+void vita_log_readstats(void);
 void vita_profile_tick(uint64_t now) {
     static uint64_t t0, last_swap, last_fs, last_gl, d0, o0, st0, rc0, sr0, b0; static unsigned f0;
     if (!t0) { t0 = now; return; }
@@ -123,7 +124,7 @@ void vita_profile_tick(uint64_t now) {
          100.0 * fs / (dt * 1e9), (unsigned long long)(vp_fs_open - o0), (unsigned long long)(vp_fs_stat - st0),
          (unsigned long long)(vp_fs_read_calls - rc0), (unsigned long long)(vp_fs_sys_reads - sr0), (double)(vp_fs_bytes - b0) / 1048576.0,
          100.0 - 100.0 * (gl + fs) / (dt * 1e9));
-    { static int n; if (++n % 3 == 0) vita_log_guest_highwater("now"); }
+    { static int n; if (++n % 3 == 0) { vita_log_guest_highwater("now"); vita_log_readstats(); } }
     t0 = now; last_swap = swap_ns; last_fs = vp_fs_ns; last_gl = gl_prof_ns; d0 = gl_prof_draws; o0 = vp_fs_open; st0 = vp_fs_stat; rc0 = vp_fs_read_calls; sr0 = vp_fs_sys_reads; b0 = vp_fs_bytes; f0 = frames;
 }
 uint64_t vita_now_ns(void);
@@ -280,7 +281,7 @@ static void *game_thread(void *p) {
 #ifndef VITA_WATCHDOG_S
 #define VITA_WATCHDOG_S 90
 #endif
-static int watchdog_on = 1;
+static int watchdog_on = 1; extern int vita_readahead;
 static void *watchdog(void *u) {
     (void)u; unsigned last_f = 0; uint64_t last_r = 0; int idle = 0;
     for (;;) {
@@ -337,6 +338,7 @@ int main(int argc, char **argv) {
     for (int i = 0; i < nopt; i++) {
         if (!strcmp(opt[i], "--swap-sticks")) { swap_sticks = 1; continue; }
         if (!strcmp(opt[i], "--no-watchdog")) { watchdog_on = 0; continue; }
+        if (!strcmp(opt[i], "--no-readahead")) { vita_readahead = 0; continue; }
         if (!strcmp(opt[i], "--look-speed") && i + 1 < nopt) { look_speed = (float)atof(opt[++i]) / 100.0f; continue; }
         if (!strcmp(opt[i], "--guest-space") || !strcmp(opt[i], "--guest-backed")) have_space = 1;
         if (ends_with_exe(opt[i])) have_exe = 1;
