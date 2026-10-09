@@ -34,6 +34,7 @@ def main():
     ap.add_argument("--no-osm", action="store_true", help="don't recompile the game's DLLs (allobjs.osm, Squirrel.osm, lgvid.dll, fmsel.dll); the originals are used")
     ap.add_argument("--hooks", help="hooks file for tools/apply_hooks.py: call your own C functions at the entry of recompiled functions (for mods)")
     ap.add_argument("--extra-src", nargs="*", default=[], help="extra C files to compile and link into the exe (for mods; they see runtime/rt.h)")
+    ap.add_argument("--record", action="store_true", help="build the play-session recorder variant (host/record.inc): ss2_native_rec.exe writes darkrecomp_record.txt while you play, for naming functions; compiled separately (build/win_rec, out/nd_rec), the normal build is untouched")
     ap.add_argument("--named-sources", action="store_true", help="also write out/nd_named: a copy of the generated C with function names and notes, for reading")
     a = ap.parse_args()
     exe = os.path.abspath(a.ss2exe)
@@ -99,8 +100,17 @@ def main():
           "const RecompModDesc *const recomp_mods[] = { " + "".join(f"&{p}_desc, " for p, _ in mods) + "0 };\n"
     if not os.path.exists(modsc) or open(modsc).read() != txt: open(modsc, "w").write(txt)
 
+    if a.record:   # separate copies of the generated C and of the objects, so the normal build is not disturbed
+        grec = os.path.join(ROOT, "out", "nd_rec"); os.makedirs(grec, exist_ok=True)
+        for f in glob.glob(os.path.join(gen, "*")):
+            if not os.path.isfile(f) or f.endswith(".orig"): continue
+            d = os.path.join(grec, os.path.basename(f)); t = d + ".orig" if os.path.exists(d + ".orig") else d   # apply_hooks restarts from *.orig
+            if not os.path.exists(t) or os.path.getmtime(t) < os.path.getmtime(f) or os.path.getsize(t) != os.path.getsize(f): shutil.copy2(f, t)
+        gen = grec; objd = os.path.join(ROOT, "build", "win_rec"); os.makedirs(objd, exist_ok=True)
+        if a.out == os.path.join("build", "win", "ss2_native.exe"): a.out = os.path.join("build", "win", "ss2_native_rec.exe")
+        print("  recorder build: out/nd_rec, build/win_rec")
     # mod support: hooks into the generated C (seconds, no re-lift) and extra sources
-    r = run([PY, os.path.join("tools", "apply_hooks.py")] + (["--hooks", os.path.abspath(a.hooks)] if a.hooks else []) + [gen] + [md for _, md in mods], "hooks")
+    r = run([PY, os.path.join("tools", "apply_hooks.py")] + (["--record"] if a.record else []) + (["--hooks", os.path.abspath(a.hooks)] if a.hooks else []) + [gen] + [md for _, md in mods], "hooks")
     if a.hooks: print("  " + r.stdout.strip())
     extra = [os.path.abspath(x) for x in a.extra_src]
     for x in extra:
@@ -114,7 +124,7 @@ def main():
           "-DRT_IDENTITY", "-DRT_RING", "-DHOST_BUILD=\"dev\"", "-Iruntime"]
     inc = {gen: ["-I" + os.path.relpath(gen, ROOT)], os.path.dirname(modsc): []}
     for _, md in mods: inc[md] = ["-I" + os.path.relpath(md, ROOT)]
-    hostflags = ["-I" + os.path.relpath(gen, ROOT), "-Ivideo"]
+    hostflags = ["-I" + os.path.relpath(gen, ROOT), "-Ivideo"] + (["-DRT_RECORD"] if a.record else [])
     # the built-in cutscene decoder (stands in for ffmpeg.dll): our shim + FFmpeg's Indeo 5 decoder (LGPL, unmodified)
     vidsrc = [os.path.join(ROOT, "video", "lavshim.c"), os.path.join(ROOT, "video", "ffmpeg", "compat", "ffcompat.c")] + \
              [os.path.join(ROOT, "video", "ffmpeg", "libavcodec", f + ".c") for f in ("indeo5", "ivi", "ivi_dsp", "vlc")]

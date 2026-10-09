@@ -13,7 +13,9 @@ The original generated files are kept as *.c.orig; every run starts from them, s
 a hooks file) removes the hook. Only files whose content changes are rewritten, so only those recompile."""
 import sys, os, re, glob, argparse
 
-ap = argparse.ArgumentParser(); ap.add_argument('--hooks'); ap.add_argument('dirs', nargs='+'); a = ap.parse_args()
+ap = argparse.ArgumentParser(); ap.add_argument('--hooks')
+ap.add_argument('--record', action='store_true', help='also call rec_enter(c, address) at the entry of every function of the main exe (prefix nd): the play-session recorder, host/record.inc')
+ap.add_argument('dirs', nargs='+'); a = ap.parse_args()
 hooks = {}
 if a.hooks:
     for ln in open(a.hooks, encoding='utf-8'):
@@ -30,6 +32,9 @@ for fn in sorted(f for d in a.dirs for f in glob.glob(os.path.join(d, '*.c'))):
     for ln in base.split('\n'):
         out.append(ln)
         m = pat.match(ln)
+        if a.record and m and m.group('pfx') == 'nd':
+            touched = True
+            out.append(f'    {{ extern void rec_enter(CPU *, uint32_t); rec_enter(c, 0x{m.group("va")}u); }}   /* recorder (--record) */')
         if m and int(m.group('va'), 16) in hooks:
             va = int(m.group('va'), 16); found.add(va); touched = True
             out.append(f'    {{ extern void {hooks[va]}(CPU *); {hooks[va]}(c); }}   /* hook (tools/apply_hooks.py) */')

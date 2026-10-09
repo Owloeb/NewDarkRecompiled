@@ -162,6 +162,28 @@ function's name and notes above it, plus `functions.txt`, an index, for reading.
 The generated names stay on your machine; only `symbols/manual.sym` (our own findings, keyed by address) is in the
 repository. Contributions to it are welcome: one line per function, `0x<address> func <name>  # what it does`.
 
+### Naming functions by playing (the recorder)
+
+Static analysis names a third of the functions. The rest are easiest to name by watching the game run. A recorder build logs,
+while you play, which engine functions run, how often, who calls them, which readable strings they are given (file names, config
+variables, log text) and which Windows/DirectX calls each place in the engine makes:
+
+    python host/build_win.py "C:\\Games\\System Shock 2\\SS2.exe" --record        # builds build/win/ss2_native_rec.exe (separate from the normal build)
+
+Copy `ss2_native_rec.exe` next to `SS2.exe`, run it and play. **Hold Ctrl+Alt and press F1..F11 to mark what you are doing** (a beep
+confirms; F12 goes back to tag 0): everything the game does next is counted under that tag. Walk around under tag 1, fire a weapon
+under tag 2, open the inventory under tag 3, and so on, and keep a note of what each tag meant. The game writes
+`darkrecomp_record.txt` next to the exe every 30 seconds and when it exits (it also writes `darkrecomp_api_usage.txt`, the Direct3D /
+DirectSound / DirectInput usage list). Then:
+
+    python tools/suggest_names.py darkrecomp_record.txt out/nd/nd_meta.json --sym out/nd/auto.sym --sym symbols/manual.sym --tags tags.txt --report report.md --emit out/recorded.sym
+
+`tags.txt` has one line per tag (`2 fired the pistol`). The report lists the functions that ran only under each tag, the hottest
+functions, unnamed functions that call into the OS or DirectX (with the file names they open), and the files and settings the engine
+touched. It is a work list with evidence; the actual names go into `symbols/manual.sym` after looking at the code. The recorder slows
+the game a little, so use the normal build to play.
+
+## Hooks (for mods)
 ### Hooks (for mods)
 
 `build_win.py --hooks hooks.txt --extra-src mymod.c` makes recompiled engine functions call your own C code when they

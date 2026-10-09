@@ -742,6 +742,9 @@ static void ci_exec(CPU *c, int code) {
 }
 static int cd_done, query_wait_real; static uint32_t cd_pending; static void **g_pdev;
 #include "api_usage.inc"
+#ifdef RT_RECORD
+#include "record.inc"
+#endif
 static void call_native(CPU *c, void *fn, int idx) {
     NRes r;
     LONG n = InterlockedIncrement(&ncalls);
@@ -807,6 +810,9 @@ static void call_native(CPU *c, void *fn, int idx) {
     }
     if (cd_pending) { g_pdev = (void **)(uintptr_t)cd_pending; }
     if (g_apistats) au_pre(fn, (const uint32_t *)(uintptr_t)(c->esp + 4));
+#ifdef RT_RECORD
+    if (g_apistats) rc_native(idx, (const uint32_t *)(uintptr_t)(c->esp + 4));
+#endif
     InterlockedIncrement(&g_in_native);
     native_call(fn, (const uint32_t *)(uintptr_t)(c->esp + 4), NATIVE_K, c->ecx, c->edx, &r);
     InterlockedDecrement(&g_in_native);
@@ -1505,6 +1511,9 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPSTR cmd, int show) {
     for (int i = 0; i < MAX_MODS && recomp_mods[i]; i++) mod_reserve(i);
     AddVectoredExceptionHandler(1, veh);
     { char f[MAX_PATH]; snprintf(f, sizeof f, "%s\\darkrecomp_apistats.txt", exe_dir); if (GetFileAttributesA(f) != INVALID_FILE_ATTRIBUTES) { g_apistats = 1; hlog("RECOMP API usage recording ON (darkrecomp_apistats.txt present): darkrecomp_api_usage.txt"); } }
+#ifdef RT_RECORD
+    g_apistats = 1; rc_init();
+#endif
     { char f[MAX_PATH]; snprintf(f, sizeof f, "%s\\darkrecomp_debug.txt", exe_dir); if (GetFileAttributesA(f) != INVALID_FILE_ATTRIBUTES) { g_debug = 1; hlog("debug mode ON (darkrecomp_debug.txt present)"); } }
     if (g_debug) CreateThread(NULL, 0, heartbeat, NULL, 0, NULL);
     SetUnhandledExceptionFilter(unhandled);
