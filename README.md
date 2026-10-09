@@ -152,6 +152,7 @@ own `SS2.exe` (`tools/annotate.py`, about 20 seconds):
 - **RTTI:** the engine is C++ with runtime type information, so every polymorphic class and its vtable can be found;
   each virtual method becomes `Class::vfN` (COM-style classes get `QueryInterface`/`AddRef`/`Release`).
 - **Constructors/destructors:** functions that store a class's vtable into an object.
+- **Console commands:** the engine registers its commands (`cycle_ammo`, `set_vsync`, ...) from a static table; each handler becomes `cmd_<name>`, with the help text as a note.
 - **Import thunks** and the **string literals** each function uses (log messages, config variable names), as notes.
 
 That names about a third of the roughly 21,000 functions automatically. `symbols/manual.sym` holds names found by hand

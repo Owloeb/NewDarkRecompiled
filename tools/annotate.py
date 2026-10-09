@@ -8,6 +8,7 @@ Harvests names and notes for the recompiled engine from the executable itself (n
     Classes deriving from IUnknown get QueryInterface/AddRef/Release for slots 0-2.
   * Constructors/destructors: functions that store a class's vtable pointer into an object.
   * Import thunks: functions that are only `jmp [import]`.
+  * Console commands: the static command table (name, argument type, handler, help text); handlers become cmd_<name>.
   * String references: the literals a function uses (log messages, config variables, ...) as notes.
 
 Output (one line per item, addresses as in the original exe):
@@ -180,6 +181,25 @@ for f, vs in ctors.items():
     cls = sorted({vts[v][0] for v in vs})
     names[f] = f'{cls[0]}::ctor_or_dtor' if len(cls) == 1 else f'{cls[-1]}::ctor_or_dtor'
     if len(cls) > 1: notes[f].append('sets vtables of ' + ', '.join(cls[:4]))
+# ---- console commands: a static table of {name, argument type, handler, help text, 0, 0} (24-byte entries) in the data
+# section. The handler becomes cmd_<name>; a name found some other way (RTTI) is kept and the command goes into the note.
+def _cstr(va, n=96):
+    if not in_img(va): return None
+    d = img[va - base: va - base + n].split(b'\0')[0]
+    return d.decode() if 2 <= len(d) < 64 and all(32 <= c < 127 for c in d) else None
+_ARG = {0: 'no argument', 2: 'int argument', 3: 'float argument', 5: 'string argument'}
+cmds = {}
+for lo, hi in data:
+    for a in range(lo, hi - 24, 4):
+        nm_, typ, h, hlp, z1, z2 = struct.unpack_from('<6I', img, a - base)
+        if h in fset and z1 == 0 and z2 == 0 and typ in _ARG and nm_ >= base:
+            n = _cstr(nm_)
+            if n and re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', n) and (hlp == 0 or _cstr(hlp)):
+                cmds.setdefault(h, (n, _cstr(hlp) if hlp else '', typ))
+for h, (n, hlp, typ) in cmds.items():
+    if h not in names: names[h] = f'cmd_{n}'
+    notes[h].append(f'console command "{n}" ({_ARG[typ]})' + (f': {hlp}' if hlp else ''))
+
 for f, ss in strs.items():
     notes[f].append('refs ' + ' | '.join(repr(s[:70]) for s in ss))
 
@@ -200,4 +220,4 @@ with open(out, 'w') as fo:
             fo.write(f'0x{f:08x} func {nm}' + (f'  # {"; ".join(notes[f])}' if notes[f] else '') + '\n')
 named = sum(1 for f in funcs if f in names)
 print(f'{len(funcs)} functions: {named} named ({100 * named / len(funcs):.1f}%), {sum(1 for f in funcs if f not in names and f in notes)} more with notes; '
-      f'{len(vts)} vtables; {len(thunk)} import thunks; {len(ctors)} ctor/dtor candidates')
+      f'{len(vts)} vtables; {len(thunk)} import thunks; {len(ctors)} ctor/dtor candidates; {len(cmds)} console commands')
