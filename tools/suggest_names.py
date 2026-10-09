@@ -96,7 +96,7 @@ def one(va):
     bits.append(f"hits={f['total']}"); bits.append('tags=' + tagstr(f))
     ap_ = [f"{e['name']}x{e['n']}" + (f"({'; '.join(e['strs'][:2])})" if e['strs'] else '') for e in sorted(fn_apis.get(va, []), key=lambda e: -e['n'])[:4]]
     if ap_: bits.append('calls ' + ', '.join(ap_))
-    if f['strs']: bits.append('strings ' + ' / '.join(repr(s) for s in f['strs']))
+    if f['strs']: bits.append('entry-strings ' + ' / '.join(repr(s) for s in f['strs']))
     cn = sorted(callers_of.get(va, ()))[:3]
     if cn: bits.append('from ' + ', '.join(nm(c) for c in cn))
     return '; '.join(bits)
@@ -132,7 +132,7 @@ for va in cand[:300]: out.append(f"- `{va:08x}` {one(va)}")
 if len(cand) > 300: out.append(f'- ... and {len(cand) - 300} more (see recorded.sym)')
 out.append('')
 
-out.append('## Unnamed functions that were handed readable strings\n')
+out.append('## Unnamed functions that were handed readable strings\n\nThese are strings found in the registers and first stack arguments on a function's first calls. They are leads, not proof: a register can still hold a string left over from the caller, so confirm in the code that the function really uses it.\n')
 sc = [va for va in unnamed if fns[va]['strs']]
 sc.sort(key=lambda v: -fns[v]['total'])
 for va in sc[:300]: out.append(f"- `{va:08x}` {one(va)}")

@@ -17,3 +17,90 @@
 0x006c9e30 func d3d_display_set_overlay   # slot 0x3c
 0x006c9ee0 func d3d_display_end_overlay   # slot 0x40
 0x006f6b98 func security_check_cookie     # MSVC /GS check
+
+# Console commands: the engine registers them from a static table (name, argument type, handler, help text) in the data section.
+# Found by scanning for that table, so these names are the game's own command names with a cmd_ prefix. Argument type from the table: 0 none, 2 int, 3 float, 5 string.
+0x0040e610 func cmd_history_cmd                  # console command "history_cmd" (int argument): edit command from history offset
+0x004137f0 func cmd_play_cd                      # console command "play_cd" (int argument): play a CD track
+0x00413880 func cmd_stop_cd                      # console command "stop_cd" (no argument): stop playing a CD track
+0x00414fa0 func cmd_help                         # console command "help" (string argument): shows command info
+0x004152b0 func cmd_dump_cmds                    # console command "dump_cmds" (string argument): dump command list to file
+0x00415370 func cmd_run                          # console command "run" (string argument): run commands in file
+0x00421aa0 func cmd_dbmod_load                   # console command "dbmod_load" (string argument): Load dbmod (.DML) file
+0x00423330 func cmd_dump_props                   # console command "dump_props" (no argument): Dump ObjProp list to proplist.txt
+0x00423340 func cmd_dump_props_full              # console command "dump_props_full" (no argument): Dump ObjProp list with all value defs to proplist.txt
+0x00423560 func cmd_dump_tagblocks               # console command "dump_tagblocks" (no argument): Dump TagBlock list to taglist.txt
+0x00423570 func cmd_dump_tagblocks_full          # console command "dump_tagblocks_full" (no argument): Dump TagBlock list with all value defs to taglist.txt
+0x00423580 func cmd_dump_tagblocks_vals          # console command "dump_tagblocks_vals" (no argument): Dump TagBlock list with current values to taglist_vals.txt
+0x00423590 func cmd_dump_type                    # console command "dump_type" (string argument): Dump a datatype definition to type_*.txt
+0x004257c0 func cmd_game_mode                    # console command "game_mode" (string argument): switch to game mode
+0x004257d0 func cmd_game_quiet                   # console command "game_quiet" (string argument): switch to game mode, no sounds
+0x004257e0 func cmd_end_mode                     # console command "end_mode" (no argument): End the current major mode
+0x00425820 func cmd_quit_game                    # console command "quit_game" (no argument): Quit the game
+0x00425870 func cmd_screen_dump                  # console command "screen_dump" (string argument): make a screen shot
+0x0042d470 func cmd_net_host                     # console command "net_host" (no argument): Host a networked game
+0x0042d490 func cmd_net_client                   # console command "net_client" (string argument): Join a networked game
+0x0042d4b0 func cmd_net_leave                    # console command "net_leave" (no argument): Leave a networked game
+0x00445890 func cmd_reload_gun                   # console command "reload_gun" (no argument): reloads weapon out of inventory
+0x0044d610 func cmd_shock_jump_player            # console command "shock_jump_player" (no argument): jump the player
+0x00452760 func cmd_stop_email                   # console command "stop_email" (no argument): Stop any currently playing email/log
+0x00454600 func cmd_interface_use                # console command "interface_use" (no argument): inv use an item
+0x00454680 func cmd_toggle_mouse                 # console command "toggle_mouse" (no argument): switch between mouselook & cursor modes
+0x004546b0 func cmd_frob_object                  # console command "frob_object" (no argument): simple frob of selected object
+0x004546d0 func cmd_frob_object_inv              # console command "frob_object_inv" (no argument): simple frob of selected object, in world or in inv
+0x00454700 func cmd_frob_toggle                  # console command "frob_toggle" (no argument): switch between modes, also frobbing current selection
+0x00454810 func cmd_mp_hilight_obj               # console command "mp_hilight_obj" (no argument): hilight an object in MP game
+0x00454aa0 func cmd_fire_weapon                  # console command "fire_weapon" (int argument): fire weapon 1 = start 0 = finish
+0x00454c40 func cmd_query                        # console command "query" (int argument): query cursor 1 = on 0 = off
+0x00454c70 func cmd_split                        # console command "split" (int argument): split cursor 1 = on 0 = off
+0x00454d40 func cmd_drag_and_drop_frob           # console command "drag_and_drop_frob" (int argument): drag & drop 1 = start 0 = finish
+0x00454d50 func cmd_drag_and_drop                # console command "drag_and_drop" (int argument): drag & drop 1 = start 0 = finish
+0x00454da0 func cmd_drag_and_drop_mode           # console command "drag_and_drop_mode" (int argument): drag & drop 1 = start 0 = finish
+0x00454db0 func cmd_toggle_inv                   # console command "toggle_inv" (no argument): toggle inv panel
+0x00454e30 func cmd_toggle_compass               # console command "toggle_compass" (no argument): toggle compass state
+0x00454fb0 func cmd_cycle_ammo                   # console command "cycle_ammo" (no argument): cycle through available ammo types
+0x00454fc0 func cmd_wpn_setting_toggle           # console command "wpn_setting_toggle" (no argument): toggles between weapon settings
+0x00455300 func cmd_select_psipower              # console command "select_psipower" (no argument): brings up the psi power selection MFD
+0x00455460 func cmd_use_obj                      # console command "use_obj" (string argument): Use an object by name
+0x00455fa0 func cmd_equip_weapon                 # console command "equip_weapon" (string argument): searches your inv for a particular weapon and equips it
+0x00455fc0 func cmd_cycle_weapon                 # console command "cycle_weapon" (int argument): Cycles through next equippable weapon, 1 for fwd, -1 for back
+0x00456b40 func cmd_psi_power                    # console command "psi_power" (int argument): acts like the 1-5 level buttons
+0x00456b80 func cmd_quickbind                    # console command "quickbind" (int argument): Bind a quick slot
+0x00456d40 func cmd_quickuse                     # console command "quickuse" (int argument): Activate a quick slot
+0x00456e30 func cmd_summon_obj                   # console command "summon_obj" (string argument): Summon an object.
+0x00456f90 func cmd_psi_full                     # console command "psi_full" (no argument): Give the player full psi points
+0x00457020 func cmd_ubermensch                   # console command "ubermensch" (no argument): Turns the player into homo superior.
+0x00457170 func cmd_show_version                 # console command "show_version" (no argument): Display version in game mode.
+0x00469680 func cmd_look_cursor                  # console command "look_cursor" (no argument): puts cursor into look mode
+0x00472fe0 func cmd_quicksave                    # console command "quicksave" (no argument): Save to 'current' subdir.
+0x00473800 func cmd_quickload                    # console command "quickload" (no argument): Load from 'current' subdir.
+0x0047fa80 func cmd_msg_history                  # console command "msg_history" (no argument): Toggle message history
+0x00480190 func cmd_open_mfd                     # console command "open_mfd" (int argument): Open up an MFD by overlay constant
+0x00488330 func cmd_play_unread_log              # console command "play_unread_log" (no argument): Play an unread log
+0x0048b5f0 func cmd_add_pool                     # console command "add_pool" (int argument): Give player additional build pool points
+0x0048b680 func cmd_swap_guns                    # console command "swap_guns" (no argument): switches primary and secondary weapons
+0x004992f0 func cmd_clear_teleport               # console command "clear_teleport" (no argument): Clear any existing teleport marker.
+0x00581ae0 func cmd_show_stats                   # console command "show_stats" (no argument): frame rate/scene info
+0x00583a40 func cmd_log_player_pos               # console command "log_player_pos" (string argument): dump current player pos to log (optionally supply comment)
+0x005c9c60 func cmd_fix_my_locks                 # console command "fix_my_locks" (string argument): Set all my lock joint positions appropriately.
+0x005ff760 func cmd_toggle_alpha_test            # console command "toggle_alpha_test" (no argument): toggle alpha test
+0x005ff790 func cmd_set_alpha_test               # console command "set_alpha_test" (int argument): enable/disable alpha test
+0x005ff7c0 func cmd_set_tex_filter               # console command "set_tex_filter" (int argument): set texture filtering mode: 0 point, 1 linear, 2- aniso
+0x005ff7e0 func cmd_set_lm_filter                # console command "set_lm_filter" (int argument): set lightmap filtering mode: 0 point, 1 linear, 2- aniso
+0x005ff800 func cmd_set_trilinear                # console command "set_trilinear" (int argument): enable/disable trilinear texture filtering
+0x005ff820 func cmd_set_mipmap_bias              # console command "set_mipmap_bias" (float argument): set mipmap lod bias (-3.0 to 3.0)
+0x005ff850 func cmd_set_vsync                    # console command "set_vsync" (int argument): set vertical sync mode for screen updates
+0x005ff860 func cmd_set_extended_plr_lighting    # console command "set_extended_plr_lighting" (int argument): set extended player lighting mode
+0x005ff870 func cmd_set_overlay_alpha            # console command "set_overlay_alpha" (float argument): set 2D overlay alpha (d3d disp provider)
+0x005ff8c0 func cmd_set_bloomscale               # console command "set_bloomscale" (float argument): set bloom amount (d3d disp provider)
+0x005ff920 func cmd_set_bloom_range              # console command "set_bloom_range" (float argument): set bloom range (d3d disp provider)
+0x005ff960 func cmd_set_bloom_saturation         # console command "set_bloom_saturation" (float argument): set bloom saturation (d3d disp provider)
+0x005ff990 func cmd_set_brightness               # console command "set_brightness" (float argument): overall brightness while in-game (with d3d_disp_sw_cc)
+0x005ff9c0 func cmd_set_contrast                 # console command "set_contrast" (float argument): overall contrast while in-game (with d3d_disp_sw_cc)
+0x005ffa10 func cmd_set_saturation               # console command "set_saturation" (float argument): overall saturation while in-game (with d3d_disp_sw_cc)
+0x005ffa60 func cmd_set_colorfilter              # console command "set_colorfilter" (string argument): overall color filter while in-game (with d3d_disp_sw_cc)
+
+# Key-binding command handlers (take the command name and an argument string; seen running in a recorded play session, with the command name as their argument)
+0x00428ca0 func cmd_crouch                    # key command "crouch": argument "1.0" = press, "0.0" = release
+0x004284e0 func cmd_leanleft                  # key command "leanleft" / "+leanleft"
+0x00428730 func cmd_leanright                 # key command "leanright" / "+leanright"
