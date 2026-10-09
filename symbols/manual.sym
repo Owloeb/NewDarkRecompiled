@@ -22,3 +22,7 @@
 0x00428ca0 func cmd_crouch                    # key command "crouch": argument "1.0" = press, "0.0" = release
 0x004284e0 func cmd_leanleft                  # key command "leanleft" / "+leanleft"
 0x00428730 func cmd_leanright                 # key command "leanright" / "+leanright"
+0x00428bd0 func cmd_jump                      # key command "jump" / "+jump": atof(arg) != 0 = press; ran only under the jump tag in the recording
+0x00427980 func cmd_forward                   # key command "forward" / "+forward": same handler shape as cmd_crouch (atof of the argument)
+0x00427d60 func cmd_sidestep                  # key command "sidestep" / "+sidestep": same handler shape (atof of the argument)
+0x0043b220 func cmd_fire_weapon               # key command "fire_weapon" / "+fire_weapon": atof of the argument, then the fire path
