@@ -2,6 +2,10 @@
 """port/build.py: build the portable host (ss2port) from your own SS2.exe (NewDark 2.48). Linux / WSL / macOS.
 
     python3 port/build.py "/path/to/System Shock 2/SS2.exe" [--backend sdl2|null] [--jobs N] [--target linux|windows] [--install]
+                          [--cache-regs]
+
+--cache-regs lifts with lift.py --cache-regs (guest registers in C locals; experimental, see runtime/rt_fast.h). The lifted
+code then differs from the default, so switching it on or off relifts everything.
 
 --target windows cross-compiles a 64-bit Windows ss2port.exe (with SDL2.dll) using Zig: python3 -m pip install ziglang.
 --install copies the result next to SS2.exe.
@@ -40,6 +44,7 @@ def main():
     ap.add_argument("--jobs", type=int, default=os.cpu_count() or 2); ap.add_argument("--build")
     ap.add_argument("--target", default="linux", choices=["linux", "windows"], help="linux: this machine (any POSIX system); windows: cross-compile a Windows exe")
     ap.add_argument("--install", action="store_true", help="copy the result next to SS2.exe")
+    ap.add_argument("--cache-regs", action="store_true", help="lift with lift.py --cache-regs (experimental)")
     a = ap.parse_args(); exe = os.path.abspath(a.ss2exe)
     win = a.target == "windows"
     if not a.build: a.build = os.path.join(ROOT, "build", "port-win" if win else "port")
@@ -55,19 +60,20 @@ def main():
     if not win and not (shutil.which("gcc") or shutil.which("clang") or shutil.which("cc")): sys.exit("missing C compiler (gcc or clang)")
 
     print("[1/2] lifting (about 8 minutes the first time)", flush=True)
-    nd = os.path.join(OUT, "nd"); lift_py = os.path.join(ROOT, "lift.py"); sigf = os.path.join(nd, "src.sha1"); s = sha(exe, lift_py)
+    cr = ["--cache-regs"] if a.cache_regs else []; crs = "cache-regs" if a.cache_regs else ""
+    nd = os.path.join(OUT, "nd"); lift_py = os.path.join(ROOT, "lift.py"); sigf = os.path.join(nd, "src.sha1"); s = sha(exe, lift_py, extra=crs)
     if not (os.path.exists(sigf) and open(sigf).read().strip() == s and os.path.exists(os.path.join(nd, "nd_meta.json"))):
-        shutil.rmtree(nd, ignore_errors=True); run([PY, "lift.py", "--smc", exe, "nd", nd], "lift SS2.exe"); open(sigf, "w").write(s)
+        shutil.rmtree(nd, ignore_errors=True); run([PY, "lift.py", "--smc"] + cr + [exe, "nd", nd], "lift SS2.exe"); open(sigf, "w").write(s)
     else: print("  SS2.exe: already lifted")
     run([PY, os.path.join("host", "gen_hostdata.py"), os.path.join(nd, "nd_meta.json"), exe, os.path.join(nd, "nd_hostdata.c")], "host data")
     mods = []
     for fname, sub, pfx, rebase in MODULES:
         src = find_ci(os.path.dirname(exe), sub, fname); md = os.path.join(OUT, pfx)
         if not os.path.isfile(src): print(f"  warning: {src} not found; the game will not run without it"); shutil.rmtree(md, ignore_errors=True); continue
-        s = sha(src, lift_py, extra=str(rebase)); sigf = os.path.join(md, "src.sha1")
+        s = sha(src, lift_py, extra=str(rebase) + crs); sigf = os.path.join(md, "src.sha1")
         if not (os.path.exists(sigf) and open(sigf).read().strip() == s and os.path.exists(os.path.join(md, f"{pfx}_meta.json"))):
             print(f"  lifting {fname}", flush=True); shutil.rmtree(md, ignore_errors=True)
-            run([PY, "lift.py", "--iat-indirect"] + (["--rebase", hex(rebase)] if rebase else []) + [src, pfx, md], f"lift {fname}"); open(sigf, "w").write(s)
+            run([PY, "lift.py", "--iat-indirect"] + cr + (["--rebase", hex(rebase)] if rebase else []) + [src, pfx, md], f"lift {fname}"); open(sigf, "w").write(s)
         else: print(f"  {fname}: already lifted")
         run([PY, os.path.join("host", "gen_moddata.py"), src, pfx, os.path.join(md, f"{pfx}_moddata.c")] + (["--rebase", hex(rebase)] if rebase else []), f"{fname} data")
         mods.append(pfx)

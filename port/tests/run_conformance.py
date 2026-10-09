@@ -4,6 +4,7 @@ recompiles it with lift.py, builds the portable host around it and runs it. No g
 
     python3 port/tests/run_conformance.py [--backend null|sdl2] [--build DIR] [--skip SECTION ...] [--cc CC] [--cflags ...]
     python3 port/tests/run_conformance.py --target windows --wrap wine        # Windows exe, run under Wine (or on Windows)
+    python3 port/tests/run_conformance.py --cache-regs                        # lift with lift.py --cache-regs
 
 Needs: python3 -m pip install pefile capstone ziglang, CMake, a host C compiler (and SDL2 for --backend sdl2).
 Exit status: 0 when every check passes."""
@@ -35,10 +36,10 @@ def build_guest(bdir):
                "-lmsvcr90", "-lkernel32", "-luser32", "-lwinmm", "-o", exe])
     return exe
 
-def lift(exe, bdir):
+def lift(exe, bdir, extra=()):
     gen = os.path.join(bdir, "gen"); nd = os.path.join(gen, "nd")
     if os.path.isdir(gen): shutil.rmtree(gen)
-    run([PY, os.path.join(ROOT, "lift.py"), exe, "nd", nd], stdout=subprocess.DEVNULL)
+    run([PY, os.path.join(ROOT, "lift.py")] + list(extra) + [exe, "nd", nd], stdout=subprocess.DEVNULL)
     run([PY, os.path.join(ROOT, "host", "gen_hostdata.py"), os.path.join(nd, "nd_meta.json"), exe, os.path.join(nd, "nd_hostdata.c")], stdout=subprocess.DEVNULL)
     os.makedirs(os.path.join(gen, "mods"))
     with open(os.path.join(gen, "mods", "mods.c"), "w") as f: f.write('#include "recomp_mod.h"\nconst RecompModDesc *const recomp_mods[] = { 0 };\n')
@@ -64,12 +65,13 @@ def main():
     ap.add_argument("--backend", default="null"); ap.add_argument("--target", default="native", choices=["native", "windows"]); ap.add_argument("--build", default=os.path.join(ROOT, "build", "conformance"))
     ap.add_argument("--skip", action="append", default=[]); ap.add_argument("--cc"); ap.add_argument("--cflags")
     ap.add_argument("--config", default="RelWithDebInfo"); ap.add_argument("--no-rebuild-guest", action="store_true")
+    ap.add_argument("--cache-regs", action="store_true", help="lift with --cache-regs (guest registers in C locals)")
     ap.add_argument("--wrap", help="run the host under this command (e.g. 'valgrind -q', 'xvfb-run -a')")
     a = ap.parse_args(); a.build = os.path.abspath(a.build)
     os.makedirs(a.build, exist_ok=True)
     exe = os.path.join(a.build, "guest", "conformance.exe")
     if not (a.no_rebuild_guest and os.path.exists(exe)): exe = build_guest(a.build)
-    gen = lift(exe, a.build) if not (a.no_rebuild_guest and os.path.isdir(os.path.join(a.build, "gen"))) else os.path.join(a.build, "gen")
+    gen = lift(exe, a.build, ["--cache-regs"] if a.cache_regs else []) if not (a.no_rebuild_guest and os.path.isdir(os.path.join(a.build, "gen"))) else os.path.join(a.build, "gen")
     host = build_host(gen, a.build, a)
     work = os.path.join(a.build, "run"); shutil.rmtree(work, ignore_errors=True); os.makedirs(work)
     shutil.copy(exe, work)
