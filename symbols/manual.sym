@@ -26,3 +26,9 @@
 0x00427980 func cmd_forward                   # key command "forward" / "+forward": same handler shape as cmd_crouch (atof of the argument)
 0x00427d60 func cmd_sidestep                  # key command "sidestep" / "+sidestep": same handler shape (atof of the argument)
 0x0043b220 func cmd_fire_weapon               # key command "fire_weapon" / "+fire_weapon": atof of the argument, then the fire path
+0x00506420 func new_sAISignalMsg              # message factory from the class table at 0x83db3c: allocates 0x3c bytes, sets vtables, returns the interface pointer (was mislabelled sPersistent::ctor)
+0x00506530 func new_sAIPatrolPointMsg         # message factory, table entry "sAIPatrolPointMsg" (same shape: new + vtable init)
+0x005065a0 func new_sAIModeChangeMsg          # message factory, table entry "sAIModeChangeMsg"
+0x00506600 func new_sAIAlertnessMsg           # message factory, table entry "sAIAlertnessMsg"
+0x005066d0 func new_sAIHighAlertMsg           # message factory, table entry "sAIHighAlertMsg"
+0x005067b0 func new_sAIResultMsg              # message factory, table entry "sAIResultMsg"
