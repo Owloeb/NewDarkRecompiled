@@ -26,6 +26,7 @@ experimental or for debugging only, it says so. If you add an option, add it her
 | `--hooks FILE` | Mods: call your own C functions at the entry of recompiled functions (see `tools/apply_hooks.py`). |
 | `--extra-src FILE...` | Mods: extra C files to compile and link in (they see `runtime/rt.h`). |
 | `--named-sources` | Also write `out/nd_named/`: the generated C with function names and notes, for reading. |
+| `--record` | Build the play-session recorder variant `ss2_native_rec.exe` (separate `out/nd_rec`, `build/win_rec`): while you play it writes `darkrecomp_record.txt` (functions run, callers, strings, OS/DirectX calls, per-activity-tag counts; Ctrl+Alt+F1..F11 sets the tag, F12 = 0). See the README, "Naming functions by playing". |
 
 ### Portable host (`port/build.py`)
 
@@ -170,7 +171,8 @@ Builds a game-free 32-bit test program, lifts it and runs it on the host. No gam
 | --- | --- |
 | `tools/annotate.py <SS2.exe> <out/nd> <out.sym>` | Harvest function names and notes from the exe (RTTI, constructors, imports, strings). |
 | `tools/name_sources.py <out/nd> <outdir> <file.sym>...` | Write a readable copy of the generated C with names and notes. |
-| `tools/apply_hooks.py [--hooks FILE] <lifted dir>...` | Insert calls to your own C functions at recompiled function entries (mods). |
+| `tools/apply_hooks.py [--hooks FILE] [--record] <lifted dir>...` | Insert calls to your own C functions at recompiled function entries (mods); `--record` adds the recorder's call to every function. |
+| `tools/suggest_names.py <darkrecomp_record.txt> <nd_meta.json> [--sym F] [--tags F] [--report F] [--emit F]` | Turn a play-session record into a naming work list (functions per activity, hot functions, OS/DirectX callers, strings) and notes for `name_sources.py`. |
 | `tools/where.py <exe> <addr> [before] [after]` | Disassemble around a guest address (e.g. from a crash report); `-s` prints the string there. |
 | `tools/fnprof.py <exe> <log> [skip] [top]` | Average the `PROF` tables of a `PORT_PROF` build and describe the hottest guest functions. |
 | `port/tools/check_shims.py`, `check_com.py` | Check every shim's and COM method's stack-pop count against the MinGW headers. |

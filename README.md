@@ -183,7 +183,6 @@ functions, unnamed functions that call into the OS or DirectX (with the file nam
 touched. It is a work list with evidence; the actual names go into `symbols/manual.sym` after looking at the code. The recorder slows
 the game a little, so use the normal build to play.
 
-## Hooks (for mods)
 ### Hooks (for mods)
 
 `build_win.py --hooks hooks.txt --extra-src mymod.c` makes recompiled engine functions call your own C code when they
