@@ -1,4 +1,5 @@
 # Hand-written names for NewDark 2.48 SS2.exe (crc32 c8f2d1e4). These override the names tools/annotate.py generates.
+# verified-against sha256 c7ff08c5a1837942410cc2328b4a6579ddb1d5a2678b8274db8b0347ce19823e SS2.exe, NewDark 2.48 retail (GOG and Steam copies are identical)
 # <address> <kind> <name>  # notes   (addresses of function entry points, as in the original exe)
 0x006017d0 func render_frame_world        # builds the render camera from the player camera object (*0xa3acb8) and draws the 3D frame
 0x00601430 func render_scene_from_camera  # eax -> {float x,y,z; u32 cell; u16 bank,pitch; u16 heading}; copies it to 0xa57e00
