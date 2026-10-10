@@ -2,7 +2,7 @@
 """port/build.py: build the portable host (ss2port) from your own SS2.exe (NewDark 2.48). Linux / WSL / macOS.
 
     python3 port/build.py "/path/to/System Shock 2/SS2.exe" [--backend sdl2|null] [--jobs N] [--target linux|windows] [--install]
-                          [--cache-regs]
+                          [--cache-regs] [--fastpaths]
 
 --cache-regs lifts with lift.py --cache-regs (guest registers in C locals; experimental, see runtime/rt_fast.h). The lifted
 code then differs from the default, so switching it on or off relifts everything.
@@ -46,10 +46,12 @@ def main():
     ap.add_argument("--target", default="linux", choices=["linux", "windows"], help="linux: this machine (any POSIX system); windows: cross-compile a Windows exe")
     ap.add_argument("--install", action="store_true", help="copy the result next to SS2.exe")
     ap.add_argument("--cache-regs", action="store_true", help="lift with lift.py --cache-regs (experimental)")
+    ap.add_argument("--fastpaths", action="store_true", help="native C versions of a few very hot engine functions (port/core/fastpaths.c): same behaviour, less CPU. Not with --cache-regs")
     ap.add_argument("--symbols", action="store_true", help="embed a function-name table (tools/annotate.py + symbols/manual.sym) so crash reports show names instead of addresses; adds a few hundred KB, so it is off by default")
     ap.add_argument("--low-dll-bases", action="store_true", help="lift the game's DLLs for load addresses below 32 MB (hosts with a small guest space, e.g. the PS Vita backend)")
     a = ap.parse_args(); exe = os.path.abspath(a.ss2exe)
     win = a.target == "windows"
+    if a.fastpaths and a.cache_regs: sys.exit("--fastpaths and --cache-regs cannot be combined yet (the fast paths read the registers from memory)")
     if not a.build: a.build = os.path.join(ROOT, "build", "port-win" if win else "port")
     if win:
         try: import ziglang  # noqa: F401
@@ -68,6 +70,7 @@ def main():
     if not (os.path.exists(sigf) and open(sigf).read().strip() == s and os.path.exists(os.path.join(nd, "nd_meta.json"))):
         shutil.rmtree(nd, ignore_errors=True); run([PY, "lift.py", "--smc"] + cr + [exe, "nd", nd], "lift SS2.exe"); open(sigf, "w").write(s)
     else: print("  SS2.exe: already lifted")
+    run([PY, os.path.join("tools", "apply_hooks.py")] + (["--fastpaths", os.path.join("port", "core", "fastpaths.c")] if a.fastpaths else []) + [nd], "fast paths")   # always: also puts the lifted code back when the flag is off
     run([PY, os.path.join("host", "gen_hostdata.py"), os.path.join(nd, "nd_meta.json"), exe, os.path.join(nd, "nd_hostdata.c")], "host data")
     symc = os.path.join(nd, "nd_symtab.c")                       # compiled in when present (the host treats the table as optional)
     if a.symbols:

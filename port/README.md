@@ -93,7 +93,7 @@ Use `1` for on/off switches. Command Prompt: `set SS2PORT_NOVSYNC=1`.
 `port/build.py` lifts `SS2.exe` and its DLLs to C, then builds with CMake:
 
 ```sh
-python3 port/build.py "/path/to/SS2.exe" [--backend sdl2|null] [--jobs N] [--target linux|windows] [--install] [--cache-regs]
+python3 port/build.py "/path/to/SS2.exe" [--backend sdl2|null] [--jobs N] [--target linux|windows] [--install] [--cache-regs] [--fastpaths]
 # by hand, from already lifted output:
 cmake -S port -B build/port -DPORT_GENERATED=out/port [-DPORT_BACKEND=sdl2|null]
 cmake --build build/port
@@ -106,6 +106,8 @@ cmake --build build/port
 - **Experimental speed switch:** `build.py --cache-regs` lifts with `lift.py --cache-regs`: guest registers live in C locals
   inside each function, and indirect calls go through a small target cache. Off by default (the default lifted code is
   unchanged); switching it relifts everything. Measured on a PS Vita: roughly +20% frame rate; not yet measured on PC.
+- **Fast paths:** `build.py --fastpaths` swaps a few very hot engine functions (string hash, float-to-int, 2D bitmap copy) for
+  native C with identical results (`core/fastpaths.c`). Off by default; no re-lift needed to switch. Not yet measured on a Vita.
 - **Profiling:** `-DPORT_PROF=ON` builds a sampling profiler (`core/prof.c`): every 20 s the log lists the 30 guest
   functions and host imports that took the most time (`[port] PROF 12.3% nd_0068bff0`). `tools/fnprof.py <exe> <log>`
   averages those tables and describes the hottest guest functions.
