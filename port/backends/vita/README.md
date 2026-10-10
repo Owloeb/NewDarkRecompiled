@@ -52,7 +52,7 @@ calls through a target cache; see `runtime/rt_fast.h`). It passes the conformanc
 - Copy the whole game folder (with `SS2.exe`, `Data/`, `OSM/`, `lgvid.dll`, ...) to `ux0:data/ss2/`.
 - Optional `ux0:data/ss2/ss2port.txt` with host options, e.g. `--guest-space 256 --verbose`. Vita-only:
   `--swap-sticks` (move with the right stick, look with the left), `--look-speed 150` (percent), `--no-watchdog`,
-  `--no-readahead`.
+  `--no-readahead`. Sound archives (`SND.CRF`, `SND2.CRF`) also go through a small cache with per-sound read-ahead (`sndcache.c`; `--no-sound-cache` turns it off), because several playing sounds interleave their reads and look random to the window.
 - Set the game's resolution low (640x480) in its config to begin with.
 
 Every start rewrites `ux0:data/ss2/ss2port.log`. Every 5 seconds it adds a `profile:` line (frame rate, and the share of time

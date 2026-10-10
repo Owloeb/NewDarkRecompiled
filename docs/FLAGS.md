@@ -133,6 +133,7 @@ then build with CMake `-DPORT_BACKEND=vita` and the vitasdk toolchain file.
 | `--look-speed N` | Look speed in percent [100]. |
 | `--no-watchdog` | Turn off the hang watchdog (which forces a core dump when the game neither draws nor touches a file for 90 s). |
 | `--no-readahead` | Turn off read-ahead for files read straight through. |
+| `--no-sound-cache` | Turn off the cache for `SND.CRF` / `SND2.CRF` (`backends/vita/sndcache.c`: remembers about 4 MB of recently read sound and reads the next pieces of each playing sound ahead). The log prints a `sound cache:` line every 15 s. |
 
 Without `--guest-space`/`--guest-backed` in that file the Vita uses 208 and 128.
 

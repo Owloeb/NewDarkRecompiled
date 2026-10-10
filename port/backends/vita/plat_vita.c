@@ -248,7 +248,7 @@ static void *game_thread(void *p) {
 #ifndef VITA_WATCHDOG_S
 #define VITA_WATCHDOG_S 90
 #endif
-static int watchdog_on = 1; extern int vita_readahead;
+static int watchdog_on = 1; extern int vita_readahead, vita_sound_cache;
 static void *watchdog(void *u) {
     (void)u; unsigned last_f = 0; uint64_t last_r = 0; int idle = 0;
     for (;;) {
@@ -302,6 +302,7 @@ int main(int argc, char **argv) {
         if (!strcmp(opt[i], "--swap-sticks")) { swap_sticks = 1; continue; }
         if (!strcmp(opt[i], "--no-watchdog")) { watchdog_on = 0; continue; }
         if (!strcmp(opt[i], "--no-readahead")) { vita_readahead = 0; continue; }
+        if (!strcmp(opt[i], "--no-sound-cache")) { vita_sound_cache = 0; continue; }
         if (!strcmp(opt[i], "--look-speed") && i + 1 < nopt) { look_speed = (float)atof(opt[++i]) / 100.0f; continue; }
         if (!strcmp(opt[i], "--guest-space") || !strcmp(opt[i], "--guest-backed")) have_space = 1;
         if (ends_with_exe(opt[i])) have_exe = 1;
