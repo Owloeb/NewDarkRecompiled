@@ -80,9 +80,8 @@ OS or DirectX (with the file names they open), and the files and settings the en
 It overrides the automatic names, and it is the only naming data in the repository (our own findings, keyed by address).
 
 The names are keyed by address, so they are only right for the exact exe they were checked against: NewDark 2.48 retail
-(the GOG and Steam copies are byte-identical). `symbols/manual.sym` records that exe's SHA-256 in its second line, and both
-build scripts print a warning if your `SS2.exe` differs (`python3 tools/exe_stamp.py SS2.exe` checks it by hand). The build
-still works; the warning only means hand-written names may point at the wrong functions.
+(the GOG and Steam copies are byte-identical). `symbols/manual.sym` records that exe's SHA-256 in its second line; if you
+build from a patched or modded `SS2.exe`, compare its hash first, because hand-written names may point at the wrong functions.
 
 One line per function:
 

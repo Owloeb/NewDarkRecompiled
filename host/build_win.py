@@ -39,7 +39,6 @@ def main():
     a = ap.parse_args()
     exe = os.path.abspath(a.ss2exe)
     if not os.path.isfile(exe): sys.exit(f"SS2.exe not found: {exe}")
-    sys.path.insert(0, os.path.join(ROOT, "tools")); import exe_stamp; exe_stamp.check(exe)
     for mod in ("pefile", "capstone", "ziglang"):
         try: __import__(mod)
         except ImportError: sys.exit(f"Missing Python package '{mod}'. Run:  python -m pip install pefile capstone ziglang")

@@ -50,7 +50,6 @@ def main():
     ap.add_argument("--low-dll-bases", action="store_true", help="lift the game's DLLs for load addresses below 32 MB (hosts with a small guest space, e.g. the PS Vita backend)")
     a = ap.parse_args(); exe = os.path.abspath(a.ss2exe)
     win = a.target == "windows"
-    if os.path.isfile(exe): sys.path.insert(0, os.path.join(ROOT, "tools")); import exe_stamp; exe_stamp.check(exe)
     if not a.build: a.build = os.path.join(ROOT, "build", "port-win" if win else "port")
     if win:
         try: import ziglang  # noqa: F401
