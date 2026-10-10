@@ -11,17 +11,17 @@ This repository is a **vanilla recompilation**: it plays exactly like the origin
 engine source was never released, so this turns the binary into C that can be rebuilt, read and changed, as a foundation
 for fixes, engine-level mods and ports. Mods (including a VR version) live in separate repositories.
 
-## What do you want to do?
+## Quickstart
 
 | I want to... | Run this | Details |
 | --- | --- | --- |
 | **Play on Windows** | `python host\build_win.py "C:\...\SS2.exe" --install` | [Play on Windows](#play-on-windows) |
 | **Play on Linux or WSL** | `python3 port/build.py "/path/to/SS2.exe"` | [Play on Linux](#play-on-linux-and-other-platforms) |
-| **Help name functions** | `python host\build_win.py "C:\...\SS2.exe" --record` | [docs/NAMING.md](docs/NAMING.md) |
-| **Make a mod** | `python host\build_win.py ... --hooks hooks.txt` | [docs/MODDING.md](docs/MODDING.md) |
-| **Port to a new platform** | (write a backend) | [port/README.md](port/README.md) |
-| **Find out what a flag or file does** | | [docs/FLAGS.md](docs/FLAGS.md) |
-| **Understand how it works** | | [How it works](#how-it-works), [docs/RECOMPILER.md](docs/RECOMPILER.md) |
+| **Help Name Functions** | `python host\build_win.py "C:\...\SS2.exe" --record` | [docs/NAMING.md](docs/NAMING.md) |
+| **Make a Mod** | `python host\build_win.py ... --hooks hooks.txt` | [docs/MODDING.md](docs/MODDING.md) |
+| **Port to a New Platform** | | [port/README.md](port/README.md) |
+| **Find Out What a Flag or File Does** | | [docs/FLAGS.md](docs/FLAGS.md) |
+| **Understand How It Works** | | [How it works](#how-it-works), [docs/RECOMPILER.md](docs/RECOMPILER.md) |
 
 **Two scripts, two programs.** They are separate on purpose, and their options are different:
 
