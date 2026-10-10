@@ -67,6 +67,14 @@ Command line, before the exe:
 
 Environment variables:
 
+Environment variables are set before you start `ss2port`:
+
+```sh
+SS2PORT_NOVSYNC=1 ./ss2port --windowed SS2.exe          # Linux / WSL: one run (or `export` it for the session)
+```
+```powershell
+$env:SS2PORT_NOVSYNC = "1"; .\ss2port.exe SS2.exe       # PowerShell: stays set in that window
+
 | Variable | Effect |
 | --- | --- |
 | `SS2PORT_FULLSCREEN` | start fullscreen |
