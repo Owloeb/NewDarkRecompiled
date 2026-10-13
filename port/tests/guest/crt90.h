@@ -56,6 +56,7 @@ IMP int __cdecl fseek(FILE *, long, int);
 IMP long __cdecl ftell(FILE *);
 IMP char *__cdecl fgets(char *, int, FILE *);
 IMP int __cdecl fputs(const char *, FILE *);
+IMP int __cdecl fflush(FILE *);
 IMP int __cdecl fprintf(FILE *, const char *, ...);
 IMP int __cdecl feof(FILE *);
 IMP int __cdecl fscanf(FILE *, const char *, ...);

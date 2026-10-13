@@ -210,6 +210,31 @@ static void test_stdio(void) {
     f = fopen("ctest_dir/text.txt", "r+b"); CHECK(f != 0);
     if (f) { CHECKI(fread(b, 1, 2, f), 2); CHECKI(fseek(f, 0, 1), 0); CHECKI(fwrite("XY", 1, 2, f), 2); CHECKI(fseek(f, 0, 0), 0); CHECKI(fread(b, 1, 4, f), 4); CHECK(!memcmp(b, "liXY", 4));
              CHECKI(fseek(f, 2, 0), 0); fwrite("ne", 1, 2, f); fclose(f); }
+    {   /* buffered writes (the level save: thousands of small fwrites, ftell, seek back to patch a size, carry on) */
+        FILE *g = fopen("ctest_dir\\save.bin", "wb"); unsigned int hdr = 0, v, i; struct _stat64i32 st0;
+        fwrite(&hdr, 4, 1, g); CHECKI(ftell(g), 4);
+        for (i = 0; i < 30000; i++) { v = i * 7u; fwrite(&v, 4, 1, g); }                          /* 120 KB in 4-byte writes */
+        CHECKI(ftell(g), 4 + 120000);
+        CHECKI(_filelength(_fileno(g)), 4 + 120000);                                           /* the size through _fileno sees it all */
+        FILE *h = fopen("ctest_dir\\save.bin", "rb"); CHECK(h != 0);                            /* so does another FILE on the same file */
+        if (h) { CHECKI(fseek(h, 4 + 4 * 29999, 0), 0); CHECKI(fread(&v, 4, 1, h), 1); CHECKI(v, 29999 * 7); fclose(h); }
+        hdr = 0xC0DE; CHECKI(fseek(g, 0, SEEK_SET), 0); fwrite(&hdr, 4, 1, g); CHECKI(ftell(g), 4);  /* patch the header */
+        CHECKI(fseek(g, -4, SEEK_END), 0); v = 0xBEEF; fwrite(&v, 4, 1, g); fwrite(&v, 2, 1, g);     /* overwrite the last value, grow by 2 */
+        CHECKI(fseek(g, -2, SEEK_CUR), 0); CHECKI(ftell(g), 4 + 120000); fwrite("Z", 1, 1, g);
+        fclose(g);
+        g = fopen("ctest_dir\\save.bin", "rb"); static unsigned int back[30002];
+        CHECKI(fread(back, 1, 4 * 30002, g), 4 + 120000 + 2); fclose(g);
+        CHECKI(back[0], 0xC0DE); CHECKI(back[1 + 12345], 12345 * 7); CHECKI(back[30000], 0xBEEF); CHECKI(((unsigned char *)back)[120004], 'Z'); CHECKI(((unsigned char *)back)[120005], 0xBE);
+        /* text mode across the buffer's edge, and a read on an update stream right after writes */
+        g = fopen("ctest_dir\\lines.txt", "w+"); for (i = 0; i < 20000; i++) fputs("ab\n", g);       /* 60000 chars, 80000 bytes */
+        CHECKI(ftell(g), 80000); CHECKI(fseek(g, 4 * 12345, SEEK_SET), 0); CHECKI(fread(b, 1, 3, g), 3); CHECK(!memcmp(b, "ab\n", 3)); fclose(g);
+        CHECKI(_stat64i32("ctest_dir\\lines.txt", &st0), 0); CHECKI(st0.st_size, 80000);
+        /* append mode always writes at the end, even after a seek; fflush(NULL) writes every stream */
+        g = fopen("ctest_dir\\app.txt", "wb"); fwrite("12", 1, 2, g); fclose(g);
+        g = fopen("ctest_dir\\app.txt", "ab"); fwrite("34", 1, 2, g); fseek(g, 0, SEEK_SET); fwrite("56", 1, 2, g); fflush(0);
+        CHECKI(_stat64i32("ctest_dir\\app.txt", &st0), 0); CHECKI(st0.st_size, 6); fclose(g);
+        g = fopen("ctest_dir\\app.txt", "rb"); CHECKI(fread(b, 1, 10, g), 6); CHECK(!memcmp(b, "123456", 6)); fclose(g);
+        remove("ctest_dir\\save.bin"); remove("ctest_dir\\lines.txt"); remove("ctest_dir\\app.txt"); }
     CHECK(fopen("ctest_dir\\missing.txt", "rb") == 0);
     struct _stat64i32 st; CHECKI(_stat64i32("ctest_dir\\TEXT.txt", &st), 0); CHECKI(st.st_size, 26); CHECK(st.st_mode & 0x8000);
     CHECKI(_stat64i32("ctest_dir\\sub", &st), 0); CHECK(st.st_mode & 0x4000); CHECKI(_stat64i32("nope", &st), -1);

@@ -111,7 +111,7 @@ static void report_resident(void) {
 #else
 static void report_resident(void) {}
 #endif
-void port_exit(int code) { report_resident(); trace_dump(); plat_audio_close(); plat_video_close(); exit(code); }
+void port_exit(int code) { crt_flush_writes(); report_resident(); trace_dump(); plat_audio_close(); plat_video_close(); exit(code); }
 void port_die(const char *fmt, ...) {
     char b[1024]; va_list ap; va_start(ap, fmt); vsnprintf(b, sizeof b, fmt, ap); va_end(ap);
     plat_log_write(PLAT_LOG_ERROR, "[port] FATAL: "); plat_log_write(PLAT_LOG_ERROR, b);
