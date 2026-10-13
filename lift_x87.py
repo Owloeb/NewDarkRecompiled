@@ -113,7 +113,8 @@ def analyse_once(L, e, insns_text, succ, nets, force_free):
         if _ineligible_text(t): return _no(L, e, 'sets the top directly / conditional push / setjmp')
         if va in L.x87_exempt: return _no(L, e, 'exempt call site')                          # a call site named in --x87-exempt
         eff[va] = _effects(t)
-        kind[va] = _call_kind(L, L.img.decode(va), t)
+        i = L.img.decode(va)
+        kind[va] = _call_kind(L, i, t) if i is not None else None
     def evidence(starts):
         """the call's depth change k from the code after it: the smallest k in (0, 1) for which nothing below the depth at
         the call is read or popped before the next call or return. With no x87 instruction before the next call or
@@ -137,7 +138,8 @@ def analyse_once(L, e, insns_text, succ, nets, force_free):
                 if not ok: continue
                 if kind.get(va):
                     hits_call = True; continue
-                if L.img.decode(va).mnemonic in ('ret', 'retf'): continue
+                i = L.img.decode(va)
+                if i is None or i.mnemonic in ('ret', 'retf'): continue    # undecodable: that path faults
                 for s in succ.get(va, ()): work.append((s, d))
             if not any_x87: return 0 if hits_call else 'free'
             if ok: return k
@@ -172,7 +174,9 @@ def analyse_once(L, e, insns_text, succ, nets, force_free):
                 if k > 0: lo, hi = min(lo, d), max(hi, d + k - 1)
                 if k < 0 and d + k < 0: lo = min(lo, d + k)
                 d = d + k
-        m = L.img.decode(va).mnemonic
+        i = L.img.decode(va)
+        if i is None: continue                                       # undecodable bytes: that path faults, nothing follows
+        m = i.mnemonic
         if m in ('ret', 'retf'):
             net.add(d); continue
         for s in succ.get(va, []):

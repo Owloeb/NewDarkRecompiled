@@ -13,6 +13,7 @@
 #   exempt    new, relifted with every address the check reported in --abi-exempt: must match plain again
 # The script checks the expectations itself and exits non-zero if one fails.
 set -e
+python3 harness/abi_test/x87_undecodable.py
 T=harness/abi_test; W=${ABI_TEST_DIR:-build/abi_test}
 mkdir -p $W
 python3 -m ziglang cc -target x86-windows-gnu -mcpu=pentium -O2 -fno-inline-functions $T/abitest.c -o $W/abitest.exe
