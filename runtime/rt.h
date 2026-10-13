@@ -16,9 +16,22 @@ typedef struct CPU {
     uint8_t  cf, zf, sf, of, pf; /* arithmetic flags crossing call/return boundaries */
     uint32_t fs_base;       /* guest address of the TIB (fs:[0] = SEH chain) */
     int64_t  budget;        /* harness: block budget; <0 => abort */
+    void    *rc;            /* this guest thread's indirect-call cache (rt_icache, --cache-regs); NULL until first used */
 } CPU;
 
 typedef void (*guest_fn)(CPU *);
+
+/* --cache-regs: indirect calls (<prefix>_call, lift.py dispatch_code) remember recent targets in a cache owned by the guest
+ * thread (reached through its CPU struct), so threads never share one and need no synchronisation: 1024 sets of 2
+ * entries, the most recently used first. Keys are guest addresses, which are unique across recompiled modules, so one
+ * cache serves all of them. Hosts create each guest thread's CPU struct zeroed (rc = NULL). */
+typedef struct { uint32_t va; guest_fn fn; } rt_icache_ent;
+typedef struct { rt_icache_ent e[1024][2]; } rt_icache;
+#include <stdlib.h>
+static inline rt_icache *rt_icache_of(CPU *c) {
+    if (__builtin_expect(c->rc == 0, 0)) c->rc = calloc(1, sizeof(rt_icache));
+    return (rt_icache *)c->rc;
+}
 
 extern uint8_t *M;          /* guest memory base */
 

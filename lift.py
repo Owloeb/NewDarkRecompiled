@@ -1095,6 +1095,41 @@ class Fn:
         raise Unsupported(f'x87 {op:02x} {modrm:02x}')
 
 
+
+def dispatch_code(prefix, ents, cached):
+    """C for <prefix>_table (sorted address -> recompiled function), <prefix>_lookup and <prefix>_call, the dispatcher for
+    indirect calls. With --cache-regs, <prefix>_call first looks in the calling guest thread's own cache of recent targets
+    (rt_icache in runtime/rt.h: 1024 sets of 2 entries, the most recently used first) instead of a binary search every
+    time. The cache belongs to one guest thread, so no other thread ever writes it: no synchronisation, no races."""
+    n = len(ents)
+    t = [f'typedef struct {{ uint32_t va; guest_fn fn; }} rc_ent;',
+         f'const rc_ent {prefix}_table[] = {{']
+    t += [f'    {{0x{e:08x}u, {fn}}},' for e, fn in ents]
+    t += ['};', f'const unsigned {prefix}_table_n = {n};',
+          f'guest_fn {prefix}_lookup(uint32_t va) {{',
+          f'    unsigned lo = 0, hi = {n};',
+          '    while (lo < hi) { unsigned mid = (lo + hi) / 2;',
+          f'        if ({prefix}_table[mid].va < va) lo = mid + 1; else hi = mid; }}',
+          f'    return (lo < {n} && {prefix}_table[lo].va == va) ? {prefix}_table[lo].fn : 0;',
+          '}']
+    if cached:
+        t += [f'void {prefix}_call(CPU *c, uint32_t t) {{',
+              '    if (__builtin_expect(t == 0, 0)) { rt_call_external(c, t); return; }   /* 0 marks an empty entry */',
+              '    rt_icache_ent *s = rt_icache_of(c)->e[((t >> 4) ^ (t >> 14)) & 1023u];',
+              '    if (s[0].va == t) { s[0].fn(c); return; }',
+              '    if (s[1].va == t) { rt_icache_ent x = s[1]; s[1] = s[0]; s[0] = x; x.fn(c); return; }',
+              f'    guest_fn f = {prefix}_lookup(t);',
+              '    if (!f) { rt_call_external(c, t); return; }',
+              '    s[1] = s[0]; s[0].va = t; s[0].fn = f; f(c);',
+              '}']
+    else:
+        t += [f'void {prefix}_call(CPU *c, uint32_t t) {{',
+              f'    guest_fn f = {prefix}_lookup(t);',
+              '    if (f) f(c); else rt_call_external(c, t);',
+              '}']
+    return t
+
+
 class SynthImage(Image):
     """in-memory code blob (for instruction fuzzing): bytes at base, entries = given addresses."""
     def __init__(self, base, blob, entries):
@@ -1467,31 +1502,8 @@ class Lifter:
             open(os.path.join(outdir, name), 'w').write('\n'.join(src))
             files.append(name)
         # dispatch table
-        t = [f'#include "{self.prefix}_decls.h"', '#include <stdlib.h>',
-             f'typedef struct {{ uint32_t va; guest_fn fn; }} rc_ent;',
-             f'const rc_ent {self.prefix}_table[] = {{']
-        t += [f'    {{0x{e:08x}u, {self.fname(e)}}},' for e in ents]
-        t += ['};', f'const unsigned {self.prefix}_table_n = {len(ents)};',
-              f'guest_fn {self.prefix}_lookup(uint32_t va) {{',
-              f'    unsigned lo = 0, hi = {len(ents)};',
-              '    while (lo < hi) { unsigned mid = (lo + hi) / 2;',
-              f'        if ({self.prefix}_table[mid].va < va) lo = mid + 1; else hi = mid; }}',
-              f'    return (lo < {len(ents)} && {self.prefix}_table[lo].va == va) ? {self.prefix}_table[lo].fn : 0;',
-              '}',
-              ]
-        if self.cache_regs:   # indirect calls (virtual calls, callbacks) are hot: remember recent targets instead of a binary search over every function
-            t += ['typedef struct { uint32_t va; guest_fn fn; } rc_cent;', 'static rc_cent rc_cache[2048];',
-                  f'void {self.prefix}_call(CPU *c, uint32_t t) {{',
-                  '    rc_cent *e = &rc_cache[(t ^ (t >> 11)) & 2047];',
-                  '    if (e->va == t && e->fn) { e->fn(c); return; }',
-                  f'    guest_fn f = {self.prefix}_lookup(t);',
-                  '    if (f) { e->va = t; e->fn = f; f(c); } else rt_call_external(c, t);',
-                  '}']
-        else:
-            t += [f'void {self.prefix}_call(CPU *c, uint32_t t) {{',
-                  f'    guest_fn f = {self.prefix}_lookup(t);',
-                  '    if (f) f(c); else rt_call_external(c, t);',
-                  '}']
+        t = [f'#include "{self.prefix}_decls.h"', '#include <stdlib.h>'] + \
+            dispatch_code(self.prefix, [(e, self.fname(e)) for e in ents], self.cache_regs)
         open(os.path.join(outdir, f'{self.prefix}_table.c'), 'w').write('\n'.join(t) + '\n')
         files.append(f'{self.prefix}_table.c')
         meta = dict(prefix=self.prefix, base=self.img.base, entry=self.img.entry,
