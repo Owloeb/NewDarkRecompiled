@@ -334,6 +334,7 @@ _CR_TOK = re.compile(r'\br_(eax|ecx|edx|ebx|esp|ebp|esi|edi)\b')
 # reached by direct calls, which keep their exact per-function summary. Build the generated C with -DRT_ABI_CHECK to verify
 # the contract at run time (runtime/rt_abi_check.c).
 _ABI_W = frozenset(('eax', 'ecx', 'edx', 'esp'))
+_PRES_MASK = {'ebx': 1, 'ebp': 2, 'esi': 4, 'edi': 8}   # callee-saved registers; bit layout of RT_ABICHKM's mask
 
 
 def cache_regs(line, prefix):
@@ -513,7 +514,7 @@ class Fn:
         writes = collections.defaultdict(set)
         for j, l in enumerate(new):
             if owner[j] is not None: writes[owner[j]] |= cache_regs_writes(l)
-        succ, callee, abi, tail_abi = {}, {}, {}, {}
+        succ, callee, abi, tail_abi, pres = {}, {}, {}, {}, {}
         ALL = frozenset(_CR_NAMES)
         for va in addrs:
             i = self.insns[va]
@@ -528,8 +529,12 @@ class Fn:
             if i.mnemonic == 'call':       # what the called function may read and write (ALL when unknown)
                 op = i.operands[0]; t = op.imm & 0xFFFFFFFF if op.type == X86_OP_IMM else None
                 if t is not None:
-                    callee[va] = self.L.reg_sum.get(t, (ALL, ALL)) if t not in self.L.setjmp_fns \
+                    sums = self.L.reg_sum_raw if va in self.L.abi_exempt else self.L.reg_sum   # exempt site: no claims
+                    callee[va] = sums.get(t, (ALL, ALL)) if t not in self.L.setjmp_fns \
                         and t not in self.L.longjmp_fns else (ALL, ALL)
+                    kept = (self.L.reg_sum_raw.get(t, (ALL, ALL))[1] - callee[va][1]) & frozenset(_PRES_MASK)
+                    if kept and t in self.L.reg_sum:
+                        pres[va] = (t, sum(_PRES_MASK[r] for r in kept))
                 else:
                     k = self.L.abi_call_target(i)
                     if k is not None:      # unseen callee: the calling convention bounds what it changes
@@ -538,6 +543,7 @@ class Fn:
                         callee[va] = (ALL, ALL)
                 st = self.L.call_stats
                 st['abi' if va in abi else 'all8' if len(callee[va][1]) == 8 else 'partial'] += 1
+                if va in pres: st['preserve'] += 1
         din = {va: set() for va in addrs}
         work = list(addrs)
         while work:
@@ -553,10 +559,12 @@ class Fn:
             va = owner[j]
             if va in callee:
                 R, W = callee[va]
-                l = l.replace('SPILL_;', cache_regs_spill((din[va] | writes[va]) & (R | W)) + ';')
+                pm = {r for r in _PRES_MASK if va in pres and pres[va][1] & _PRES_MASK[r]}
+                l = l.replace('SPILL_;', cache_regs_spill((din[va] | writes[va]) & (R | W | pm)) + ';')
                 # R is ALL for an unseen callee, so every changed register was stored before the call and the locals of
                 # EBX/EBP/ESI/EDI still equal the CPU struct: RT_ABICHK compares them (only with -DRT_ABI_CHECK)
-                chk = f'RT_ABICHK(0x{va:x}u, {abi[va]}); ' if va in abi else ''
+                chk = f'RT_ABICHK(0x{va:x}u, {abi[va]}); ' if va in abi else \
+                    f'RT_ABICHKM(0x{va:x}u, 0x{pres[va][0]:x}u, {pres[va][1]}u); ' if va in pres else ''
                 l = l.replace('RELOAD_;', chk + cache_regs_reload(W) + ';')
             elif va is not None and va in tail_abi and 'RELOAD_;' in l:
                 l = l.replace('RELOAD_;', f'RT_ABICHK(0x{va:x}u, {tail_abi[va]}); RELOAD_;', 1)
@@ -1137,6 +1145,9 @@ class Lifter:
         self.cache_regs = False               # --cache-regs (runtime/rt_fast.h)
         self.reg_sum = {}                     # --cache-regs: function -> (registers it may read, may write)
         self.abi_calls = True                 # --cache-regs: unseen callees follow the calling convention (--no-abi-calls)
+        self.preserve = True                  # --cache-regs: prove callee-saved registers restored (--no-preserve)
+        self.preserved = {}                   # function -> callee-saved registers it provably hands back unchanged
+        self.reg_sum_raw = {}                 # summaries before preservation (what callers reloaded without it)
         self.abi_exempt = set()               # --abi-exempt: call sites that keep the reload-everything treatment
         self.call_stats = collections.Counter()   # --cache-regs: call sites by how many registers are reloaded after them
 
@@ -1361,6 +1372,22 @@ class Lifter:
                     if not sumW[t] <= sumW[e]: sumW[e] |= sumW[t]; changed = True
             if not changed: break
         self.reg_sum = {e: (frozenset(sumR[e]), frozenset(sumW[e])) for e in own}
+        self.reg_sum_raw = dict(self.reg_sum)
+        if self.preserve:      # callee-saved registers a function restores are not changes its callers need to reload
+            from lift_preserve import analyze
+            P, self.preserve_steps = analyze(self, lambda t, r: r in self.reg_sum_raw.get(t, (ALL, ALL))[1],
+                                             dict(Fn=Fn, Unsupported=Unsupported, successors=successors, jump_table=jump_table))
+            self.preserved = P
+            red = {e: set(own[e][1]) - P[e] for e in own}
+            for it2 in range(max_iter):
+                changed = False
+                for e in own:
+                    w = set(own[e][1])
+                    for t in edges[e]: w |= red[t] if t in own else ALL
+                    w -= P[e]
+                    if w != red[e]: red[e] = w; changed = True
+                if not changed: break
+            self.reg_sum = {e: (frozenset(sumR[e]), frozenset(red[e])) for e in own}
         return it
 
     def fname(self, va):
@@ -1436,6 +1463,7 @@ class Lifter:
                     flags_in={hex(k): v for k, v in self.fl_in.items()}, flags_out={hex(k): v for k, v in self.fl_out.items()},
                     entries=ents)
         if self.cache_regs:   # what callers assume each function may read/write (tools/apply_hooks.py checks fast paths against it)
+            meta['preserved'] = {hex(e): ' '.join(r for r in _CR_NAMES if r in v) for e, v in self.preserved.items() if v}
             meta['reg_sum'] = {hex(e): [' '.join(r for r in _CR_NAMES if r in R), ' '.join(r for r in _CR_NAMES if r in W)]
                                for e, (R, W) in self.reg_sum.items()}
         json.dump(meta, open(os.path.join(outdir, f'{self.prefix}_meta.json'), 'w'), indent=1)
@@ -1450,7 +1478,8 @@ if __name__ == '__main__':
     ap.add_argument('--rebase', type=lambda v: int(v, 0), help='lift a DLL as if loaded at this base (applies its relocations first)')
     ap.add_argument('--cache-regs', action='store_true', help='keep guest registers in C locals inside each function (faster; needs runtime/rt_fast.h)')
     ap.add_argument('--no-abi-calls', action='store_true', help='--cache-regs: treat indirect calls and imports as changing every register (the old, slower behaviour)')
-    ap.add_argument('--abi-exempt', metavar='FILE', help='--cache-regs: call sites (hex addresses, one per line, # comments) that keep the old treatment: an RT_ABI_CHECK build reports the sites to list here')
+    ap.add_argument('--no-preserve', action='store_true', help='--cache-regs: skip the proof of which callee-saved registers each function restores (lift_preserve.py); callers then reload them after every call that touches them')
+    ap.add_argument('--abi-exempt', metavar='FILE', help='--cache-regs: addresses (hex, one or more per line, # comments) from RT_ABI_CHECK reports ("ABI VIOLATION: call at <site> to <target>"): a listed call site keeps the old reload-everything treatment, a listed function claims no preserved registers. Listing both addresses of each report is always right')
     ap.add_argument('--iat-indirect', action='store_true', help='for DLLs loaded by Windows: call imports through their IAT slot as plain indirect calls (the slot holds the real address)')
     a = ap.parse_args()
     img = Image(a.pe, a.rebase)
@@ -1458,6 +1487,7 @@ if __name__ == '__main__':
     L = Lifter(a.pe, a.prefix, img)
     L.cache_regs = a.cache_regs
     L.abi_calls = not a.no_abi_calls
+    L.preserve = not a.no_preserve
     if a.abi_exempt:
         L.abi_exempt = {int(t, 16) for ln in open(a.abi_exempt) for t in ln.split('#')[0].split()}
         print(f'cache-regs: {len(L.abi_exempt)} call site(s) exempt from the calling-convention contract')
@@ -1475,11 +1505,16 @@ if __name__ == '__main__':
         it = L.regs_analyze()
         full = sum(1 for r, w in L.reg_sum.values() if len(w) == 8)
         print(f'cache-regs: {len(L.reg_sum)} functions summarised, {full} may change every register ({it + 1} iterations)')
+        if L.preserve:
+            np_ = collections.Counter(len(v) for v in L.preserved.values())
+            print(f'preservation: of {len(L.preserved)} functions, {np_[4]} provably restore all of EBX/EBP/ESI/EDI, '
+                  f'{sum(np_[k] for k in (1, 2, 3))} some, {np_[0]} none ({L.preserve_steps} proofs)')
     meta = L.run(a.outdir, a.funcs_per_file)
     if L.cache_regs:
         s = L.call_stats
-        print(f"cache-regs call sites: {sum(s.values())}; reload all 8 registers after {s['all8']}, fewer after {s['partial']}, "
-              f"calling-convention contract (4 registers, RT_ABICHK) after {s['abi']}"
+        print(f"cache-regs call sites: {s['all8'] + s['partial'] + s['abi']}; reload all 8 registers after {s['all8']}, fewer after {s['partial']}, "
+              f"calling-convention contract (4 registers, RT_ABICHK) after {s['abi']}; "
+              f"{s['preserve']} direct calls skip reloading registers the callee is proven to restore"
               + ('' if L.abi_calls else ' [--no-abi-calls]'))
     print(f"functions={meta['functions']} insns(with dup)={meta['insns']} files={len(meta['files'])}")
     print('unimpl:', meta['unimpl'])

@@ -1,6 +1,9 @@
 /* test program for lift.py --cache-regs with the calling-convention contract.
  * COM-like interfaces called through vtables, callbacks, imports, and register pressure around those calls, so that
- * EBX/ESI/EDI/EBP are live across indirect calls. bad_callee breaks the convention on purpose (negative control). */
+ * EBX/ESI/EDI/EBP are live across indirect calls. Two negative controls break the rules on purpose:
+ * bad_callee clobbers EBX/ESI behind a function pointer (breaks the calling-convention contract), and smash_callee saves
+ * EBX and then overwrites the saved copy through a pointer the lifter cannot follow (breaks the assumption under the
+ * preservation proof, lift_preserve.py), so its "restores EBX" claim is wrong. */
 #include <windows.h>
 #include <stdlib.h>
 #include <string.h>
@@ -57,6 +60,22 @@ __declspec(noinline) int use_bad(int x) {
     return r + a + b * 2 + c * 3;
 }
 
+/* negative control for the preservation proof: saves EBX, then writes over the saved copy through a pointer laundered
+ * through memory, so the proof (which cannot follow it) wrongly concludes that EBX is restored */
+volatile unsigned smash_ptr;
+__attribute__((naked)) int smash_callee(void) {
+    __asm__("pushl %ebx\n\tmovl $0x33333333, %ebx\n\tmovl %esp, smash_ptr\n\tmovl smash_ptr, %ecx\n\t"
+            "movl $0x77777777, (%ecx)\n\tpopl %ebx\n\tmovl $9, %eax\n\tret");
+}
+volatile int smash_in[4] = { 3, 5, 7, 11 };
+__declspec(noinline) int use_smash(int x) {
+    /* four values the compiler cannot recompute after the call (volatile reads), so EBX holds one of them */
+    int a = smash_in[0] * x, b = smash_in[1] ^ x, c = smash_in[2] + x, d = smash_in[3] - x;
+    int r = smash_callee();
+    return r + a + b * 3 + c * 7 + d * 11;
+}
+__declspec(dllexport) __declspec(noinline) int test_smash(int seed) { return use_smash(seed); }
+
 __declspec(dllexport) __declspec(noinline) int test_good(int seed) {
     Obj o[6]; Obj *p[6];
     for (int i = 0; i < 6; i++) { o[i].vt = (i & 1) ? &vt_p : &vt_o; o[i].v = i * 11 + seed; p[i] = &o[i]; }
@@ -65,4 +84,4 @@ __declspec(dllexport) __declspec(noinline) int test_good(int seed) {
 }
 __declspec(dllexport) __declspec(noinline) int test_bad(int seed) { return use_bad(seed); }
 
-int main(int argc, char **argv) { (void)argv; sink = test_good(argc) + test_bad(argc); return sink & 0xFF; }
+int main(int argc, char **argv) { (void)argv; sink = test_good(argc) + test_bad(argc) + test_smash(argc); return sink & 0xFF; }

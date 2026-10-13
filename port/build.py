@@ -76,7 +76,9 @@ def main():
     print("[1/2] lifting (about 8 minutes the first time)", flush=True)
     cr = ["--cache-regs"] if a.cache_regs else []; crs = "cache-regs" if a.cache_regs else ""
     if a.abi_exempt: cr += ["--abi-exempt", a.abi_exempt]; crs += open(a.abi_exempt).read()   # a changed list relifts
-    nd = os.path.join(OUT, "nd"); lift_py = os.path.join(ROOT, "lift.py"); sigf = os.path.join(nd, "src.sha1"); s = sha(exe, lift_py, extra=crs)
+    nd = os.path.join(OUT, "nd"); lift_py = os.path.join(ROOT, "lift.py"); sigf = os.path.join(nd, "src.sha1")
+    lift_srcs = [lift_py, os.path.join(ROOT, "lift_preserve.py")]       # the lifter: a change to either relifts
+    s = sha(exe, *lift_srcs, extra=crs)
     if not (os.path.exists(sigf) and open(sigf).read().strip() == s and os.path.exists(os.path.join(nd, "nd_meta.json"))):
         shutil.rmtree(nd, ignore_errors=True); run([PY, "lift.py", "--smc"] + cr + [exe, "nd", nd], "lift SS2.exe"); open(sigf, "w").write(s)
     else: print("  SS2.exe: already lifted")
@@ -93,7 +95,7 @@ def main():
     for fname, sub, pfx, rebase in (MODULES_LOW if a.low_dll_bases else MODULES):
         src = find_ci(os.path.dirname(exe), sub, fname); md = os.path.join(OUT, pfx)
         if not os.path.isfile(src): print(f"  warning: {src} not found; the game will not run without it"); shutil.rmtree(md, ignore_errors=True); continue
-        s = sha(src, lift_py, extra=str(rebase) + crs); sigf = os.path.join(md, "src.sha1")
+        s = sha(src, *lift_srcs, extra=str(rebase) + crs); sigf = os.path.join(md, "src.sha1")
         if not (os.path.exists(sigf) and open(sigf).read().strip() == s and os.path.exists(os.path.join(md, f"{pfx}_meta.json"))):
             print(f"  lifting {fname}", flush=True); shutil.rmtree(md, ignore_errors=True)
             run([PY, "lift.py", "--iat-indirect"] + cr + (["--rebase", hex(rebase)] if rebase else []) + [src, pfx, md], f"lift {fname}"); open(sigf, "w").write(s)

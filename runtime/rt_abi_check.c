@@ -3,8 +3,8 @@
  * Compile this file into a build whose generated C was compiled with -DRT_ABI_CHECK. Each call site that breaks the
  * calling-convention contract is reported once: the guest address of the call, its target (a guest address, or
  * "import #N"), which callee-saved registers came back changed, and their values before and after. The generated code
- * then restores those registers, so the rest of the program stays consistent. To give a reported site the old,
- * reload-everything treatment instead, list its address in a file passed to lift.py --abi-exempt and relift.
+ * then restores those registers, so the rest of the program stays consistent. To fix a reported call properly, put both
+ * addresses of its line (the site and the target) in a file passed to lift.py --abi-exempt and relift.
  *
  * Reports go through RT_ABI_LOG (printf-style). Define it to your platform's logger, e.g.
  *     -DRT_ABI_LOG=ss2port_log
@@ -49,12 +49,12 @@ void rt_abi_violation(CPU *c, uint32_t site, uint32_t target, uint32_t mask,
     char tgt[32];
     if ((target & 0xFFFF0000u) == 0xFFFF0000u) snprintf(tgt, sizeof tgt, "import #%u", (unsigned)(target & 0xFFFFu));
     else snprintf(tgt, sizeof tgt, "%08x", (unsigned)target);
-    RT_ABI_LOG("ABI VIOLATION: call at %08x to %s changed%s%s%s%s  (before -> after: ebx %08x->%08x ebp %08x->%08x "
-               "esi %08x->%08x edi %08x->%08x)",
-               (unsigned)site, tgt,
-               (mask & 1) ? " ebx" : "", (mask & 2) ? " ebp" : "", (mask & 4) ? " esi" : "", (mask & 8) ? " edi" : "",
-               (unsigned)ebx, (unsigned)c->ebx, (unsigned)ebp, (unsigned)c->ebp,
-               (unsigned)esi, (unsigned)c->esi, (unsigned)edi, (unsigned)c->edi);
+    char regs[160]; int n = 0;
+    static const char *const nm[4] = { "ebx", "ebp", "esi", "edi" };
+    const uint32_t before[4] = { ebx, ebp, esi, edi }, after[4] = { c->ebx, c->ebp, c->esi, c->edi };
+    for (int k = 0; k < 4; k++)
+        if (mask & (1u << k)) n += snprintf(regs + n, sizeof regs - (size_t)n, " %s %08x->%08x", nm[k], (unsigned)before[k], (unsigned)after[k]);
+    RT_ABI_LOG("ABI VIOLATION: call at %08x to %s changed%s", (unsigned)site, tgt, regs);
 }
 
 void rt_abi_report(void) {
