@@ -55,7 +55,7 @@ Vita backend; nothing here changes the PC builds (all Vita-specific or experimen
 
 ## Ideas, in rough order of expected value
 1. (done, see results) indirect-call cache.
-1b. Read-ahead for file reads during play (a prefetch thread or bigger window) to take the 6-16% file wait off the game thread.
+1b. (sound archives done, see sndcache.c; not yet measured) Read-ahead for file reads during play (a prefetch thread or bigger window) to take the 6-16% file wait off the game thread.
 2. Inline tiny functions (lifter, or LTO / fewer files for the generated code).
 3. x87 `top` tracking at lift time (st[] as locals); callee-saved register elision.
 4. Reduce `fread` cost (read-ahead / larger window for the streams the game reads during play).

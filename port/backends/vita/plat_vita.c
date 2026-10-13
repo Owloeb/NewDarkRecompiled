@@ -60,6 +60,15 @@
 #define SCREEN_H 544
 
 unsigned int _newlib_heap_size_user = VITA_HEAP_MB * 1024 * 1024;
+
+/* vita-elf-create needs about 3.5 KB of free space after the code segment (before the data segment starts) for the SCE module data.
+ * Whether that space exists depends on the exact size of the code, so a build can fail with "Cannot allocate N bytes for SCE data at
+ * end of segment 0; segment 1 overlaps". Then pass -DVITA_CODE_PAD=<bytes> (in CMAKE_C_FLAGS) to grow the code segment by that much. */
+#ifdef VITA_CODE_PAD
+#define VITA_STR2_(x) #x
+#define VITA_STR_(x) VITA_STR2_(x)
+__asm__(".text\n.balign 4\n.space " VITA_STR_(VITA_CODE_PAD) "\n");
+#endif
 void vita_log_free_memory(const char *when);
 static void vlog(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 #include <stdarg.h>
@@ -248,7 +257,7 @@ static void *game_thread(void *p) {
 #ifndef VITA_WATCHDOG_S
 #define VITA_WATCHDOG_S 90
 #endif
-static int watchdog_on = 1; extern int vita_readahead;
+static int watchdog_on = 1; extern int vita_readahead, vita_sound_cache;
 static void *watchdog(void *u) {
     (void)u; unsigned last_f = 0; uint64_t last_r = 0; int idle = 0;
     for (;;) {
@@ -302,6 +311,7 @@ int main(int argc, char **argv) {
         if (!strcmp(opt[i], "--swap-sticks")) { swap_sticks = 1; continue; }
         if (!strcmp(opt[i], "--no-watchdog")) { watchdog_on = 0; continue; }
         if (!strcmp(opt[i], "--no-readahead")) { vita_readahead = 0; continue; }
+        if (!strcmp(opt[i], "--no-sound-cache")) { vita_sound_cache = 0; continue; }
         if (!strcmp(opt[i], "--look-speed") && i + 1 < nopt) { look_speed = (float)atof(opt[++i]) / 100.0f; continue; }
         if (!strcmp(opt[i], "--guest-space") || !strcmp(opt[i], "--guest-backed")) have_space = 1;
         if (ends_with_exe(opt[i])) have_exe = 1;
