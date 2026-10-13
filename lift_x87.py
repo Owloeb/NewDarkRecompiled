@@ -36,6 +36,14 @@ POP_TOK = 'FPOP(c);'
 CI_K = {'_CIsqrt': 0, '_CIsin': 0, '_CIcos': 0, '_CItan': 0, '_CIasin': 0, '_CIacos': 0, '_CIatan': 0, '_CIexp': 0,
         '_CIlog': 0, '_CIlog10': 0, '_CIsinh': 0, '_CIcosh': 0, '_CItanh': 0,
         '_CIatan2': -1, '_CIpow': -1, '_CIfmod': -1, '_ftol': -1, '_ftol2': -1, '_ftol2_sse': -1}
+# what each of them does to the stack, for reading the code after a call whose own depth change is unknown: a call to
+# _ftol right after it uses the value that call left (MSVC's (int)floor(x) is: call floor; add esp, 8; call _ftol)
+CI_EFF = {n: ([('r', 0)] if k == 0 else [('r', 0), ('r', 1), ('pop',)]) for n, k in CI_K.items()}
+for _n in ('_ftol', '_ftol2', '_ftol2_sse'): CI_EFF[_n] = [('r', 0), ('pop',)]
+# C library functions that return a double: on x86 the result is left on the x87 stack (depth + 1)
+RET_DOUBLE = {'floor', 'ceil', 'fabs', 'sqrt', 'sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'atan2', 'exp', 'log', 'log10',
+              'pow', 'fmod', 'sinh', 'cosh', 'tanh', 'hypot', '_hypot', 'ldexp', 'frexp', 'modf', 'copysign', '_copysign',
+              'atof', '_atof', 'strtod', 'wcstod', '_wtof', '_logb', '_chgsign', '_nextafter', '_scalb', '_cabs', 'difftime'}
 BAD = ('c->top', 'ST(r_)', 'FPUSH(c, cos', 'rt_longjmp', 'RT_SETJMP')      # FPUSH(c, cos.. / tan: conditional (fsincos/fptan)
 FAULT_X87 = 6
 
@@ -175,7 +183,22 @@ def analyse_once(L, e, insns_text, succ, nets, force_free):
                         if d - 1 < 0: ok = False; break
                         d -= 1
                 if not ok: continue
-                if kind.get(va):
+                kv = kind.get(va)
+                if kv:
+                    if kv[0] == 'call' and (kv[2] in CI_EFF or kv[2] in RET_DOUBLE):   # a helper that uses the stack
+                        for x in (CI_EFF[kv[2]] if kv[2] in CI_EFF else [('push',)]):
+                            any_x87 = True
+                            if x[0] == 'r':
+                                if d - 1 - x[1] < 0: ok = False; break
+                            elif x[0] == 'push': d += 1
+                            else:
+                                if d - 1 < 0: ok = False; break
+                                d -= 1
+                        if ok:
+                            for s in succ.get(va, ()): work.append((s, d))
+                        continue
+                    if kv[0] == 'call' and kv[1] is not None and kv[1] in L.x87_takes_args:
+                        return 'bad'                                 # the next call may consume the value: don't guess
                     hits_call = True; continue
                 i = L.img.decode(va)
                 if i is None or i.mnemonic in ('ret', 'retf'): continue    # undecodable: that path faults
@@ -202,6 +225,7 @@ def analyse_once(L, e, insns_text, succ, nets, force_free):
             tgt, imp = ck[1], ck[2]                                  # conditional one falls through at the same depth
             if d is None: k = 'free'
             elif imp in CI_K: k = CI_K[imp]
+            elif imp in RET_DOUBLE: k = 1                            # a C library function returning a double
             elif tgt is not None and nets.get(tgt) is not None: k = nets[tgt]
             elif tgt is not None and tgt in L.x87_takes_args:
                 return _no(L, e, f'call at {va:x} to a function taking x87 arguments, depth change unknown')
