@@ -498,6 +498,16 @@ class Fn:
                     out.append(f'    goto L_{nxt:x};')
         out.append('}')
         # every label referenced must exist: labels are all insns here, so fine
+        if self.L.cache_regs and self.entry in self.L.x87_info:   # x87 stack in locals (lift_x87.py)
+            import lift_x87
+            info = self.L.x87_info[self.entry]
+            bounds = [span[va] for va in addrs] + [len(out) - 1]
+            for k, va in enumerate(addrs):
+                a, b = bounds[k] + 1, bounds[k + 1]                   # the instruction's lines, after its label line
+                if a >= b: continue
+                txt = lift_x87.rewrite_insn(self.L, info, va, '\n'.join(out[a:b]))
+                out[a:b] = txt.split('\n')
+            out[0] = out[0] + '\n' + lift_x87.prologue(info)            # same line count: spans stay valid
         if self.L.cache_regs:
             out = self.cache_regs_rewrite(out, addrs, span)
         return '\n'.join(l for l in out if l != '')
@@ -1145,6 +1155,10 @@ class Lifter:
         self.cache_regs = False               # --cache-regs (runtime/rt_fast.h)
         self.reg_sum = {}                     # --cache-regs: function -> (registers it may read, may write)
         self.abi_calls = True                 # --cache-regs: unseen callees follow the calling convention (--no-abi-calls)
+        self.x87 = True                       # --cache-regs: x87 stack in C locals (lift_x87.py; --no-x87)
+        self.x87_exempt = set()               # --x87-exempt: functions / call sites left with the struct-based x87
+        self.x87_info = {}                    # function -> lift_x87.analyze() result, for the functions it applies to
+        self.x87_declined = {}                # function -> why lift_x87 left it alone
         self.preserve = True                  # --cache-regs: prove callee-saved registers restored (--no-preserve)
         self.preserved = {}                   # function -> callee-saved registers it provably hands back unchanged
         self.reg_sum_raw = {}                 # summaries before preservation (what callers reloaded without it)
@@ -1390,6 +1404,36 @@ class Lifter:
             self.reg_sum = {e: (frozenset(sumR[e]), frozenset(red[e])) for e in own}
         return it
 
+    def x87_analyze(self):
+        """--cache-regs: which functions get the x87 stack in locals (lift_x87.py). Two rounds: the second knows how
+        much each analysable callee changes the stack depth, so fewer calls depend on reading the code after them."""
+        import lift_x87
+        data = {}
+        for e in self.entries:
+            f = Fn(self, e); f.walk()
+            texts, succ = {}, {}
+            for va, i in f.insns.items():
+                if i is None: continue
+                tg, ft = successors(self.img, i, self.entries, e)
+                sc = [t for t in list(tg) + list(self.smc_branch.get(va, ())) if t in f.insns]
+                if ft and va + i.size in f.insns: sc.append(va + i.size)
+                succ[va] = sc
+                m = i.mnemonic
+                if m.startswith('f') or m.startswith('j') or m in ('call', 'ret', 'retf') or m.startswith('loop'):
+                    try: texts[va] = '\n'.join(f.insn(i))
+                    except Unsupported: texts[va] = 'rt_fault(c, 0u, RT_FAULT_UNIMPL);'
+            data[e] = (texts, succ)
+        self.x87_users = sum(1 for texts, _ in data.values() if any('ST(' in t or 'FPUSH(' in t for t in texts.values()))
+        nets = {}
+        for rnd in range(2):
+            info = {}; self.x87_declined = {}
+            for e, (texts, succ) in data.items():
+                r = lift_x87.analyze(self, e, texts, succ, nets)
+                if r is not None: info[e] = r
+            nets = {e: r['net'] for e, r in info.items() if r['net'] is not None}
+        self.x87_info = info
+        return len(info)
+
     def fname(self, va):
         return f'{self.prefix}_{va:08x}'
 
@@ -1478,6 +1522,8 @@ if __name__ == '__main__':
     ap.add_argument('--rebase', type=lambda v: int(v, 0), help='lift a DLL as if loaded at this base (applies its relocations first)')
     ap.add_argument('--cache-regs', action='store_true', help='keep guest registers in C locals inside each function (faster; needs runtime/rt_fast.h)')
     ap.add_argument('--no-abi-calls', action='store_true', help='--cache-regs: treat indirect calls and imports as changing every register (the old, slower behaviour)')
+    ap.add_argument('--no-x87', action='store_true', help='--cache-regs: keep the x87 stack in the CPU struct (the old translation) instead of C locals (lift_x87.py)')
+    ap.add_argument('--x87-exempt', metavar='FILE', help='--cache-regs: functions or call sites (hex addresses, # comments) that keep the struct-based x87 translation; a guest fault "x87 stack depth after a call" names the call site to list here')
     ap.add_argument('--no-preserve', action='store_true', help='--cache-regs: skip the proof of which callee-saved registers each function restores (lift_preserve.py); callers then reload them after every call that touches them')
     ap.add_argument('--abi-exempt', metavar='FILE', help='--cache-regs: addresses (hex, one or more per line, # comments) from RT_ABI_CHECK reports ("ABI VIOLATION: call at <site> to <target>"): a listed call site keeps the old reload-everything treatment, a listed function claims no preserved registers. Listing both addresses of each report is always right')
     ap.add_argument('--iat-indirect', action='store_true', help='for DLLs loaded by Windows: call imports through their IAT slot as plain indirect calls (the slot holds the real address)')
@@ -1488,6 +1534,9 @@ if __name__ == '__main__':
     L.cache_regs = a.cache_regs
     L.abi_calls = not a.no_abi_calls
     L.preserve = not a.no_preserve
+    L.x87 = not a.no_x87
+    if a.x87_exempt:
+        L.x87_exempt = {int(t, 16) for ln in open(a.x87_exempt) for t in ln.split('#')[0].split()}
     if a.abi_exempt:
         L.abi_exempt = {int(t, 16) for ln in open(a.abi_exempt) for t in ln.split('#')[0].split()}
         print(f'cache-regs: {len(L.abi_exempt)} call site(s) exempt from the calling-convention contract')
@@ -1505,6 +1554,11 @@ if __name__ == '__main__':
         it = L.regs_analyze()
         full = sum(1 for r, w in L.reg_sum.values() if len(w) == 8)
         print(f'cache-regs: {len(L.reg_sum)} functions summarised, {full} may change every register ({it + 1} iterations)')
+        if L.x87:
+            n = L.x87_analyze()
+            print(f'x87: {n} of {L.x87_users} functions that use the x87 stack keep it in C locals')
+            why = collections.Counter(re.sub(r' (at|after a call at) [0-9a-f]+| with depths .*|call at [0-9a-f]+: ', ' ', w).strip() for w in L.x87_declined.values())
+            for w, k in why.most_common(6): print(f'   left alone: {k} ({w})')
         if L.preserve:
             np_ = collections.Counter(len(v) for v in L.preserved.values())
             print(f'preservation: of {len(L.preserved)} functions, {np_[4]} provably restore all of EBX/EBP/ESI/EDI, '

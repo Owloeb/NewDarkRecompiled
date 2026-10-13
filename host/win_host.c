@@ -193,8 +193,9 @@ static void die(const char *fmt, ...) {
 }
 
 void rt_fault(CPU *c, uint32_t addr, int kind) {
-    static const char *names[] = { "?", "unimplemented instruction", "divide error", "trap", "bad jump", "bad return" };
-    die("guest fault: %s at %08x", kind >= 0 && kind <= 5 ? names[kind] : "?", addr);
+    static const char *names[] = { "?", "unimplemented instruction", "divide error", "trap", "bad jump", "bad return",
+                                   "x87 stack depth after a call (list this address in lift.py --x87-exempt)" };
+    die("guest fault: %s at %08x", kind >= 0 && kind <= 6 ? names[kind] : "?", addr);
     (void)c;
 }
 void rt_budget_exhausted(CPU *c) { (void)c; die("budget exhausted"); }

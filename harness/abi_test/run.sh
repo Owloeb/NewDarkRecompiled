@@ -30,7 +30,7 @@ lift new --cache-regs
 echo "-- register caching as it was:"; grep "call sites" $W/lift_old.txt
 echo "-- with the contract and the preservation proof:"; grep "preservation\|call sites" $W/lift_new.txt
 python3 -c "import json; print('static const char *imp_names[] = {' + ','.join('\"%s\"' % n for d, n in json.load(open('$W/out_new/ab_meta.json'))['imports']) + '};')" > $W/imps.h
-CF="-O2 -fno-strict-aliasing -fwrapv -w -Iruntime -I$W"
+CF="-O2 -fno-strict-aliasing -fwrapv -ffp-contract=off -w -Iruntime -I$W"
 build() { gcc $CF "$@" -lm; }
 build -I$W/out_plain $W/out_plain/*.c $T/run.c -o $W/run_plain
 build -I$W/out_old $W/out_old/*.c $T/run.c -o $W/run_old

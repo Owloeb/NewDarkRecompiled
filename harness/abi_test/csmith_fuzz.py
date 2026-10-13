@@ -3,7 +3,8 @@
 
     python3 harness/abi_test/csmith_fuzz.py [--seeds 1-40] [--csmith /path/to/csmith] [--jobs N]
 
-Each Csmith program is compiled for 32-bit Windows (Zig, x87-free like the game's era of compilers: -mcpu=pentium, at
+With --float the programs do floating-point math, which the 32-bit target compiles to x87 code: the test for
+lift_x87.py (x87 stack in C locals). Each Csmith program is compiled for 32-bit Windows (Zig, x87-free like the game's era of compilers: -mcpu=pentium, at
 -O1/-O2/-Os in turn), lifted twice (plain, and --cache-regs with the calling-convention contract and the preservation
 proof), and run through harness/abi_test/run.c. The plain build is the reference (the recompiler's default output, which
 is verified against an x86 emulator); the --cache-regs build must print the same checksum, and the same build compiled
@@ -45,12 +46,12 @@ def run(cmd, timeout=600, **kw):
 def one(seed, a):
     w = os.path.join(a.build, f's{seed}'); shutil.rmtree(w, ignore_errors=True); os.makedirs(w)
     opt = ['-O1', '-O2', '-Os'][seed % 3]
-    src = run([a.csmith, '--no-argc', '--seed', str(seed), '--max-funcs', str(a.max_funcs)]).stdout
+    src = run([a.csmith, '--no-argc', '--seed', str(seed), '--max-funcs', str(a.max_funcs)] + (['--float'] if a.float else [])).stdout
     open(os.path.join(w, 'prog.c'), 'w').write(src)
     open(os.path.join(w, 'stub.c'), 'w').write(STUB)
     exe = os.path.join(w, 'prog.exe')
     r = run([PY, '-m', 'ziglang', 'cc', '-target', 'x86-windows-gnu', '-mcpu=pentium', opt, '-w', '-fno-inline-functions',
-             '-DCSMITH_MINIMAL', '-Dmain=csmith_main', '-I', a.include,
+             '-DCSMITH_MINIMAL', '-Dmain=csmith_main', '-I', a.include, '-Wno-error=incompatible-pointer-types', '-Wno-error=int-conversion', '-Wno-error=incompatible-function-pointer-types',
              os.path.join(w, 'prog.c'), os.path.join(w, 'stub.c'), '-o', exe])
     if r.returncode: return seed, opt, 'skip (does not compile)', None
     import pefile
@@ -69,7 +70,7 @@ def one(seed, a):
         open(os.path.join(out, 'imps.h'), 'w').write('static const char *imp_names[] = {' + ','.join('"%s"' % n for d, n in imps) + '};\n')
         for chk in ([False] if mode == 'plain' else [False, True]):
             exe_h = os.path.join(w, f'run_{mode}{"_check" if chk else ""}')
-            cc = ['gcc', '-O1', '-fno-strict-aliasing', '-fwrapv', '-w', '-Iruntime', '-I' + out] + (['-DRT_ABI_CHECK'] if chk else []) + \
+            cc = ['gcc', '-O1', '-fno-strict-aliasing', '-fwrapv', '-ffp-contract=off', '-w', '-Iruntime', '-I' + out] + (['-DRT_ABI_CHECK'] if chk else []) + \
                  [os.path.join(out, f) for f in sorted(os.listdir(out)) if f.endswith('.c')] + [os.path.join(HERE, 'run.c')] + \
                  ([os.path.join(ROOT, 'runtime', 'rt_abi_check.c')] if chk else []) + ['-lm', '-o', exe_h]
             r = run(cc)
@@ -96,6 +97,7 @@ def main():
     ap.add_argument('--csmith', default=shutil.which('csmith') or 'csmith')
     ap.add_argument('--include', help="Csmith's include directory [next to the binary: ../include]")
     ap.add_argument('--max-funcs', type=int, default=25)
+    ap.add_argument('--float', action='store_true', help='floating-point programs (Csmith --float): x87 code for lift_x87.py')
     ap.add_argument('--jobs', type=int, default=max(1, (os.cpu_count() or 2) // 2))
     ap.add_argument('--timeout', type=int, default=20, help='seconds per run of a lifted program [20]')
     ap.add_argument('--build', default=os.path.join(ROOT, 'build', 'csmith_fuzz'))

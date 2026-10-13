@@ -34,7 +34,8 @@ static inline void rt_cpuid(CPU *c){
 void rt_call_external(CPU *c, uint32_t target); /* indirect call target not in this module */
 void rt_fault(CPU *c, uint32_t addr, int kind); /* never returns */
 void rt_budget_exhausted(CPU *c);               /* never returns */
-enum { RT_FAULT_UNIMPL = 1, RT_FAULT_DIVIDE = 2, RT_FAULT_TRAP = 3, RT_FAULT_BADJUMP = 4, RT_FAULT_BADRET = 5 };
+enum { RT_FAULT_UNIMPL = 1, RT_FAULT_DIVIDE = 2, RT_FAULT_TRAP = 3, RT_FAULT_BADJUMP = 4, RT_FAULT_BADRET = 5,
+       RT_FAULT_X87 = 6 /* --cache-regs: x87 stack depth after a call is not what lift_x87.py inferred (list the address in lift.py --x87-exempt) */ };
 
 /* ---- memory ---- */
 #ifdef RT_IDENTITY   /* guest address == host address (32-bit Windows host) */

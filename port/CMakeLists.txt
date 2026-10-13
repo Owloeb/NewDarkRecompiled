@@ -42,7 +42,9 @@ endif()
 add_library(game OBJECT ${GEN_SRC})
 target_include_directories(game PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../runtime ${PORT_GENERATED}/nd)
 target_compile_definitions(game PRIVATE ${GEN_DEFS})
-target_compile_options(game PRIVATE -w -fwrapv -fno-strict-aliasing)
+# -ffp-contract=off: x87 math is translated to C doubles (in C locals with --cache-regs); fusing a*b+c on hosts with
+# a fused multiply-add would round differently from the original. (The Vita's VFPv3 has none, so it costs nothing there.)
+target_compile_options(game PRIVATE -w -fwrapv -fno-strict-aliasing -ffp-contract=off)
 
 # ---- the shared platform layer: Win32, the C runtime and DirectX on top of plat.h
 file(GLOB CORE_SRC ${CMAKE_CURRENT_SOURCE_DIR}/core/*.c ${CMAKE_CURRENT_SOURCE_DIR}/win32/*.c ${CMAKE_CURRENT_SOURCE_DIR}/crt/*.c ${CMAKE_CURRENT_SOURCE_DIR}/dx/*.c)

@@ -52,6 +52,9 @@ functions the lifter proves to restore them (`lift_preserve.py`) are trusted to.
 holds; leave the option off for timing runs. Both addresses of a reported line go in a file for `port/build.py --abi-exempt`
 (see `docs/FLAGS.md`). `--fastpaths` can be combined with `--cache-regs`.
 
+`--cache-regs` also keeps the x87 stack in C locals (`lift_x87.py`). If the game ever stops with a guest fault "x87 stack
+depth after a call", put the address it names in a file and add `--x87-exempt FILE` to the `build.py` line.
+
 ## 3. Install
 
 - Install `ss2port.vpk` with VitaShell.
