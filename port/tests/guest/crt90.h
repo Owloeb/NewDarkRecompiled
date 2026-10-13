@@ -81,6 +81,7 @@ IMP void __cdecl longjmp(void *, int);
 /* the x87 math helpers: argument(s) in st(0)/st(1), result in st(0); called through the asm helpers in conformance.c */
 IMP void __cdecl _CIpow(void);
 IMP void __cdecl _CIsqrt(void);
+IMP void __cdecl _ftol(void);
 IMP void __cdecl _CIatan2(void);
 IMP void __cdecl _CIfmod(void);
 #endif

@@ -1194,6 +1194,7 @@ class Lifter:
         self.x87_exempt = set()               # --x87-exempt: functions / call sites left with the struct-based x87
         self.x87_info = {}                    # function -> lift_x87.analyze() result, for the functions it applies to
         self.x87_declined = {}                # function -> why lift_x87 left it alone
+        self.x87_takes_args = set()           # functions that read x87 values they did not push (stack arguments)
         self.preserve = True                  # --cache-regs: prove callee-saved registers restored (--no-preserve)
         self.preserved = {}                   # function -> callee-saved registers it provably hands back unchanged
         self.reg_sum_raw = {}                 # summaries before preservation (what callers reloaded without it)
@@ -1459,6 +1460,7 @@ class Lifter:
                     except Unsupported: texts[va] = 'rt_fault(c, 0u, RT_FAULT_UNIMPL);'
             data[e] = (texts, succ)
         self.x87_users = sum(1 for texts, _ in data.values() if any('ST(' in t or 'FPUSH(' in t for t in texts.values()))
+        self.x87_takes_args = {e for e, (texts, succ) in data.items() if lift_x87.takes_args(e, texts, succ)}
         nets = {}
         for rnd in range(2):
             info = {}; self.x87_declined = {}

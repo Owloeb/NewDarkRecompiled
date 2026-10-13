@@ -66,6 +66,12 @@ double __cdecl ci1(double a, void *fn);
 double __cdecl ci2(double a, double b, void *fn);
 __asm__(".globl _ci1\n_ci1:\n  fldl 4(%esp)\n  call *12(%esp)\n  ret\n"
         ".globl _ci2\n_ci2:\n  fldl 4(%esp)\n  fldl 12(%esp)\n  call *20(%esp)\n  ret\n");
+/* the same intrinsics as compiled code calls them: a direct call to the import thunk, the result used after the call
+ * (lift.py --cache-regs keeps the x87 stack in C locals and must know that _CIsqrt keeps the depth and _ftol pops) */
+double __cdecl ci_sqrt2(double a);   /* 2 * sqrt(a) */
+int __cdecl ci_ftol_sum(double a, double b);   /* (int)a + (int)b */
+__asm__(".globl _ci_sqrt2\n_ci_sqrt2:\n  fldl 4(%esp)\n  call __CIsqrt\n  fadd %st(0), %st(0)\n  ret\n"
+        ".globl _ci_ftol_sum\n_ci_ftol_sum:\n  fldl 12(%esp)\n  fldl 4(%esp)\n  call __ftol\n  sub $4, %esp\n  fistpl (%esp)\n  add (%esp), %eax\n  add $4, %esp\n  ret\n");
 static int close_to(double a, double b) { double d = a - b; return d < 1e-9 && d > -1e-9; }
 static int skip_mask; static const char *const names[] = { "crt", "stdio", "win32", "threads", "window", "d3d9", "dsound", "dinput", "pixels", 0 };
 static int on(int i) { section = names[i]; return !(skip_mask & (1 << i)); }
@@ -117,6 +123,7 @@ static void test_crt(void) {
     srand(1); CHECKI(rand(), 41); CHECKI(rand(), 18467); CHECKI(rand(), 6334); srand(12345); CHECKI(rand(), 7584);
     CHECK(floor(-1.5) == -2.0); CHECK(ceil(1.25) == 2.0); CHECK(ldexp(3.0, 4) == 48.0);
     CHECK(close_to(ci2(2.0, 10.0, (void *)_CIpow), 1024.0)); CHECK(close_to(ci1(81.0, (void *)_CIsqrt), 9.0));
+    CHECK(close_to(ci_sqrt2(81.0), 18.0)); CHECK(ci_ftol_sum(7.9, 3.2) == 10);
     CHECK(close_to(ci2(1.0, 1.0, (void *)_CIatan2), 0.78539816339744828)); CHECK(close_to(ci2(7.5, 2.0, (void *)_CIfmod), 1.5));
 
     /* heap: sizes, zero-fill of calloc, realloc keeping data, and a randomized stress run with guard patterns */

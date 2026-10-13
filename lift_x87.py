@@ -26,12 +26,16 @@ directly (fldenv, frstor, fnsave, fninit, fincstp, fdecstp), setjmp/longjmp, or 
 lift.py --x87-exempt lists functions (or call sites) to leave alone if a fault ever names one.
 """
 import re
+from capstone.x86 import X86_OP_MEM
 
 ST_RE = re.compile(r'\bST\((\d+)\)')
 PUSH_TOK = 'FPUSH(c, '
 POP_TOK = 'FPOP(c);'
+# imports that take their argument on the x87 stack (the MSVC "_CI" intrinsics and the float-to-int helpers), with the
+# depth change a call makes: they break the convention that the stack is empty at a call, so their k must not be guessed
 CI_K = {'_CIsqrt': 0, '_CIsin': 0, '_CIcos': 0, '_CItan': 0, '_CIasin': 0, '_CIacos': 0, '_CIatan': 0, '_CIexp': 0,
-        '_CIlog': 0, '_CIlog10': 0, '_CIatan2': -1, '_CIpow': -1, '_CIfmod': -1}
+        '_CIlog': 0, '_CIlog10': 0, '_CIsinh': 0, '_CIcosh': 0, '_CItanh': 0,
+        '_CIatan2': -1, '_CIpow': -1, '_CIfmod': -1, '_ftol': -1, '_ftol2': -1, '_ftol2_sse': -1}
 BAD = ('c->top', 'ST(r_)', 'FPUSH(c, cos', 'rt_longjmp', 'RT_SETJMP')      # FPUSH(c, cos.. / tan: conditional (fsincos/fptan)
 FAULT_X87 = 6
 
@@ -80,12 +84,47 @@ def _call_kind(L, i, text):
     imp = L.img.imports[int(calls.group(1))][1] if calls.group(1) else None
     tgt = int(re.search(r'%s_([0-9a-f]{8})' % pfx, calls.group(0)).group(1), 16) if calls.group(0).startswith(pfx + '_') \
         and not calls.group(0).startswith(pfx + '_call') else None
+    if tgt is not None and imp is None:
+        imp = thunk_import(L, tgt)          # a direct call to an import thunk (jmp [IAT]) is a call to that import
     return ('tail' if 'return;' in text[calls.end():] else 'call', tgt, imp)
 
 
 def _no(L, e, why):
     L.x87_declined[e] = why
     return None
+
+
+def takes_args(e, insns_text, succ):
+    """does function e read or pop an x87 value it did not push itself (an argument on the x87 stack)? Then the convention
+    that the stack is empty at a call does not hold for calls to it, and their depth change must not be guessed."""
+    eff = {va: _effects(t) for va, t in insns_text.items() if ST_RE.search(t) or PUSH_TOK in t or POP_TOK in t}
+    if not eff: return False
+    seen, work = set(), [(e, 0)]
+    while work:
+        va, d = work.pop()
+        if (va, d) in seen or d > 8: continue
+        seen.add((va, d))
+        for x in eff.get(va, ()):
+            if x[0] == 'r':
+                if d - 1 - x[1] < 0: return True
+            elif x[0] == 'push': d += 1
+            else:
+                if d - 1 < 0: return True
+                d -= 1
+        t = insns_text.get(va, '')
+        if re.search(r'\b(rt_call_import|\w+_call)\(c|\w+_[0-9a-f]{8}\(c\)', t): continue   # a call: stop following
+        for s in succ.get(va, ()): work.append((s, d))
+    return False
+
+
+def thunk_import(L, va):
+    """the import a function is a thunk for (its first instruction is jmp [IAT slot]), else None"""
+    i = L.img.decode(va)
+    if i is None or i.mnemonic != 'jmp' or not i.operands: return None
+    op = i.operands[0]
+    if op.type != X86_OP_MEM or op.mem.base or op.mem.index: return None
+    slot = op.mem.disp & 0xFFFFFFFF
+    return L.img.imports[L.img.iat[slot]][1] if slot in L.img.iat else None
 
 
 def analyze(L, e, insns_text, succ, nets):
@@ -164,6 +203,8 @@ def analyse_once(L, e, insns_text, succ, nets, force_free):
             if d is None: k = 'free'
             elif imp in CI_K: k = CI_K[imp]
             elif tgt is not None and nets.get(tgt) is not None: k = nets[tgt]
+            elif tgt is not None and tgt in L.x87_takes_args:
+                return _no(L, e, f'call at {va:x} to a function taking x87 arguments, depth change unknown')
             else:
                 k = evidence(succ.get(va, []))
                 if k == 'bad': return _no(L, e, f'call at {va:x}: depth change not inferable')
