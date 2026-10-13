@@ -53,6 +53,10 @@ def main():
     ap.add_argument("--cache-regs", action="store_true", help="lift with lift.py --cache-regs (experimental)")
     ap.add_argument("--fastpaths", action="store_true", help="native C versions of a few very hot engine functions (port/core/fastpaths.c): same behaviour, less CPU")
     ap.add_argument("--abi-exempt", metavar="FILE", help="with --cache-regs: call sites reported by --abi-check (one hex address per line) that keep the old reload-everything treatment; passed to lift.py, relifts when the file changes")
+    ap.add_argument("--prof", action="store_true", help="sampling profiler (cmake -DPORT_PROF=ON): every 20 s the log lists the 30 guest functions and imports that ran most; recompiles, no relift")
+    ap.add_argument("--no-x87", action="store_true", help="with --cache-regs: keep the x87 stack in the CPU struct (lift.py --no-x87), e.g. to rule it out")
+    ap.add_argument("--no-preserve", action="store_true", help="with --cache-regs: skip the callee-saved preservation proof (lift.py --no-preserve)")
+    ap.add_argument("--no-abi-calls", action="store_true", help="with --cache-regs: indirect calls and imports reload every register (lift.py --no-abi-calls)")
     ap.add_argument("--x87-exempt", metavar="FILE", help="with --cache-regs: addresses from 'x87 stack depth after a call' faults (hex, one per line) whose functions keep the struct-based x87 translation; relifts when the file changes")
     ap.add_argument("--abi-check", action="store_true", help="with --cache-regs: check at run time that indirect calls and imports keep EBX/EBP/ESI/EDI, log and correct violations (slower; for test sessions)")
     ap.add_argument("--symbols", action="store_true", help="embed a function-name table (tools/annotate.py + symbols/manual.sym) so crash reports show names instead of addresses; adds a few hundred KB, so it is off by default")
@@ -60,6 +64,7 @@ def main():
     a = ap.parse_args(); exe = os.path.abspath(a.ss2exe)
     win = a.target == "windows"
     if a.abi_check and not a.cache_regs: sys.exit("--abi-check checks code lifted with --cache-regs: add --cache-regs")
+    if (a.no_x87 or a.no_preserve or a.no_abi_calls) and not a.cache_regs: sys.exit("--no-x87/--no-preserve/--no-abi-calls apply to --cache-regs: add --cache-regs")
     if a.abi_exempt and not a.cache_regs: sys.exit("--abi-exempt applies to code lifted with --cache-regs: add --cache-regs")
     if a.abi_exempt: a.abi_exempt = os.path.abspath(a.abi_exempt)
     if a.x87_exempt and not a.cache_regs: sys.exit("--x87-exempt applies to code lifted with --cache-regs: add --cache-regs")
@@ -80,6 +85,8 @@ def main():
     cr = ["--cache-regs"] if a.cache_regs else []; crs = "cache-regs" if a.cache_regs else ""
     if a.abi_exempt: cr += ["--abi-exempt", a.abi_exempt]; crs += open(a.abi_exempt).read()   # a changed list relifts
     if a.x87_exempt: cr += ["--x87-exempt", a.x87_exempt]; crs += "x87:" + open(a.x87_exempt).read()
+    for flag in ("no_x87", "no_preserve", "no_abi_calls"):                 # feature switches for bisecting: they relift
+        if getattr(a, flag): cr += ["--" + flag.replace("_", "-")]; crs += flag
     nd = os.path.join(OUT, "nd"); lift_py = os.path.join(ROOT, "lift.py"); sigf = os.path.join(nd, "src.sha1")
     lift_srcs = [lift_py] + [os.path.join(ROOT, f) for f in ("lift_preserve.py", "lift_x87.py")]   # the lifter: any change relifts
     s = sha(exe, *lift_srcs, extra=crs)
@@ -112,7 +119,7 @@ def main():
 
     print("[2/2] building the host", flush=True)
     gen = "Ninja" if shutil.which("ninja") else "Unix Makefiles"
-    cfg = ["cmake", "-S", os.path.join(ROOT, "port"), "-B", a.build, "-G", gen, f"-DPORT_GENERATED={OUT}", f"-DPORT_BACKEND={a.backend}", "-DCMAKE_BUILD_TYPE=Release", f"-DPORT_ABI_CHECK={'ON' if a.abi_check else 'OFF'}"]
+    cfg = ["cmake", "-S", os.path.join(ROOT, "port"), "-B", a.build, "-G", gen, f"-DPORT_GENERATED={OUT}", f"-DPORT_BACKEND={a.backend}", "-DCMAKE_BUILD_TYPE=Release", f"-DPORT_ABI_CHECK={'ON' if a.abi_check else 'OFF'}", f"-DPORT_PROF={'ON' if a.prof else 'OFF'}"]
     if win:
         sys.path.insert(0, os.path.join(ROOT, "port", "tools")); import deps
         os.environ["ZIG_PY"] = sys.executable                       # used by port/cmake/zig-* (the compiler wrappers)
