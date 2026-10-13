@@ -46,6 +46,12 @@ calls through a target cache; see `runtime/rt_fast.h`). It passes the conformanc
 +20% frame rate on the Vita. Switching it on or off relifts everything. For a profile of where the time goes, add
 `-DPORT_PROF=ON` to the `cmake` line (see `PERF.md`).
 
+With `--cache-regs`, indirect calls and imports are assumed to keep EBX/EBP/ESI/EDI (the calling convention). For a test
+session, add `-DPORT_ABI_CHECK=ON` to the `cmake` line: every such call is checked, and a violation is written to
+`ss2port.log` once per call site (`ABI VIOLATION: call at <site> ...`) and corrected. No such lines means the assumption
+holds; leave the option off for timing runs. A reported site goes in a file for `lift.py --abi-exempt` (see
+`docs/FLAGS.md`). `--fastpaths` can be combined with `--cache-regs`.
+
 ## 3. Install
 
 - Install `ss2port.vpk` with VitaShell.

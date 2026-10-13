@@ -93,7 +93,7 @@ Use `1` for on/off switches. Command Prompt: `set SS2PORT_NOVSYNC=1`.
 `port/build.py` lifts `SS2.exe` and its DLLs to C, then builds with CMake:
 
 ```sh
-python3 port/build.py "/path/to/SS2.exe" [--backend sdl2|null] [--jobs N] [--target linux|windows] [--install] [--cache-regs] [--fastpaths]
+python3 port/build.py "/path/to/SS2.exe" [--backend sdl2|null] [--jobs N] [--target linux|windows] [--install] [--cache-regs] [--fastpaths] [--abi-check]
 # by hand, from already lifted output:
 cmake -S port -B build/port -DPORT_GENERATED=out/port [-DPORT_BACKEND=sdl2|null]
 cmake --build build/port

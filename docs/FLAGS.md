@@ -47,7 +47,9 @@ The rest of this page is reference. Look things up here; you do not need to read
 | `--build DIR` | Build directory [`build/port`, or `build/port-win` for `--target windows`]. |
 | `--install` | Copy the result next to `SS2.exe`. |
 | `--cache-regs` | **Experimental.** Lift with `lift.py --cache-regs`. Normally guest registers live in a struct and every guest memory store forces the C compiler to reload them. This keeps each function's registers in C locals (written back only around calls, faults and returns) and routes indirect calls through a small target cache instead of a binary search. Expected effect: Vita about +20% frame rate (mostly the call cache); x86-64 about +5%; 32-bit Windows hosts probably the best case but unmeasured; ARM under qemu was ~7% *slower* (qemu isn't a reliable speed guide). Passes the full conformance suite (plain and cache-regs) on Linux and on a Windows (`--target windows`) run, sanitizers clean; never measured in the real game on a PC. Switching it on or off relifts everything (~8 minutes). |
-| `--fastpaths` | Native C versions of a few very hot engine functions: the string-name hash, float-to-int, and the 2D bitmap copy to the software canvas (`port/core/fastpaths.c`, three so far). Same behaviour, less CPU; each was checked against the recompiled original on random inputs. Not with `--cache-regs`. Takes seconds to switch on or off (no re-lift; only three generated files recompile). Off by default. |
+| `--fastpaths` | Native C versions of a few very hot engine functions: the string-name hash, float-to-int, and the 2D bitmap copy to the software canvas (`port/core/fastpaths.c`, three so far). Same behaviour, less CPU; each was checked against the recompiled original on random inputs. Works with `--cache-regs`: `tools/apply_hooks.py` then checks each fast path against the lifter's register summaries and stops the build if one reads or writes a register its original function doesn't. Takes seconds to switch on or off (no re-lift; only three generated files recompile). Off by default. |
+| `--abi-check` | With `--cache-regs`: build with `-DPORT_ABI_CHECK=ON`. Every indirect call and import call checks that EBX/EBP/ESI/EDI came back unchanged, as the lifter assumes; a violation is logged once per call site (`ABI VIOLATION: call at <site> ...`) and corrected. A little slower: for test sessions, not timing runs. List reported sites in a file for `--abi-exempt`. |
+| `--abi-exempt FILE` | With `--cache-regs`: call sites (one hex address per line) that keep the old reload-everything treatment, passed to `lift.py --abi-exempt`. Changing the file relifts. |
 | `--symbols` | Embed a function-name table (`tools/annotate.py` plus `symbols/manual.sym`) so crash reports name functions (`cmd_crouch`) instead of printing addresses. Adds about 780 KB, so it is off by default. |
 | `--low-dll-bases` | Lift the game's DLLs for load addresses below 32 MB. Only for hosts with a small guest address space (the PS Vita). |
 
@@ -168,6 +170,7 @@ Builds a game-free 32-bit test program, lifts it and runs it on the host. No gam
 | `--backend null\|sdl2` | Backend to test [`null`]; `sdl2` adds pixel-exact rendering checks (needs a display, e.g. `--wrap "xvfb-run -a"`). |
 | `--target native\|windows` | `windows`: build the Windows exe (run it with `--wrap wine` or on Windows). |
 | `--cache-regs` | Lift the test program with `--cache-regs`. |
+| `--abi-check` | With `--cache-regs`: build with `-DPORT_ABI_CHECK=ON` and fail if any call breaks the calling-convention contract. |
 | `--cflags "..."` | Extra C flags, e.g. `-fsanitize=address,undefined` or `-DRT_PROF`. |
 | `--cc COMPILER` | C compiler to use. |
 | `--config TYPE` | CMake build type [RelWithDebInfo]. |

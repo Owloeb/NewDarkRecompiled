@@ -11,7 +11,7 @@ which makes the recompiled function at 0x00601430 call `void my_render_hook(CPU 
 
 The original generated files are kept as *.c.orig; every run starts from them, so removing a line (or running without
 a hooks file) removes the hook. Only files whose content changes are rewritten, so only those recompile."""
-import sys, os, re, glob, argparse
+import sys, os, re, glob, argparse, json
 
 ap = argparse.ArgumentParser(); ap.add_argument('--hooks')
 ap.add_argument('--record', action='store_true', help='also call rec_enter(c, address) at the entry of every function of the main exe (prefix nd): the play-session recorder, host/record.inc')
@@ -25,7 +25,42 @@ if a.hooks:
         elif p: sys.exit(f'bad hooks line: {ln.strip()}')
 
 fast = set(int(m, 16) for m in re.findall(r'^int fp_([0-9a-f]{8})\(CPU \*c\)', open(a.fastpaths).read(), re.M)) if a.fastpaths else set()
-pat = re.compile(r'^void (?P<pfx>[a-z]+)_(?P<va>[0-9a-f]{8})\(CPU \*c\) \{$')
+
+
+def check_fastpaths_vs_cache_regs(path, dirs):
+    """Code lifted with --cache-regs keeps registers in C locals, and a caller stores and reloads only the registers its
+    callee may read or write (the lifter's per-function summary, reg_sum in <prefix>_meta.json). A fast path runs at the
+    callee's entry, where the CPU struct is in sync, so it is safe exactly when it reads only registers in the summary's read
+    set and writes only registers in its write set. Checked here from the fast path's source; returns a list of problems."""
+    sums = {}
+    for d in dirs:
+        for mf in glob.glob(os.path.join(d, '*_meta.json')):
+            sums.update({int(k, 16): (set(r.split()), set(w.split())) for k, (r, w) in json.load(open(mf)).get('reg_sum', {}).items()})
+    if not sums: return []                                                       # not lifted with --cache-regs: nothing to check
+    src = re.sub(r'/\*.*?\*/|//[^\n]*', '', open(path, encoding='utf-8').read(), flags=re.S)
+    regs = r'(eax|ecx|edx|ebx|esp|ebp|esi|edi)'
+    wr = re.compile(r'\bc->' + regs + r'\s*=(?!=)')                               # plain store: a write, not a read
+    rmw = re.compile(r'\bc->' + regs + r'\s*(?:[-+*/%&|^]|<<|>>)=|(?:\+\+|--)\s*c->' + regs + r'\b|\bc->' + regs + r'\s*(?:\+\+|--)')
+    known = {'RETCHK', 'FPOP', 'FPUSH', 'FCOM', 'FXAM', 'FSW', 'F2I16', 'F2I32', 'F2I64', 'FROUND'}   # rt.h: esp / x87 only
+    problems = []
+    for m in re.finditer(r'^int fp_([0-9a-f]{8})\(CPU \*c\) \{\n(.*?)^\}', src, re.S | re.M):
+        va, body = int(m.group(1), 16), m.group(2)
+        if va not in sums: continue                                              # reported as a missing target below
+        R, W = sums[va]
+        writes = set(wr.findall(body)) | {x for t in rmw.findall(body) for x in t if x}
+        reads = set(re.findall(r'\bc->' + regs, wr.sub('', body)))
+        for f in set(re.findall(r'\b(\w+)\(\s*c\s*[,)]', body)) - known:
+            problems.append(f'fp_{va:08x} passes the CPU to {f}(), whose register use this check cannot see')
+        for r in sorted(reads - R): problems.append(f'fp_{va:08x} reads {r}, which the lifted function never reads (callers may not have stored it)')
+        for r in sorted(writes - W): problems.append(f'fp_{va:08x} writes {r}, which the lifted function never writes (callers will not reload it)')
+    return problems
+
+
+if a.fastpaths:
+    bad = check_fastpaths_vs_cache_regs(a.fastpaths, a.dirs)
+    if bad:
+        sys.exit('fast paths do not fit the --cache-regs register summaries:\n  ' + '\n  '.join(bad))
+pat =re.compile(r'^void (?P<pfx>[a-z]+)_(?P<va>[0-9a-f]{8})\(CPU \*c\) \{$')
 found, changed = set(), 0
 for fn in sorted(f for d in a.dirs for f in glob.glob(os.path.join(d, '*.c'))):
     orig = fn + '.orig'

@@ -2,10 +2,15 @@
 """port/build.py: build the portable host (ss2port) from your own SS2.exe (NewDark 2.48). Linux / WSL / macOS.
 
     python3 port/build.py "/path/to/System Shock 2/SS2.exe" [--backend sdl2|null] [--jobs N] [--target linux|windows] [--install]
-                          [--cache-regs] [--fastpaths]
+                          [--cache-regs] [--fastpaths] [--abi-check] [--abi-exempt FILE]
 
 --cache-regs lifts with lift.py --cache-regs (guest registers in C locals; experimental, see runtime/rt_fast.h). The lifted
 code then differs from the default, so switching it on or off relifts everything.
+--fastpaths works with or without --cache-regs; with it, tools/apply_hooks.py checks each fast path against the lifter's
+register summaries and stops the build if one doesn't fit.
+--abi-check (with --cache-regs) verifies at run time that indirect calls and imports leave EBX/EBP/ESI/EDI unchanged, as the
+lifter assumes; violations are logged once per call site and corrected (cmake -DPORT_ABI_CHECK=ON). --abi-exempt FILE
+lists reported call sites that should keep the old treatment (lift.py --abi-exempt).
 
 --target windows cross-compiles a 64-bit Windows ss2port.exe (with SDL2.dll) using Zig: python3 -m pip install ziglang.
 --install copies the result next to SS2.exe.
@@ -46,12 +51,16 @@ def main():
     ap.add_argument("--target", default="linux", choices=["linux", "windows"], help="linux: this machine (any POSIX system); windows: cross-compile a Windows exe")
     ap.add_argument("--install", action="store_true", help="copy the result next to SS2.exe")
     ap.add_argument("--cache-regs", action="store_true", help="lift with lift.py --cache-regs (experimental)")
-    ap.add_argument("--fastpaths", action="store_true", help="native C versions of a few very hot engine functions (port/core/fastpaths.c): same behaviour, less CPU. Not with --cache-regs")
+    ap.add_argument("--fastpaths", action="store_true", help="native C versions of a few very hot engine functions (port/core/fastpaths.c): same behaviour, less CPU")
+    ap.add_argument("--abi-exempt", metavar="FILE", help="with --cache-regs: call sites reported by --abi-check (one hex address per line) that keep the old reload-everything treatment; passed to lift.py, relifts when the file changes")
+    ap.add_argument("--abi-check", action="store_true", help="with --cache-regs: check at run time that indirect calls and imports keep EBX/EBP/ESI/EDI, log and correct violations (slower; for test sessions)")
     ap.add_argument("--symbols", action="store_true", help="embed a function-name table (tools/annotate.py + symbols/manual.sym) so crash reports show names instead of addresses; adds a few hundred KB, so it is off by default")
     ap.add_argument("--low-dll-bases", action="store_true", help="lift the game's DLLs for load addresses below 32 MB (hosts with a small guest space, e.g. the PS Vita backend)")
     a = ap.parse_args(); exe = os.path.abspath(a.ss2exe)
     win = a.target == "windows"
-    if a.fastpaths and a.cache_regs: sys.exit("--fastpaths and --cache-regs cannot be combined yet (the fast paths read the registers from memory)")
+    if a.abi_check and not a.cache_regs: sys.exit("--abi-check checks code lifted with --cache-regs: add --cache-regs")
+    if a.abi_exempt and not a.cache_regs: sys.exit("--abi-exempt applies to code lifted with --cache-regs: add --cache-regs")
+    if a.abi_exempt: a.abi_exempt = os.path.abspath(a.abi_exempt)
     if not a.build: a.build = os.path.join(ROOT, "build", "port-win" if win else "port")
     if win:
         try: import ziglang  # noqa: F401
@@ -66,6 +75,7 @@ def main():
 
     print("[1/2] lifting (about 8 minutes the first time)", flush=True)
     cr = ["--cache-regs"] if a.cache_regs else []; crs = "cache-regs" if a.cache_regs else ""
+    if a.abi_exempt: cr += ["--abi-exempt", a.abi_exempt]; crs += open(a.abi_exempt).read()   # a changed list relifts
     nd = os.path.join(OUT, "nd"); lift_py = os.path.join(ROOT, "lift.py"); sigf = os.path.join(nd, "src.sha1"); s = sha(exe, lift_py, extra=crs)
     if not (os.path.exists(sigf) and open(sigf).read().strip() == s and os.path.exists(os.path.join(nd, "nd_meta.json"))):
         shutil.rmtree(nd, ignore_errors=True); run([PY, "lift.py", "--smc"] + cr + [exe, "nd", nd], "lift SS2.exe"); open(sigf, "w").write(s)
@@ -96,7 +106,7 @@ def main():
 
     print("[2/2] building the host", flush=True)
     gen = "Ninja" if shutil.which("ninja") else "Unix Makefiles"
-    cfg = ["cmake", "-S", os.path.join(ROOT, "port"), "-B", a.build, "-G", gen, f"-DPORT_GENERATED={OUT}", f"-DPORT_BACKEND={a.backend}", "-DCMAKE_BUILD_TYPE=Release"]
+    cfg = ["cmake", "-S", os.path.join(ROOT, "port"), "-B", a.build, "-G", gen, f"-DPORT_GENERATED={OUT}", f"-DPORT_BACKEND={a.backend}", "-DCMAKE_BUILD_TYPE=Release", f"-DPORT_ABI_CHECK={'ON' if a.abi_check else 'OFF'}"]
     if win:
         sys.path.insert(0, os.path.join(ROOT, "port", "tools")); import deps
         os.environ["ZIG_PY"] = sys.executable                       # used by port/cmake/zig-* (the compiler wrappers)
