@@ -62,8 +62,9 @@
 unsigned int _newlib_heap_size_user = VITA_HEAP_MB * 1024 * 1024;
 
 /* vita-elf-create needs about 3.5 KB of free space after the code segment (before the data segment starts) for the SCE module data.
- * Whether that space exists depends on the exact size of the code, so a build can fail with "Cannot allocate N bytes for SCE data at
- * end of segment 0; segment 1 overlaps". Then pass -DVITA_CODE_PAD=<bytes> (in CMAKE_C_FLAGS) to grow the code segment by that much. */
+ * vita.cmake now links with a script that always leaves 4 KB there, so "Cannot allocate N bytes for SCE data at end of segment 0;
+ * segment 1 overlaps" should not happen any more. If vita.cmake warned that it could not generate that script, pass
+ * -DVITA_CODE_PAD=<bytes> (in CMAKE_C_FLAGS) to grow the code segment by that much instead. */
 #ifdef VITA_CODE_PAD
 #define VITA_STR2_(x) #x
 #define VITA_STR_(x) VITA_STR2_(x)
