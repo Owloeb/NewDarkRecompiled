@@ -3,7 +3,8 @@
  * Compile this file into a build whose generated C was compiled with -DRT_ABI_CHECK. Each call site that breaks the
  * calling-convention contract is reported once: the guest address of the call, its target (a guest address, or
  * "import #N"), which callee-saved registers came back changed, and their values before and after. The generated code
- * then reloads every register, so the game keeps running correctly.
+ * then restores those registers, so the rest of the program stays consistent. To give a reported site the old,
+ * reload-everything treatment instead, list its address in a file passed to lift.py --abi-exempt and relift.
  *
  * Reports go through RT_ABI_LOG (printf-style). Define it to your platform's logger, e.g.
  *     -DRT_ABI_LOG=ss2port_log

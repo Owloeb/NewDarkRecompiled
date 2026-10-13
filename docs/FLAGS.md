@@ -153,7 +153,9 @@ Without `--guest-space`/`--guest-backed` in that file the Vita uses 208 and 128.
 | `--smc` | Analyse and translate self-modifying code (used for `SS2.exe`). |
 | `--rebase ADDR` | Lift a DLL as if loaded at this address (applies its relocations first). |
 | `--iat-indirect` | For DLLs loaded by Windows: call imports through their IAT slot as plain indirect calls. |
-| `--cache-regs` | **Experimental.** Guest registers in C locals per function, indirect calls through a target cache (needs `runtime/rt_fast.h`). Default output is unchanged without it. |
+| `--cache-regs` | **Experimental.** Guest registers in C locals per function, indirect calls through a target cache (needs `runtime/rt_fast.h`). Default output is unchanged without it. Indirect calls and imports are assumed to keep the calling convention (they change only EAX, ECX, EDX and ESP), so only those four are reloaded after them; compile the generated C with `-DRT_ABI_CHECK` (plus `runtime/rt_abi_check.c`) to verify that at run time. |
+| `--no-abi-calls` | With `--cache-regs`: treat indirect calls and imports as changing every register (the older, slower behaviour), e.g. to bisect a problem. |
+| `--abi-exempt FILE` | With `--cache-regs`: call sites (hex addresses, one per line, `#` comments) that keep the reload-everything treatment. An `RT_ABI_CHECK` build logs the sites that belong here (`ABI VIOLATION: call at <site> ...`). |
 | `--funcs-per-file N` | Functions per generated C file [150]. |
 
 ### Conformance tests (`port/tests/run_conformance.py`)
