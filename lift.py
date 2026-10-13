@@ -513,7 +513,7 @@ class Fn:
         writes = collections.defaultdict(set)
         for j, l in enumerate(new):
             if owner[j] is not None: writes[owner[j]] |= cache_regs_writes(l)
-        succ, callee, abi = {}, {}, {}
+        succ, callee, abi, tail_abi = {}, {}, {}, {}
         ALL = frozenset(_CR_NAMES)
         for va in addrs:
             i = self.insns[va]
@@ -522,6 +522,9 @@ class Fn:
             s = [t for t in list(tg) + list(self.L.smc_branch.get(va, ())) if t in self.insns]
             if ft and va + i.size in self.insns: s.append(va + i.size)
             succ[va] = s
+            if i.mnemonic == 'jmp':        # tail jump into an unseen callee: our callers assume the contract too
+                k = self.L.abi_call_target(i)
+                if k is not None: tail_abi[va] = k
             if i.mnemonic == 'call':       # what the called function may read and write (ALL when unknown)
                 op = i.operands[0]; t = op.imm & 0xFFFFFFFF if op.type == X86_OP_IMM else None
                 if t is not None:
@@ -555,6 +558,8 @@ class Fn:
                 # EBX/EBP/ESI/EDI still equal the CPU struct: RT_ABICHK compares them (only with -DRT_ABI_CHECK)
                 chk = f'RT_ABICHK(0x{va:x}u, {abi[va]}); ' if va in abi else ''
                 l = l.replace('RELOAD_;', chk + cache_regs_reload(W) + ';')
+            elif va is not None and va in tail_abi and 'RELOAD_;' in l:
+                l = l.replace('RELOAD_;', f'RT_ABICHK(0x{va:x}u, {tail_abi[va]}); RELOAD_;', 1)
             if 'SPILL_;' in l:
                 regs = set(_CR_NAMES) if va is None else din[va] | writes[va]
                 l = l.replace('SPILL_;', cache_regs_spill(regs) + ';')
@@ -1132,12 +1137,13 @@ class Lifter:
         self.cache_regs = False               # --cache-regs (runtime/rt_fast.h)
         self.reg_sum = {}                     # --cache-regs: function -> (registers it may read, may write)
         self.abi_calls = True                 # --cache-regs: unseen callees follow the calling convention (--no-abi-calls)
+        self.abi_exempt = set()               # --abi-exempt: call sites that keep the reload-everything treatment
         self.call_stats = collections.Counter()   # --cache-regs: call sites by how many registers are reloaded after them
 
     def abi_call_target(self, i):
         """--cache-regs: for a call or jmp whose callee the lifter cannot see and that the calling-convention contract covers
         (indirect, or into an import), the C expression naming the target for RT_ABICHK; otherwise None."""
-        if not self.abi_calls or i.mnemonic not in ('call', 'jmp') or not i.operands:
+        if not self.abi_calls or i.mnemonic not in ('call', 'jmp') or not i.operands or i.address in self.abi_exempt:
             return None
         op = i.operands[0]
         if op.type == X86_OP_IMM:
@@ -1429,6 +1435,9 @@ class Lifter:
                     smc_problems=self.smc_problems,
                     flags_in={hex(k): v for k, v in self.fl_in.items()}, flags_out={hex(k): v for k, v in self.fl_out.items()},
                     entries=ents)
+        if self.cache_regs:   # what callers assume each function may read/write (tools/apply_hooks.py checks fast paths against it)
+            meta['reg_sum'] = {hex(e): [' '.join(r for r in _CR_NAMES if r in R), ' '.join(r for r in _CR_NAMES if r in W)]
+                               for e, (R, W) in self.reg_sum.items()}
         json.dump(meta, open(os.path.join(outdir, f'{self.prefix}_meta.json'), 'w'), indent=1)
         return meta
 
@@ -1441,6 +1450,7 @@ if __name__ == '__main__':
     ap.add_argument('--rebase', type=lambda v: int(v, 0), help='lift a DLL as if loaded at this base (applies its relocations first)')
     ap.add_argument('--cache-regs', action='store_true', help='keep guest registers in C locals inside each function (faster; needs runtime/rt_fast.h)')
     ap.add_argument('--no-abi-calls', action='store_true', help='--cache-regs: treat indirect calls and imports as changing every register (the old, slower behaviour)')
+    ap.add_argument('--abi-exempt', metavar='FILE', help='--cache-regs: call sites (hex addresses, one per line, # comments) that keep the old treatment: an RT_ABI_CHECK build reports the sites to list here')
     ap.add_argument('--iat-indirect', action='store_true', help='for DLLs loaded by Windows: call imports through their IAT slot as plain indirect calls (the slot holds the real address)')
     a = ap.parse_args()
     img = Image(a.pe, a.rebase)
@@ -1448,6 +1458,9 @@ if __name__ == '__main__':
     L = Lifter(a.pe, a.prefix, img)
     L.cache_regs = a.cache_regs
     L.abi_calls = not a.no_abi_calls
+    if a.abi_exempt:
+        L.abi_exempt = {int(t, 16) for ln in open(a.abi_exempt) for t in ln.split('#')[0].split()}
+        print(f'cache-regs: {len(L.abi_exempt)} call site(s) exempt from the calling-convention contract')
     if a.smc:
         w = L.smc_analyze()
         print(f'SMC: {len(w)} code writes -> {sum(len(v) for v in L.smc_sites.values())} patched fields in '
