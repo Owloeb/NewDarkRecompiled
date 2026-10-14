@@ -66,6 +66,18 @@ double __cdecl ci1(double a, void *fn);
 double __cdecl ci2(double a, double b, void *fn);
 __asm__(".globl _ci1\n_ci1:\n  fldl 4(%esp)\n  call *12(%esp)\n  ret\n"
         ".globl _ci2\n_ci2:\n  fldl 4(%esp)\n  fldl 12(%esp)\n  call *20(%esp)\n  ret\n");
+/* the same intrinsics as compiled code calls them: a direct call to the import thunk, the result used after the call
+ * (lift.py --cache-regs keeps the x87 stack in C locals and must know that _CIsqrt keeps the depth and _ftol pops) */
+double __cdecl ci_sqrt2(double a);   /* 2 * sqrt(a) */
+int __cdecl ci_ftol_sum(double a, double b);   /* (int)a + (int)b */
+/* (int)floor(a) as MSVC compiles it: floor leaves its double on the x87 stack and _ftol takes it straight from there,
+ * once with floor called through its thunk and once through a pointer (so its depth change can't be known by name) */
+int __cdecl floor_ftol(double a);
+int __cdecl floor_ftol_ptr(double a, void *fn);
+__asm__(".globl _floor_ftol\n_floor_ftol:\n  fldl 4(%esp)\n  sub $8, %esp\n  fstpl (%esp)\n  call _floor\n  add $8, %esp\n  call __ftol\n  ret\n"
+        ".globl _floor_ftol_ptr\n_floor_ftol_ptr:\n  fldl 4(%esp)\n  sub $8, %esp\n  fstpl (%esp)\n  call *20(%esp)\n  add $8, %esp\n  call __ftol\n  ret\n");
+__asm__(".globl _ci_sqrt2\n_ci_sqrt2:\n  fldl 4(%esp)\n  call __CIsqrt\n  fadd %st(0), %st(0)\n  ret\n"
+        ".globl _ci_ftol_sum\n_ci_ftol_sum:\n  fldl 12(%esp)\n  fldl 4(%esp)\n  call __ftol\n  sub $4, %esp\n  fistpl (%esp)\n  add (%esp), %eax\n  add $4, %esp\n  ret\n");
 static int close_to(double a, double b) { double d = a - b; return d < 1e-9 && d > -1e-9; }
 static int skip_mask; static const char *const names[] = { "crt", "stdio", "win32", "threads", "window", "d3d9", "dsound", "dinput", "pixels", 0 };
 static int on(int i) { section = names[i]; return !(skip_mask & (1 << i)); }
@@ -117,6 +129,8 @@ static void test_crt(void) {
     srand(1); CHECKI(rand(), 41); CHECKI(rand(), 18467); CHECKI(rand(), 6334); srand(12345); CHECKI(rand(), 7584);
     CHECK(floor(-1.5) == -2.0); CHECK(ceil(1.25) == 2.0); CHECK(ldexp(3.0, 4) == 48.0);
     CHECK(close_to(ci2(2.0, 10.0, (void *)_CIpow), 1024.0)); CHECK(close_to(ci1(81.0, (void *)_CIsqrt), 9.0));
+    CHECK(close_to(ci_sqrt2(81.0), 18.0)); CHECK(ci_ftol_sum(7.9, 3.2) == 10);
+    CHECK(floor_ftol(7.9) == 7); CHECK(floor_ftol(-2.5) == -3); CHECK(floor_ftol_ptr(9.99, (void *)floor) == 9);
     CHECK(close_to(ci2(1.0, 1.0, (void *)_CIatan2), 0.78539816339744828)); CHECK(close_to(ci2(7.5, 2.0, (void *)_CIfmod), 1.5));
 
     /* heap: sizes, zero-fill of calloc, realloc keeping data, and a randomized stress run with guard patterns */
@@ -196,6 +210,31 @@ static void test_stdio(void) {
     f = fopen("ctest_dir/text.txt", "r+b"); CHECK(f != 0);
     if (f) { CHECKI(fread(b, 1, 2, f), 2); CHECKI(fseek(f, 0, 1), 0); CHECKI(fwrite("XY", 1, 2, f), 2); CHECKI(fseek(f, 0, 0), 0); CHECKI(fread(b, 1, 4, f), 4); CHECK(!memcmp(b, "liXY", 4));
              CHECKI(fseek(f, 2, 0), 0); fwrite("ne", 1, 2, f); fclose(f); }
+    {   /* buffered writes (the level save: thousands of small fwrites, ftell, seek back to patch a size, carry on) */
+        FILE *g = fopen("ctest_dir\\save.bin", "wb"); unsigned int hdr = 0, v, i; struct _stat64i32 st0;
+        fwrite(&hdr, 4, 1, g); CHECKI(ftell(g), 4);
+        for (i = 0; i < 30000; i++) { v = i * 7u; fwrite(&v, 4, 1, g); }                          /* 120 KB in 4-byte writes */
+        CHECKI(ftell(g), 4 + 120000);
+        CHECKI(_filelength(_fileno(g)), 4 + 120000);                                           /* the size through _fileno sees it all */
+        FILE *h = fopen("ctest_dir\\save.bin", "rb"); CHECK(h != 0);                            /* so does another FILE on the same file */
+        if (h) { CHECKI(fseek(h, 4 + 4 * 29999, 0), 0); CHECKI(fread(&v, 4, 1, h), 1); CHECKI(v, 29999 * 7); fclose(h); }
+        hdr = 0xC0DE; CHECKI(fseek(g, 0, SEEK_SET), 0); fwrite(&hdr, 4, 1, g); CHECKI(ftell(g), 4);  /* patch the header */
+        CHECKI(fseek(g, -4, SEEK_END), 0); v = 0xBEEF; fwrite(&v, 4, 1, g); fwrite(&v, 2, 1, g);     /* overwrite the last value, grow by 2 */
+        CHECKI(fseek(g, -2, SEEK_CUR), 0); CHECKI(ftell(g), 4 + 120000); fwrite("Z", 1, 1, g);
+        fclose(g);
+        g = fopen("ctest_dir\\save.bin", "rb"); static unsigned int back[30002];
+        CHECKI(fread(back, 1, 4 * 30002, g), 4 + 120000 + 2); fclose(g);
+        CHECKI(back[0], 0xC0DE); CHECKI(back[1 + 12345], 12345 * 7); CHECKI(back[30000], 0xBEEF); CHECKI(((unsigned char *)back)[120004], 'Z'); CHECKI(((unsigned char *)back)[120005], 0xBE);
+        /* text mode across the buffer's edge, and a read on an update stream right after writes */
+        g = fopen("ctest_dir\\lines.txt", "w+"); for (i = 0; i < 20000; i++) fputs("ab\n", g);       /* 60000 chars, 80000 bytes */
+        CHECKI(ftell(g), 80000); CHECKI(fseek(g, 4 * 12345, SEEK_SET), 0); CHECKI(fread(b, 1, 3, g), 3); CHECK(!memcmp(b, "ab\n", 3)); fclose(g);
+        CHECKI(_stat64i32("ctest_dir\\lines.txt", &st0), 0); CHECKI(st0.st_size, 80000);
+        /* append mode always writes at the end, even after a seek; fflush(NULL) writes every stream */
+        g = fopen("ctest_dir\\app.txt", "wb"); fwrite("12", 1, 2, g); fclose(g);
+        g = fopen("ctest_dir\\app.txt", "ab"); fwrite("34", 1, 2, g); fseek(g, 0, SEEK_SET); fwrite("56", 1, 2, g); fflush(0);
+        CHECKI(_stat64i32("ctest_dir\\app.txt", &st0), 0); CHECKI(st0.st_size, 6); fclose(g);
+        g = fopen("ctest_dir\\app.txt", "rb"); CHECKI(fread(b, 1, 10, g), 6); CHECK(!memcmp(b, "123456", 6)); fclose(g);
+        remove("ctest_dir\\save.bin"); remove("ctest_dir\\lines.txt"); remove("ctest_dir\\app.txt"); }
     CHECK(fopen("ctest_dir\\missing.txt", "rb") == 0);
     struct _stat64i32 st; CHECKI(_stat64i32("ctest_dir\\TEXT.txt", &st), 0); CHECKI(st.st_size, 26); CHECK(st.st_mode & 0x8000);
     CHECKI(_stat64i32("ctest_dir\\sub", &st), 0); CHECK(st.st_mode & 0x4000); CHECKI(_stat64i32("nope", &st), -1);

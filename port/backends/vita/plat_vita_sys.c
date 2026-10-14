@@ -27,6 +27,7 @@
 #include <psp2/kernel/threadmgr.h>
 #include <psp2/rtc.h>
 #include "plat.h"
+#include "sndcache.h"
 
 #ifndef VITA_THREAD_STACK
 #define VITA_THREAD_STACK (2u << 20)
@@ -92,8 +93,9 @@ void plat_sleep_ns(uint64_t ns) { sceKernelDelayThread((SceUInt)(ns / 1000u)); }
 typedef struct { void (*fn)(void *); void *arg; } Start;
 struct PlatMutex { pthread_mutex_t m; };
 struct PlatCond { pthread_cond_t c; };
-static void *thread_main(void *p) {          /* host and guest worker threads stay off core 0, which belongs to the game's main thread */
-    sceKernelChangeThreadCpuAffinityMask(sceKernelGetThreadId(), SCE_KERNEL_CPU_MASK_USER_1 | SCE_KERNEL_CPU_MASK_USER_2);
+extern int vita_render_thread;              /* plat_vita.c: the render thread has core 1 */
+static void *thread_main(void *p) {          /* host and guest worker threads stay off core 0, which belongs to the game's main thread (and off core 1 when the renderer has it) */
+    sceKernelChangeThreadCpuAffinityMask(sceKernelGetThreadId(), vita_render_thread ? SCE_KERNEL_CPU_MASK_USER_2 : SCE_KERNEL_CPU_MASK_USER_1 | SCE_KERNEL_CPU_MASK_USER_2);
     Start s = *(Start *)p; free(p); s.fn(s.arg); return NULL;
 }
 int plat_thread_start(void (*fn)(void *), void *arg, const char *name) {
@@ -133,10 +135,12 @@ void plat_cond_broadcast(PlatCond *c) { pthread_cond_broadcast(&c->c); }
 #define VITA_MEMFILE_MAX (32u << 20)
 #define VITA_RDBUF (64u << 10)
 #define VITA_WRBUF (64u << 10)
-struct PlatFile { int fd, pfd, warm; int64_t lastend; int ro; int64_t pos, size; uint8_t *buf; int64_t bstart; uint32_t blen; uint8_t *wbuf; uint32_t wlen; int werr; int mem, dirty; uint8_t *mbuf; uint64_t mcap; char name[96]; };
+struct PlatFile { int fd, pfd, warm, sc; int64_t lastend; int ro; int64_t pos, size; uint8_t *buf; int64_t bstart; uint32_t blen; uint8_t *wbuf; uint32_t wlen; int werr; int mem, dirty; uint8_t *mbuf; uint64_t mcap; char name[96]; };
 /* what the file layer costs (reported with the frame rate by vita_profile_report in plat_vita.c) */
 void vita_profile_tick(uint64_t now);
 uint64_t vp_fs_ns, vp_fs_open, vp_fs_stat, vp_fs_read_calls, vp_fs_sys_reads, vp_fs_bytes;
+uint64_t vp_fs_game_ns;          /* the part of vp_fs_ns spent on the game's main thread (reads block it; other threads' reads may not) */
+int vita_game_tid;               /* plat_vita.c: the game's main thread */
 volatile uint64_t vp_fs_activity;                           /* any file call: the hang watchdog counts these as progress */
 uint64_t vita_now_ns(void);
 static inline uint64_t vp_now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (uint64_t)t.tv_sec * 1000000000u + (uint64_t)t.tv_nsec; }
@@ -174,6 +178,7 @@ static int err_of(int e) {
                  case ENOTDIR: return PLAT_E_NOTDIR; case EISDIR: return PLAT_E_ISDIR; case ENOTEMPTY: return PLAT_E_NOTEMPTY; default: return PLAT_E_IO; }
 }
 static void slow_note(const char *what, const char *name, uint64_t ns);
+int vita_sound_cache = 1;                                   /* the sound archive cache (sndcache.c); --no-sound-cache turns it off */
 PlatFile *plat_fs_open(const char *path, int flags, int *err) {
     uint64_t t0 = vp_now(); vp_fs_open++;
     int of = (flags & PLAT_READ) && (flags & PLAT_WRITE) ? O_RDWR : (flags & PLAT_WRITE) ? O_WRONLY : O_RDONLY;
@@ -183,6 +188,7 @@ PlatFile *plat_fs_open(const char *path, int flags, int *err) {
     struct stat st; if (fstat(fd, &st) == 0 && S_ISDIR(st.st_mode)) { close(fd); if (err) *err = PLAT_E_ISDIR; vp_fs_ns += vp_now() - t0; return NULL; }   /* folders are not files */
     PlatFile *f = calloc(1, sizeof *f); snprintf(f->name, sizeof f->name, "%s", path); f->fd = fd; f->pfd = -1; f->ro = of == O_RDONLY; f->size = (int64_t)st.st_size; f->bstart = -1;
     if (f->ro) f->buf = malloc(VITA_RDBUF);
+    if (f->ro && vita_sound_cache && sc_eligible(path)) f->sc = sc_file_id(path);        /* SND.CRF / SND2.CRF: see sndcache.c */
     if (f->ro && !f->buf) f->ro = 0;
     if (!f->ro) f->wbuf = malloc(VITA_WRBUF);
     if (!f->ro && st.st_size == 0 && !(flags & PLAT_APPEND)) f->mem = 1;
@@ -238,6 +244,7 @@ void plat_fs_close(PlatFile *f) {
  * next 64 KB window while the game works on this one. One request at a time, one shared buffer, the worker has its own handle per file.
  * Also per-file read statistics, logged every 15 s: which files cost the time, and how much of it is sequential. */
 int vita_readahead = 1;
+
 static struct { PlatFile *f; int64_t off; uint32_t want; int state; int64_t got; uint8_t *buf; int started; } pf;   /* state: 0 idle, 1 reading, 2 done */
 static pthread_mutex_t pf_m = PTHREAD_MUTEX_INITIALIZER; static pthread_cond_t pf_c = PTHREAD_COND_INITIALIZER;
 static void *pf_worker(void *arg) {
@@ -290,7 +297,9 @@ static void rs_note(PlatFile *f, uint64_t ns, int64_t bytes, int seq, unsigned r
     if (i < nrst) { RStat *r = &rst[i]; r->calls++; r->bytes += bytes > 0 ? (uint64_t)bytes : 0; r->ns += ns; r->seq += (uint64_t)seq; r->refills += refills; r->adj += adj; r->hits += hits; }
     pthread_mutex_unlock(&rst_m);
 }
+static void sc_out(const char *l) { plat_log_write(PLAT_LOG_INFO, l); }
 void vita_log_readstats(void) {                             /* the six files that cost the most read time since the last call */
+    sc_log_stats(sc_out);
     pthread_mutex_lock(&rst_m);
     for (int k = 0; k < 6; k++) {
         int best = -1; for (int i = 0; i < nrst; i++) if (rst[i].ns && (best < 0 || rst[i].ns > rst[best].ns)) best = i;
@@ -312,6 +321,7 @@ int64_t plat_fs_read(PlatFile *f, void *buf, uint64_t n) {
     int64_t out; unsigned refills = 0, adjn = 0, hitn = 0; int seq = f->pos == f->lastend;
     if (f->mem) { int64_t k = f->size - f->pos; if (k < 0) k = 0; if ((uint64_t)k > n) k = (int64_t)n; if (k) memcpy(buf, f->mbuf + f->pos, (size_t)k); f->pos += k; out = k; }
     else if (!f->ro) { flush_w(f); out = raw_read(f->fd, buf, n); }
+    else if (f->sc && n <= (256u << 10)) { out = sc_read(f->sc, f->name, f->fd, f->size, f->pos, buf, (uint32_t)n); if (out < 0) out = 0; f->pos += out; }   /* sound archives: cache + per-sound read-ahead */
     else {
         uint8_t *d = buf; uint64_t got = 0;
         while (got < n && f->pos < f->size) {
@@ -340,7 +350,7 @@ int64_t plat_fs_read(PlatFile *f, void *buf, uint64_t n) {
     }
     op_end(OP_READ); if (out > 0) vp_fs_bytes += (uint64_t)out;
     f->lastend = f->pos;
-    uint64_t t1 = vp_now(); vp_fs_ns += t1 - t0; rs_note(f, t1 - t0, out, seq, refills, adjn, hitn); vita_profile_tick(t1); return out;      /* also reports while loading, when no frames are drawn */
+    uint64_t t1 = vp_now(); vp_fs_ns += t1 - t0; if (sceKernelGetThreadId() == vita_game_tid) vp_fs_game_ns += t1 - t0; rs_note(f, t1 - t0, out, seq, refills, adjn, hitn); vita_profile_tick(t1); return out;      /* also reports while loading, when no frames are drawn */
 }
 int64_t plat_fs_write(PlatFile *f, const void *buf, uint64_t n) {
     if (f->werr) return -1;

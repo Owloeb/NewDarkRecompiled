@@ -57,6 +57,7 @@ def build_host(gen, bdir, a):
         if a.backend == "sdl2": cfg.append(f"-DSDL2_DIR={deps.sdl2_mingw(os.path.join(ROOT, 'build', 'deps'))}")
     if a.cc: cfg.append(f"-DCMAKE_C_COMPILER={a.cc}")
     if a.cflags: cfg.append(f"-DCMAKE_C_FLAGS={a.cflags}")
+    cfg.append(f"-DPORT_ABI_CHECK={'ON' if a.abi_check else 'OFF'}")
     run(cfg, stdout=subprocess.DEVNULL); run(["cmake", "--build", hb], stdout=subprocess.DEVNULL)
     return os.path.join(hb, "ss2port.exe" if win else "ss2port")
 
@@ -66,8 +67,10 @@ def main():
     ap.add_argument("--skip", action="append", default=[]); ap.add_argument("--cc"); ap.add_argument("--cflags")
     ap.add_argument("--config", default="RelWithDebInfo"); ap.add_argument("--no-rebuild-guest", action="store_true")
     ap.add_argument("--cache-regs", action="store_true", help="lift with --cache-regs (guest registers in C locals)")
+    ap.add_argument("--abi-check", action="store_true", help="with --cache-regs: build with -DPORT_ABI_CHECK=ON and fail if any call breaks the calling-convention contract")
     ap.add_argument("--wrap", help="run the host under this command (e.g. 'valgrind -q', 'xvfb-run -a')")
     a = ap.parse_args(); a.build = os.path.abspath(a.build)
+    if a.abi_check and not a.cache_regs: sys.exit("--abi-check needs --cache-regs")
     os.makedirs(a.build, exist_ok=True)
     exe = os.path.join(a.build, "guest", "conformance.exe")
     if not (a.no_rebuild_guest and os.path.exists(exe)): exe = build_guest(a.build)
@@ -78,7 +81,13 @@ def main():
     if a.target == "windows" and os.path.isfile(os.path.join(os.path.dirname(host), "SDL2.dll")): shutil.copy(os.path.join(os.path.dirname(host), "SDL2.dll"), work)
     args = (a.wrap.split() if a.wrap else []) + [host, os.path.join(work, "conformance.exe")] + [x for s in a.skip for x in ("-skip", s)]
     if a.backend != "null": args.append("-pixels")         # a real renderer: check what it draws
-    r = subprocess.run(args, cwd=work)
+    r = subprocess.run(args, cwd=work, stderr=subprocess.PIPE if a.abi_check else None, text=True)
+    if a.abi_check:
+        sys.stderr.write(r.stderr)
+        logs = r.stderr + "".join(open(os.path.join(work, f), errors="replace").read() for f in os.listdir(work) if f.endswith(".log"))
+        nv = logs.count("ABI VIOLATION")
+        print(f"ABI check: {nv} call site(s) broke the calling-convention contract")
+        if nv: r = subprocess.CompletedProcess(args, 1)
     print(f"conformance ({a.backend}{', windows' if a.target == 'windows' else ''}): {'PASS' if r.returncode == 0 else 'FAIL (exit %d)' % r.returncode}")
     sys.exit(0 if r.returncode == 0 else 1)
 

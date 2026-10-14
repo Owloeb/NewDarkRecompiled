@@ -91,6 +91,31 @@ static inline void   MSTF64_(uint8_t *mb, uint32_t a, double d){ uint64_t v; mem
 #define MBUDGET() BUDGET()
 #endif
 
+/* After an indirect call or a call into an import, the lifter reloads only EAX, ECX, EDX and ESP (the calling-convention
+ * contract, lift.py _ABI_W), and the function's own callers assume the same. With -DRT_ABI_CHECK every such call (and every
+ * tail jump of that kind) checks that the callee really handed EBX, EBP, ESI and EDI back unchanged. On a violation it
+ * reports the site and target once (rt_abi_violation, runtime/rt_abi_check.c) and puts the four registers back as they were
+ * before the call: every caller up the chain keeps those values in locals, so this keeps the whole chain consistent (the
+ * callee is treated as if it had kept the convention). A real violator found this way is fixed by listing its call site in
+ * lift.py --abi-exempt, which gives that site the old reload-everything treatment. Without the define it compiles to nothing. */
+#define RT_ABI_IMPORT(idx) (0xFFFF0000u | (uint32_t)(idx))   /* target operand for import calls: the import index */
+/* RT_ABICHKM checks only the registers in mask (1 ebx, 2 ebp, 4 esi, 8 edi): used after a direct call whose callee the
+ * lifter proved to restore them (lift_preserve.py), so the caller does not reload them. */
+#ifdef RT_ABI_CHECK
+void rt_abi_violation(CPU *c, uint32_t site, uint32_t target, uint32_t mask,
+                      uint32_t ebx, uint32_t ebp, uint32_t esi, uint32_t edi);
+#define RT_ABICHKM(site, target, mask) do { \
+        uint32_t abim_ = ((uint32_t)(c->ebx != r_ebx) | (uint32_t)(c->ebp != r_ebp) << 1 | \
+                          (uint32_t)(c->esi != r_esi) << 2 | (uint32_t)(c->edi != r_edi) << 3) & (uint32_t)(mask); \
+        if (__builtin_expect(abim_ != 0, 0)) { rt_abi_violation(c, site, target, abim_, r_ebx, r_ebp, r_esi, r_edi); \
+                                               if (abim_ & 1) c->ebx = r_ebx; if (abim_ & 2) c->ebp = r_ebp; \
+                                               if (abim_ & 4) c->esi = r_esi; if (abim_ & 8) c->edi = r_edi; } \
+    } while (0)
+#else
+#define RT_ABICHKM(site, target, mask) ((void)0)
+#endif
+#define RT_ABICHK(site, target) RT_ABICHKM(site, target, 0xFu)
+
 #ifdef RT_TRACE
 #undef TRACE
 #define TRACE(va) do { SPILLALL_; rt_trace(c, va); } while (0)

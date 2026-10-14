@@ -325,6 +325,17 @@ def cache_regs_reload(regs):
 
 _CR_TOK = re.compile(r'\br_(eax|ecx|edx|ebx|esp|ebp|esi|edi)\b')
 
+# --cache-regs calling-convention contract (on unless --no-abi-calls). A call whose target the lifter cannot see (an indirect
+# call through a register or memory, or a call into an import) is assumed to follow the Win32/MSVC conventions every
+# compiled callee follows: it may change EAX, ECX and EDX (scratch) and ESP (stdcall/thiscall pop their arguments), and
+# hands EBX, EBP, ESI and EDI back unchanged. So after such a call only those four are reloaded, and functions that make
+# such calls no longer count as "may change every register" for their own callers. Calls to setjmp/longjmp, cpuid and
+# anything else the host handles specially keep the all-registers treatment. Hand-written code with another convention is
+# reached by direct calls, which keep their exact per-function summary. Build the generated C with -DRT_ABI_CHECK to verify
+# the contract at run time (runtime/rt_abi_check.c).
+_ABI_W = frozenset(('eax', 'ecx', 'edx', 'esp'))
+_PRES_MASK = {'ebx': 1, 'ebp': 2, 'esi': 4, 'edi': 8}   # callee-saved registers; bit layout of RT_ABICHKM's mask
+
 
 def cache_regs(line, prefix):
     l = _CR_REG.sub(r'r_\1', line)
@@ -487,6 +498,16 @@ class Fn:
                     out.append(f'    goto L_{nxt:x};')
         out.append('}')
         # every label referenced must exist: labels are all insns here, so fine
+        if self.L.cache_regs and self.entry in self.L.x87_info:   # x87 stack in locals (lift_x87.py)
+            import lift_x87
+            info = self.L.x87_info[self.entry]
+            bounds = [span[va] for va in addrs] + [len(out) - 1]
+            for k, va in enumerate(addrs):
+                a, b = bounds[k] + 1, bounds[k + 1]                   # the instruction's lines, after its label line
+                if a >= b: continue
+                txt = lift_x87.rewrite_insn(self.L, info, va, '\n'.join(out[a:b]))
+                out[a:b] = txt.split('\n')
+            out[0] = out[0] + '\n' + lift_x87.prologue(info)            # same line count: spans stay valid
         if self.L.cache_regs:
             out = self.cache_regs_rewrite(out, addrs, span)
         return '\n'.join(l for l in out if l != '')
@@ -503,7 +524,7 @@ class Fn:
         writes = collections.defaultdict(set)
         for j, l in enumerate(new):
             if owner[j] is not None: writes[owner[j]] |= cache_regs_writes(l)
-        succ, callee = {}, {}
+        succ, callee, abi, tail_abi, pres = {}, {}, {}, {}, {}
         ALL = frozenset(_CR_NAMES)
         for va in addrs:
             i = self.insns[va]
@@ -512,10 +533,27 @@ class Fn:
             s = [t for t in list(tg) + list(self.L.smc_branch.get(va, ())) if t in self.insns]
             if ft and va + i.size in self.insns: s.append(va + i.size)
             succ[va] = s
+            if i.mnemonic == 'jmp':        # tail jump into an unseen callee: our callers assume the contract too
+                k = self.L.abi_call_target(i)
+                if k is not None: tail_abi[va] = k
             if i.mnemonic == 'call':       # what the called function may read and write (ALL when unknown)
                 op = i.operands[0]; t = op.imm & 0xFFFFFFFF if op.type == X86_OP_IMM else None
-                callee[va] = self.L.reg_sum.get(t, (ALL, ALL)) if t is not None and t not in self.L.setjmp_fns \
-                    and t not in self.L.longjmp_fns else (ALL, ALL)
+                if t is not None:
+                    sums = self.L.reg_sum_raw if va in self.L.abi_exempt else self.L.reg_sum   # exempt site: no claims
+                    callee[va] = sums.get(t, (ALL, ALL)) if t not in self.L.setjmp_fns \
+                        and t not in self.L.longjmp_fns else (ALL, ALL)
+                    kept = (self.L.reg_sum_raw.get(t, (ALL, ALL))[1] - callee[va][1]) & frozenset(_PRES_MASK)
+                    if kept and t in self.L.reg_sum:
+                        pres[va] = (t, sum(_PRES_MASK[r] for r in kept))
+                else:
+                    k = self.L.abi_call_target(i)
+                    if k is not None:      # unseen callee: the calling convention bounds what it changes
+                        callee[va] = (ALL, _ABI_W); abi[va] = k
+                    else:
+                        callee[va] = (ALL, ALL)
+                st = self.L.call_stats
+                st['abi' if va in abi else 'all8' if len(callee[va][1]) == 8 else 'partial'] += 1
+                if va in pres: st['preserve'] += 1
         din = {va: set() for va in addrs}
         work = list(addrs)
         while work:
@@ -531,8 +569,15 @@ class Fn:
             va = owner[j]
             if va in callee:
                 R, W = callee[va]
-                l = l.replace('SPILL_;', cache_regs_spill((din[va] | writes[va]) & (R | W)) + ';')
-                l = l.replace('RELOAD_;', cache_regs_reload(W) + ';')
+                pm = {r for r in _PRES_MASK if va in pres and pres[va][1] & _PRES_MASK[r]}
+                l = l.replace('SPILL_;', cache_regs_spill((din[va] | writes[va]) & (R | W | pm)) + ';')
+                # R is ALL for an unseen callee, so every changed register was stored before the call and the locals of
+                # EBX/EBP/ESI/EDI still equal the CPU struct: RT_ABICHK compares them (only with -DRT_ABI_CHECK)
+                chk = f'RT_ABICHK(0x{va:x}u, {abi[va]}); ' if va in abi else \
+                    f'RT_ABICHKM(0x{va:x}u, 0x{pres[va][0]:x}u, {pres[va][1]}u); ' if va in pres else ''
+                l = l.replace('RELOAD_;', chk + cache_regs_reload(W) + ';')
+            elif va is not None and va in tail_abi and 'RELOAD_;' in l:
+                l = l.replace('RELOAD_;', f'RT_ABICHK(0x{va:x}u, {tail_abi[va]}); RELOAD_;', 1)
             if 'SPILL_;' in l:
                 regs = set(_CR_NAMES) if va is None else din[va] | writes[va]
                 l = l.replace('SPILL_;', cache_regs_spill(regs) + ';')
@@ -1050,6 +1095,41 @@ class Fn:
         raise Unsupported(f'x87 {op:02x} {modrm:02x}')
 
 
+
+def dispatch_code(prefix, ents, cached):
+    """C for <prefix>_table (sorted address -> recompiled function), <prefix>_lookup and <prefix>_call, the dispatcher for
+    indirect calls. With --cache-regs, <prefix>_call first looks in the calling guest thread's own cache of recent targets
+    (rt_icache in runtime/rt.h: 1024 sets of 2 entries, the most recently used first) instead of a binary search every
+    time. The cache belongs to one guest thread, so no other thread ever writes it: no synchronisation, no races."""
+    n = len(ents)
+    t = [f'typedef struct {{ uint32_t va; guest_fn fn; }} rc_ent;',
+         f'const rc_ent {prefix}_table[] = {{']
+    t += [f'    {{0x{e:08x}u, {fn}}},' for e, fn in ents]
+    t += ['};', f'const unsigned {prefix}_table_n = {n};',
+          f'guest_fn {prefix}_lookup(uint32_t va) {{',
+          f'    unsigned lo = 0, hi = {n};',
+          '    while (lo < hi) { unsigned mid = (lo + hi) / 2;',
+          f'        if ({prefix}_table[mid].va < va) lo = mid + 1; else hi = mid; }}',
+          f'    return (lo < {n} && {prefix}_table[lo].va == va) ? {prefix}_table[lo].fn : 0;',
+          '}']
+    if cached:
+        t += [f'void {prefix}_call(CPU *c, uint32_t t) {{',
+              '    if (__builtin_expect(t == 0, 0)) { rt_call_external(c, t); return; }   /* 0 marks an empty entry */',
+              '    rt_icache_ent *s = rt_icache_of(c)->e[((t >> 4) ^ (t >> 14)) & 1023u];',
+              '    if (s[0].va == t) { s[0].fn(c); return; }',
+              '    if (s[1].va == t) { rt_icache_ent x = s[1]; s[1] = s[0]; s[0] = x; x.fn(c); return; }',
+              f'    guest_fn f = {prefix}_lookup(t);',
+              '    if (!f) { rt_call_external(c, t); return; }',
+              '    s[1] = s[0]; s[0].va = t; s[0].fn = f; f(c);',
+              '}']
+    else:
+        t += [f'void {prefix}_call(CPU *c, uint32_t t) {{',
+              f'    guest_fn f = {prefix}_lookup(t);',
+              '    if (f) f(c); else rt_call_external(c, t);',
+              '}']
+    return t
+
+
 class SynthImage(Image):
     """in-memory code blob (for instruction fuzzing): bytes at base, entries = given addresses."""
     def __init__(self, base, blob, entries):
@@ -1109,6 +1189,33 @@ class Lifter:
         self.fl_ind_in = self.fl_ind_out = 0  # same, for indirect calls (union over address-taken functions)
         self.cache_regs = False               # --cache-regs (runtime/rt_fast.h)
         self.reg_sum = {}                     # --cache-regs: function -> (registers it may read, may write)
+        self.abi_calls = True                 # --cache-regs: unseen callees follow the calling convention (--no-abi-calls)
+        self.x87 = True                       # --cache-regs: x87 stack in C locals (lift_x87.py; --no-x87)
+        self.x87_exempt = set()               # --x87-exempt: functions / call sites left with the struct-based x87
+        self.x87_info = {}                    # function -> lift_x87.analyze() result, for the functions it applies to
+        self.x87_declined = {}                # function -> why lift_x87 left it alone
+        self.x87_takes_args = set()           # functions that read x87 values they did not push (stack arguments)
+        self.preserve = True                  # --cache-regs: prove callee-saved registers restored (--no-preserve)
+        self.preserved = {}                   # function -> callee-saved registers it provably hands back unchanged
+        self.reg_sum_raw = {}                 # summaries before preservation (what callers reloaded without it)
+        self.abi_exempt = set()               # --abi-exempt: call sites that keep the reload-everything treatment
+        self.call_stats = collections.Counter()   # --cache-regs: call sites by how many registers are reloaded after them
+
+    def abi_call_target(self, i):
+        """--cache-regs: for a call or jmp whose callee the lifter cannot see and that the calling-convention contract covers
+        (indirect, or into an import), the C expression naming the target for RT_ABICHK; otherwise None."""
+        if not self.abi_calls or i.mnemonic not in ('call', 'jmp') or not i.operands or i.address in self.abi_exempt:
+            return None
+        op = i.operands[0]
+        if op.type == X86_OP_IMM:
+            return None                       # direct: exact summary
+        if op.type == X86_OP_MEM and op.mem.base == 0 and op.mem.index == 0 and (op.mem.disp & 0xFFFFFFFF) in self.img.iat:
+            idx = self.img.iat[op.mem.disp & 0xFFFFFFFF]
+            if SJ_IMPORTS.get(self.img.imports[idx][1]):
+                return None                   # setjmp/longjmp restore registers from the jump buffer
+            if not self.img.iat_indirect:
+                return f'RT_ABI_IMPORT({idx})'
+        return 't'                            # i_call/i_jmp put the computed target in t
 
     def smc_analyze(self, max_iter=4):
         """find absolute writes into code; map each to the instruction field it patches. Iterates because
@@ -1277,24 +1384,32 @@ class Lifter:
 
     def regs_analyze(self, max_iter=60):
         """--cache-regs: per function, which guest registers it (and everything it calls) may read and may write, taken
-        from the C it is emitted as. Calls to the host, indirect calls and anything not understood count as all."""
+        from the C it is emitted as. Calls to the host and anything not understood count as all. Indirect calls and calls
+        into imports count as the calling convention allows (_ABI_W), unless --no-abi-calls."""
         ALL = frozenset(_CR_NAMES)
         own, edges = {}, {}
         callre = re.compile(r'\b%s_([0-9a-f]{8})\(c\)' % self.prefix)
         for e in self.entries:
             f = Fn(self, e); f.walk()
-            R, W, ed, unknown = set(), set(), set(), False
+            R, W, ed = set(), set(), set()
+            unknown = e in self.setjmp_fns or e in self.longjmp_fns
+            unseen = False                                     # makes an indirect call or calls an import
             for va, i in f.insns.items():
                 if i is None: continue
                 try: body = f.insn(i)
                 except Unsupported: continue                   # becomes rt_fault (stores everything)
+                covered = self.abi_call_target(i) is not None
                 for raw in body:
                     l = cache_regs(raw, self.prefix)
                     R |= set(_CR_TOK.findall(l)); W |= cache_regs_writes(l)
-                    if any(k in l for k in ('rt_call_import', 'rt_cpuid', 'RT_SETJMP', 'rt_longjmp', f'{self.prefix}_call(c')):
+                    if any(k in l for k in ('rt_cpuid', 'RT_SETJMP', 'rt_longjmp')):
                         unknown = True
+                    elif any(k in l for k in ('rt_call_import', f'{self.prefix}_call(c')):
+                        if covered: unseen = True
+                        else: unknown = True
                     ed |= {int(x, 16) for x in callre.findall(l)}
             R.add('esp'); W.add('esp')
+            if unseen: R = ALL; W |= _ABI_W                    # it may read anything, but changes only the scratch registers
             own[e] = ALL if unknown else frozenset(R), ALL if unknown else frozenset(W)
             edges[e] = ed
         sumR = {e: set(own[e][0]) for e in own}; sumW = {e: set(own[e][1]) for e in own}
@@ -1307,7 +1422,54 @@ class Lifter:
                     if not sumW[t] <= sumW[e]: sumW[e] |= sumW[t]; changed = True
             if not changed: break
         self.reg_sum = {e: (frozenset(sumR[e]), frozenset(sumW[e])) for e in own}
+        self.reg_sum_raw = dict(self.reg_sum)
+        if self.preserve:      # callee-saved registers a function restores are not changes its callers need to reload
+            from lift_preserve import analyze
+            P, self.preserve_steps = analyze(self, lambda t, r: r in self.reg_sum_raw.get(t, (ALL, ALL))[1],
+                                             dict(Fn=Fn, Unsupported=Unsupported, successors=successors, jump_table=jump_table))
+            self.preserved = P
+            red = {e: set(own[e][1]) - P[e] for e in own}
+            for it2 in range(max_iter):
+                changed = False
+                for e in own:
+                    w = set(own[e][1])
+                    for t in edges[e]: w |= red[t] if t in own else ALL
+                    w -= P[e]
+                    if w != red[e]: red[e] = w; changed = True
+                if not changed: break
+            self.reg_sum = {e: (frozenset(sumR[e]), frozenset(red[e])) for e in own}
         return it
+
+    def x87_analyze(self):
+        """--cache-regs: which functions get the x87 stack in locals (lift_x87.py). Two rounds: the second knows how
+        much each analysable callee changes the stack depth, so fewer calls depend on reading the code after them."""
+        import lift_x87
+        data = {}
+        for e in self.entries:
+            f = Fn(self, e); f.walk()
+            texts, succ = {}, {}
+            for va, i in f.insns.items():
+                if i is None: continue
+                tg, ft = successors(self.img, i, self.entries, e)
+                sc = [t for t in list(tg) + list(self.smc_branch.get(va, ())) if t in f.insns]
+                if ft and va + i.size in f.insns: sc.append(va + i.size)
+                succ[va] = sc
+                m = i.mnemonic
+                if m.startswith('f') or m.startswith('j') or m in ('call', 'ret', 'retf') or m.startswith('loop'):
+                    try: texts[va] = '\n'.join(f.insn(i))
+                    except Unsupported: texts[va] = 'rt_fault(c, 0u, RT_FAULT_UNIMPL);'
+            data[e] = (texts, succ)
+        self.x87_users = sum(1 for texts, _ in data.values() if any('ST(' in t or 'FPUSH(' in t for t in texts.values()))
+        self.x87_takes_args = {e for e, (texts, succ) in data.items() if lift_x87.takes_args(e, texts, succ)}
+        nets = {}
+        for rnd in range(2):
+            info = {}; self.x87_declined = {}
+            for e, (texts, succ) in data.items():
+                r = lift_x87.analyze(self, e, texts, succ, nets)
+                if r is not None: info[e] = r
+            nets = {e: r['net'] for e, r in info.items() if r['net'] is not None}
+        self.x87_info = info
+        return len(info)
 
     def fname(self, va):
         return f'{self.prefix}_{va:08x}'
@@ -1342,31 +1504,8 @@ class Lifter:
             open(os.path.join(outdir, name), 'w').write('\n'.join(src))
             files.append(name)
         # dispatch table
-        t = [f'#include "{self.prefix}_decls.h"', '#include <stdlib.h>',
-             f'typedef struct {{ uint32_t va; guest_fn fn; }} rc_ent;',
-             f'const rc_ent {self.prefix}_table[] = {{']
-        t += [f'    {{0x{e:08x}u, {self.fname(e)}}},' for e in ents]
-        t += ['};', f'const unsigned {self.prefix}_table_n = {len(ents)};',
-              f'guest_fn {self.prefix}_lookup(uint32_t va) {{',
-              f'    unsigned lo = 0, hi = {len(ents)};',
-              '    while (lo < hi) { unsigned mid = (lo + hi) / 2;',
-              f'        if ({self.prefix}_table[mid].va < va) lo = mid + 1; else hi = mid; }}',
-              f'    return (lo < {len(ents)} && {self.prefix}_table[lo].va == va) ? {self.prefix}_table[lo].fn : 0;',
-              '}',
-              ]
-        if self.cache_regs:   # indirect calls (virtual calls, callbacks) are hot: remember recent targets instead of a binary search over every function
-            t += ['typedef struct { uint32_t va; guest_fn fn; } rc_cent;', 'static rc_cent rc_cache[2048];',
-                  f'void {self.prefix}_call(CPU *c, uint32_t t) {{',
-                  '    rc_cent *e = &rc_cache[(t ^ (t >> 11)) & 2047];',
-                  '    if (e->va == t && e->fn) { e->fn(c); return; }',
-                  f'    guest_fn f = {self.prefix}_lookup(t);',
-                  '    if (f) { e->va = t; e->fn = f; f(c); } else rt_call_external(c, t);',
-                  '}']
-        else:
-            t += [f'void {self.prefix}_call(CPU *c, uint32_t t) {{',
-                  f'    guest_fn f = {self.prefix}_lookup(t);',
-                  '    if (f) f(c); else rt_call_external(c, t);',
-                  '}']
+        t = [f'#include "{self.prefix}_decls.h"', '#include <stdlib.h>'] + \
+            dispatch_code(self.prefix, [(e, self.fname(e)) for e in ents], self.cache_regs)
         open(os.path.join(outdir, f'{self.prefix}_table.c'), 'w').write('\n'.join(t) + '\n')
         files.append(f'{self.prefix}_table.c')
         meta = dict(prefix=self.prefix, base=self.img.base, entry=self.img.entry,
@@ -1381,6 +1520,10 @@ class Lifter:
                     smc_problems=self.smc_problems,
                     flags_in={hex(k): v for k, v in self.fl_in.items()}, flags_out={hex(k): v for k, v in self.fl_out.items()},
                     entries=ents)
+        if self.cache_regs:   # what callers assume each function may read/write (tools/apply_hooks.py checks fast paths against it)
+            meta['preserved'] = {hex(e): ' '.join(r for r in _CR_NAMES if r in v) for e, v in self.preserved.items() if v}
+            meta['reg_sum'] = {hex(e): [' '.join(r for r in _CR_NAMES if r in R), ' '.join(r for r in _CR_NAMES if r in W)]
+                               for e, (R, W) in self.reg_sum.items()}
         json.dump(meta, open(os.path.join(outdir, f'{self.prefix}_meta.json'), 'w'), indent=1)
         return meta
 
@@ -1392,12 +1535,25 @@ if __name__ == '__main__':
     ap.add_argument('--smc', action='store_true', help='analyse and translate self-modifying code')
     ap.add_argument('--rebase', type=lambda v: int(v, 0), help='lift a DLL as if loaded at this base (applies its relocations first)')
     ap.add_argument('--cache-regs', action='store_true', help='keep guest registers in C locals inside each function (faster; needs runtime/rt_fast.h)')
+    ap.add_argument('--no-abi-calls', action='store_true', help='--cache-regs: treat indirect calls and imports as changing every register (the old, slower behaviour)')
+    ap.add_argument('--no-x87', action='store_true', help='--cache-regs: keep the x87 stack in the CPU struct (the old translation) instead of C locals (lift_x87.py)')
+    ap.add_argument('--x87-exempt', metavar='FILE', help='--cache-regs: functions or call sites (hex addresses, # comments) that keep the struct-based x87 translation; a guest fault "x87 stack depth after a call" names the call site to list here')
+    ap.add_argument('--no-preserve', action='store_true', help='--cache-regs: skip the proof of which callee-saved registers each function restores (lift_preserve.py); callers then reload them after every call that touches them')
+    ap.add_argument('--abi-exempt', metavar='FILE', help='--cache-regs: addresses (hex, one or more per line, # comments) from RT_ABI_CHECK reports ("ABI VIOLATION: call at <site> to <target>"): a listed call site keeps the old reload-everything treatment, a listed function claims no preserved registers. Listing both addresses of each report is always right')
     ap.add_argument('--iat-indirect', action='store_true', help='for DLLs loaded by Windows: call imports through their IAT slot as plain indirect calls (the slot holds the real address)')
     a = ap.parse_args()
     img = Image(a.pe, a.rebase)
     img.iat_indirect = a.iat_indirect   # imports stay known by name (setjmp/longjmp), but are called through the IAT
     L = Lifter(a.pe, a.prefix, img)
     L.cache_regs = a.cache_regs
+    L.abi_calls = not a.no_abi_calls
+    L.preserve = not a.no_preserve
+    L.x87 = not a.no_x87
+    if a.x87_exempt:
+        L.x87_exempt = {int(t, 16) for ln in open(a.x87_exempt) for t in ln.split('#')[0].split()}
+    if a.abi_exempt:
+        L.abi_exempt = {int(t, 16) for ln in open(a.abi_exempt) for t in ln.split('#')[0].split()}
+        print(f'cache-regs: {len(L.abi_exempt)} call site(s) exempt from the calling-convention contract')
     if a.smc:
         w = L.smc_analyze()
         print(f'SMC: {len(w)} code writes -> {sum(len(v) for v in L.smc_sites.values())} patched fields in '
@@ -1412,6 +1568,21 @@ if __name__ == '__main__':
         it = L.regs_analyze()
         full = sum(1 for r, w in L.reg_sum.values() if len(w) == 8)
         print(f'cache-regs: {len(L.reg_sum)} functions summarised, {full} may change every register ({it + 1} iterations)')
+        if L.x87:
+            n = L.x87_analyze()
+            print(f'x87: {n} of {L.x87_users} functions that use the x87 stack keep it in C locals')
+            why = collections.Counter(re.sub(r' (at|after a call at) [0-9a-f]+| with depths .*|call at [0-9a-f]+: ', ' ', w).strip() for w in L.x87_declined.values())
+            for w, k in why.most_common(6): print(f'   left alone: {k} ({w})')
+        if L.preserve:
+            np_ = collections.Counter(len(v) for v in L.preserved.values())
+            print(f'preservation: of {len(L.preserved)} functions, {np_[4]} provably restore all of EBX/EBP/ESI/EDI, '
+                  f'{sum(np_[k] for k in (1, 2, 3))} some, {np_[0]} none ({L.preserve_steps} proofs)')
     meta = L.run(a.outdir, a.funcs_per_file)
+    if L.cache_regs:
+        s = L.call_stats
+        print(f"cache-regs call sites: {s['all8'] + s['partial'] + s['abi']}; reload all 8 registers after {s['all8']}, fewer after {s['partial']}, "
+              f"calling-convention contract (4 registers, RT_ABICHK) after {s['abi']}; "
+              f"{s['preserve']} direct calls skip reloading registers the callee is proven to restore"
+              + ('' if L.abi_calls else ' [--no-abi-calls]'))
     print(f"functions={meta['functions']} insns(with dup)={meta['insns']} files={len(meta['files'])}")
     print('unimpl:', meta['unimpl'])

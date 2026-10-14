@@ -87,6 +87,7 @@ static const char *write_dir(void) {      /* plat_fs_write_dir without a trailin
     return w;
 }
 char *vfs_map(const char *win, char *out, size_t n) {
+    crt_flush_writes();                       /* the host must see what open guest FILEs have buffered */
     char rel[1024]; normalise(win, rel, sizeof rel);
     const char *wd = write_dir();
     if (wd && resolve(wd, rel, out, n)) return out;
@@ -94,6 +95,7 @@ char *vfs_map(const char *win, char *out, size_t n) {
     return out;
 }
 char *vfs_map_write(const char *win, char *out, size_t n) {
+    crt_flush_writes();
     char rel[1024]; normalise(win, rel, sizeof rel);
     const char *wd = write_dir();
     if (!wd) { resolve(g_cfg.game_dir, rel, out, n); return out; }

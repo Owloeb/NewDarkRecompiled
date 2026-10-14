@@ -192,6 +192,12 @@ void plat_gfx_draw(int prim, const PlatVertex *v, int nverts, const uint16_t *id
 void plat_gfx_copy(PlatTexture *src, int sx, int sy, int sw, int sh, PlatTexture *dst, int dx, int dy, int dw, int dh, int linear);   /* NULL = back buffer */
 void plat_gfx_present(void);
 void plat_gfx_gamma(const uint16_t ramp[3][256]);                  /* may be ignored */
+/* Runs fn where the renderer runs, in order with the other plat_gfx_* calls, on a copy of the n bytes at data (or on data
+ * itself, before returning, when the renderer has no thread of its own). fn submits triangles with `draw` (same meaning
+ * as plat_gfx_draw) and must not call other plat_* functions or touch guest memory. Lets a front end move per-vertex
+ * work (transform, lighting) off the game thread. */
+typedef void (*PlatDrawFn)(int prim, const PlatVertex *v, int nverts, const uint16_t *idx, int nidx, const PlatDrawState *st);
+void plat_gfx_deferred(void (*fn)(void *data, PlatDrawFn draw), const void *data, size_t n);
 
 /* ================================================================ audio */
 /* Opens the one output stream: interleaved stereo int16 at `rate` Hz. The callback is called from the backend's audio

@@ -111,7 +111,7 @@ static void report_resident(void) {
 #else
 static void report_resident(void) {}
 #endif
-void port_exit(int code) { report_resident(); trace_dump(); plat_audio_close(); plat_video_close(); exit(code); }
+void port_exit(int code) { crt_flush_writes(); report_resident(); trace_dump(); plat_audio_close(); plat_video_close(); exit(code); }
 void port_die(const char *fmt, ...) {
     char b[1024]; va_list ap; va_start(ap, fmt); vsnprintf(b, sizeof b, fmt, ap); va_end(ap);
     plat_log_write(PLAT_LOG_ERROR, "[port] FATAL: "); plat_log_write(PLAT_LOG_ERROR, b);
@@ -257,9 +257,10 @@ void rt_call_external(CPU *c, uint32_t t) {
     char md[160]; port_die("call or jump to %08x, which is neither recompiled code nor a host function%s", t, mod_describe(t, md, sizeof md));
 }
 void rt_fault(CPU *c, uint32_t addr, int kind) {
-    static const char *names[] = { "?", "unimplemented instruction", "divide error", "trap", "bad jump", "bad return" };
+    static const char *names[] = { "?", "unimplemented instruction", "divide error", "trap", "bad jump", "bad return",
+                                   "x87 stack depth after a call (list this address in lift.py --x87-exempt)" };
     (void)c; const char *s = guest_symbol(addr);
-    port_die("guest fault: %s at %08x%s%s", kind >= 0 && kind <= 5 ? names[kind] : "?", addr, s ? " in " : "", s ? s : "");
+    port_die("guest fault: %s at %08x%s%s", kind >= 0 && kind <= 6 ? names[kind] : "?", addr, s ? " in " : "", s ? s : "");
 }
 void rt_budget_exhausted(CPU *c) { (void)c; port_die("budget exhausted"); }
 

@@ -115,4 +115,9 @@ decodes. The 2 failures are a NaN payload and an `fxam` on an empty x87 register
   support.
 - The mapper variant at 0x52e100-0x52e650 has no references in the exe and is treated as dead. If it's ever
   called, the dispatch fails loudly.
-- No optimisation pass yet: flag locals, registers resident in the struct, memcpy-based memory access.
+- The default output keeps registers in the CPU struct. `lift.py --cache-regs` keeps them in C locals per function instead;
+  callers then reload only what a callee may change: indirect calls and imports are assumed to keep the calling convention,
+  and `lift_preserve.py` proves which callee-saved registers each function restores. Both are verified at run time by
+  builds with `-DRT_ABI_CHECK`, and tested by `harness/abi_test/run.sh` and `harness/abi_test/csmith_fuzz.py`.
+  `lift_x87.py` keeps the x87 stack in C locals in every function whose stack depth is static, checking the depth change of
+  each call at run time (`csmith_fuzz.py --float` tests it).

@@ -56,6 +56,7 @@ IMP int __cdecl fseek(FILE *, long, int);
 IMP long __cdecl ftell(FILE *);
 IMP char *__cdecl fgets(char *, int, FILE *);
 IMP int __cdecl fputs(const char *, FILE *);
+IMP int __cdecl fflush(FILE *);
 IMP int __cdecl fprintf(FILE *, const char *, ...);
 IMP int __cdecl feof(FILE *);
 IMP int __cdecl fscanf(FILE *, const char *, ...);
@@ -81,6 +82,7 @@ IMP void __cdecl longjmp(void *, int);
 /* the x87 math helpers: argument(s) in st(0)/st(1), result in st(0); called through the asm helpers in conformance.c */
 IMP void __cdecl _CIpow(void);
 IMP void __cdecl _CIsqrt(void);
+IMP void __cdecl _ftol(void);
 IMP void __cdecl _CIatan2(void);
 IMP void __cdecl _CIfmod(void);
 #endif

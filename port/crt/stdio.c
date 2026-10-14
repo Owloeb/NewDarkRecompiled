@@ -23,7 +23,11 @@ struct Stream {
     uint32_t guest;                     /* the guest FILE */
     int fd;                             /* low-level descriptor it was opened from, or -1 */
     volatile int busy;                  /* a read is running without the guest lock (see stream_read) */
+    uint8_t *wbuf; int wlen;            /* write buffer (allocated on the first write): the engine saves a level with thousands
+                                           of small fwrites, and each host write can be slow (~1 ms on a Windows drive under WSL,
+                                           the Vita's memory card); data in it is in file form (text mode already translated) */
 };
+#define WBUF 65536
 #define MAXS 256
 static Stream *streams[MAXS];
 static uint32_t iob;                    /* guest _iob[3]: stdin, stdout, stderr */
@@ -45,7 +49,19 @@ Stream *crt_stream(uint32_t g) {
     }
 }
 /* file reads run without the guest lock, so other guest threads (the main loop) keep running during slow I/O */
-static int64_t stream_read(Stream *s, void *dst, uint64_t n) { int64_t r; s->busy = 1; BLOCKING(r = plat_fs_read(s->pf, dst, n)); s->busy = 0; return r; }
+/* writes what is buffered; everything that reads, moves or looks at the file (or closes it) calls this first */
+static int stream_flushw(Stream *s) {
+    if (!s->wlen) return 0;
+    if (s->append) plat_fs_seek(s->pf, 0, PLAT_SEEK_END);
+    int ok = s->pf && plat_fs_write(s->pf, s->wbuf, (uint64_t)s->wlen) == s->wlen;
+    s->wlen = 0; if (!ok) s->err = 1; return ok ? 0 : -1;
+}
+/* before any access to a file by name (open, stat, copy, rename, directory listing) and at exit: the host file system
+   must see everything the guest has written, as it would on Windows, whose CRT buffers too but shares the file cache */
+void crt_flush_writes(void) {
+    for (int i = 3; i < MAXS; i++) { Stream *s = streams[i]; if (s && s->wlen && !s->busy) stream_flushw(s); }
+}
+static int64_t stream_read(Stream *s, void *dst, uint64_t n) { int64_t r; stream_flushw(s); s->busy = 1; BLOCKING(r = plat_fs_read(s->pf, dst, n)); s->busy = 0; return r; }
 static uint32_t stream_new(PlatFile *pf, int console, int text, int rd, int wr, int append) {
     for (uint32_t i = 3; i < MAXS; i++) if (!streams[i]) {
         Stream *s = calloc(1, sizeof *s); s->pf = pf; s->console = console; s->text = text; s->rd = rd; s->wr = wr; s->append = append; s->fd = -1;
@@ -87,24 +103,36 @@ static int64_t stream_write(Stream *s, const uint8_t *p, uint64_t n) {
     if (s->console) { if (s->console != 3) console_write(s->console == 2, p, (uint32_t)n); return (int64_t)n; }
     if (!s->pf || !s->wr) { s->err = 1; return -1; }
     drop_readbuf(s);
-    if (s->append) plat_fs_seek(s->pf, 0, PLAT_SEEK_END);
-    if (!s->text) { int64_t r = plat_fs_write(s->pf, p, n); if (r < 0) s->err = 1; return r; }
-    uint8_t tmp[8192]; uint64_t done = 0;
-    while (done < n) {
-        size_t k = 0; uint64_t used = 0;
-        while (done + used < n && k < sizeof tmp - 2) { uint8_t ch = p[done + used++]; if (ch == '\n') tmp[k++] = '\r'; tmp[k++] = ch; }
-        if (plat_fs_write(s->pf, tmp, k) != (int64_t)k) { s->err = 1; return (int64_t)done; }
-        done += used;
+    if (!s->wbuf && !(s->wbuf = malloc(WBUF))) {          /* no buffer: write through */
+        if (s->append) plat_fs_seek(s->pf, 0, PLAT_SEEK_END);
+        if (!s->text) { int64_t r = plat_fs_write(s->pf, p, n); if (r < 0) s->err = 1; return r; }
+    }
+    if (!s->text) {
+        if (n >= WBUF / 2) {                                   /* big block: straight to the file */
+            if (stream_flushw(s)) return -1;
+            if (s->append) plat_fs_seek(s->pf, 0, PLAT_SEEK_END);
+            int64_t r = plat_fs_write(s->pf, p, n); if (r < 0) s->err = 1; return r;
+        }
+        if (s->wlen + (int)n > WBUF && stream_flushw(s)) return -1;
+        memcpy(s->wbuf + s->wlen, p, n); s->wlen += (int)n; return (int64_t)n;
+    }
+    for (uint64_t i = 0; i < n; i++) {                         /* text mode: LF -> CR LF */
+        if (s->wlen > WBUF - 2 && stream_flushw(s)) return (int64_t)i;
+        if (p[i] == '\n') s->wbuf[s->wlen++] = '\r';
+        s->wbuf[s->wlen++] = p[i];
     }
     return (int64_t)n;
 }
 static int64_t stream_tell(Stream *s) {
     if (!s->pf) return -1;
+    if (s->append) stream_flushw(s);
     int64_t p = plat_fs_seek(s->pf, 0, PLAT_SEEK_CUR); if (p < 0) return -1;
+    if (s->wlen) return p + s->wlen;                       /* (a write buffer and a read buffer are never both in use) */
     return p - (s->blen - s->bpos) - s->nungot;
 }
 static int stream_seek(Stream *s, int64_t off, int whence) {
     if (!s->pf) return -1;
+    if (s->wlen) { if (whence == PLAT_SEEK_CUR) { off += stream_tell(s); whence = PLAT_SEEK_SET; } stream_flushw(s); }
     if (whence == PLAT_SEEK_CUR) { off += stream_tell(s); whence = PLAT_SEEK_SET; }
     if (whence == PLAT_SEEK_SET && s->blen && !s->nungot) {           /* target inside what is buffered: no file access */
         int64_t end = plat_fs_seek(s->pf, 0, PLAT_SEEK_CUR), start = end - s->blen;
@@ -115,8 +143,9 @@ static int stream_seek(Stream *s, int64_t off, int whence) {
 }
 static void stream_close(uint32_t g) {
     Stream *s = crt_stream(g); if (!s || g == iob || g == iob + 32 || g == iob + 64) return;
+    stream_flushw(s);
     if (s->pf) plat_fs_close(s->pf);
-    streams[RD32(g + 16)] = NULL; g_free(g); free(s);
+    streams[RD32(g + 16)] = NULL; g_free(g); free(s->wbuf); free(s);
 }
 /* "r", "w+b", "at", "rb, ccs=UNICODE" ... */
 static int parse_mode(const char *m, int *rd, int *wr, int *append, int *text) {
@@ -138,6 +167,7 @@ SHIM(fopen_s_) { uint32_t g = do_fopen(gs(A(1)), gs(A(2))); WR32(A(0), g); RET(g
 SHIM(freopen_) {          /* the same FILE pointer comes back, now on the new file (freopen("log", "w", stderr) redirects stderr) */
     Stream *st = crt_stream(A(2)); if (!st) { RET(0); return; }
     int rd, wr, ap, text, fl = parse_mode(gs(A(1)), &rd, &wr, &ap, &text);
+    stream_flushw(st);
     if (st->pf) plat_fs_close(st->pf);
     st->pf = NULL; st->console = 0; st->bpos = st->blen = 0; st->nungot = 0; st->eof = st->err = 0; st->fd = -1;
     int err; PlatFile *f = fl < 0 || !A(0) ? NULL : vfs_open(gs(A(0)), fl, &err, NULL, 0);
@@ -178,7 +208,10 @@ SHIM(fsetpos_) { Stream *s = crt_stream(A(0)); RET(s && !stream_seek(s, (int64_t
 SHIM(feof_) { Stream *s = crt_stream(A(0)); RET(s ? s->eof && !s->nungot : 1); }
 SHIM(ferror_) { Stream *s = crt_stream(A(0)); RET(s ? s->err : 1); }
 SHIM(clearerr_) { Stream *s = crt_stream(A(0)); if (s) s->eof = s->err = 0; }
-SHIM(fflush_) { Stream *s = crt_stream(A(0)); if (s && s->pf) { drop_readbuf(s); plat_fs_flush(s->pf); } RET(0); }
+SHIM(fflush_) {
+    if (!A(0)) { crt_flush_writes(); RET(0); return; }   /* fflush(NULL): every stream */
+    Stream *s = crt_stream(A(0)); if (s && s->pf) { int e = stream_flushw(s); drop_readbuf(s); plat_fs_flush(s->pf); RET(e ? 0xFFFFFFFFu : 0); return; } RET(0);
+}
 SHIM(setbuf_) { }
 SHIM(setvbuf_) { RET(0); }
 SHIM(fgetc_) { Stream *s = crt_stream(A(0)); RET(s ? (uint32_t)stream_getc(s) : 0xFFFFFFFFu); }
@@ -210,7 +243,10 @@ static Fd *FD(uint32_t fd) { return fd < MAXFD && fds[fd].used ? &fds[fd] : NULL
 /* _fileno of an fopen stream is 1000 + its index (fileno_ above). Calls that only ask about the file (size, stat, flush)
    must accept those too: the engine's ZIP reader does _filelength(_fileno(f)) on every archive it opens. */
 #define STREAM_FD0 1000u
-static Stream *fd_stream(uint32_t fd) { return fd >= STREAM_FD0 && fd < STREAM_FD0 + MAXS && streams[fd - STREAM_FD0] && streams[fd - STREAM_FD0]->pf ? streams[fd - STREAM_FD0] : NULL; }
+static Stream *fd_stream(uint32_t fd) {     /* (flushed: the caller is about to look at the file) */
+    Stream *s = fd >= STREAM_FD0 && fd < STREAM_FD0 + MAXS && streams[fd - STREAM_FD0] && streams[fd - STREAM_FD0]->pf ? streams[fd - STREAM_FD0] : NULL;
+    if (s) stream_flushw(s); return s;
+}
 static PlatFile *fd_file(uint32_t fd) { Fd *f = FD(fd); if (f) return f->pf; Stream *s = fd_stream(fd); return s ? s->pf : NULL; }
 static int fd_open(const char *name, uint32_t of) {
     int fl = (of & 3) == 0 ? PLAT_READ : (of & 3) == 1 ? PLAT_WRITE : PLAT_READ | PLAT_WRITE;

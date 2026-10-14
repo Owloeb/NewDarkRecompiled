@@ -3,7 +3,8 @@
  * The game draws into an offscreen picture of exactly the size it asked for; every presented frame is scaled into the
  * window with black bars, so the window can have any size and the game's resolution stays what it chose. Mouse
  * positions are reported in that picture's pixels. Environment: SS2PORT_FULLSCREEN=0/1 overrides the game's choice,
- * SS2PORT_GLES=1 asks for OpenGL ES 2.0 instead of desktop OpenGL 2.1. */
+ * SS2PORT_GLES=1 asks for OpenGL ES 2.0 instead of desktop OpenGL 2.1, SS2PORT_RENDER_THREAD=1 runs the renderer on a thread of
+ * its own (gl_thread.c; the GL context then belongs to that thread). */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,6 +14,7 @@
 #include "gl_render.h"
 
 static SDL_Window *win; static SDL_GLContext ctx;
+static void port_log_plat_early(const char *m) { char b[200]; snprintf(b, sizeof b, "[sdl] %s", m); plat_log_write(PLAT_LOG_INFO, b); }
 static int surf_w = 640, surf_h = 480, want_fullscreen, rel_mode;
 
 /* ---------------------------------------------------------------- window */
@@ -23,6 +25,17 @@ static void letterbox(int *x, int *y, int *w, int *h) {
 }
 void gl_present_rect(int *x, int *y, int *w, int *h, int *ww, int *wh) { letterbox(x, y, w, h); SDL_GL_GetDrawableSize(win, ww, wh); }
 void gl_swap(void) { SDL_GL_SwapWindow(win); }
+int gl_thread_spawn(void (*fn)(void *), void *arg) { return plat_thread_start(fn, arg, "render"); }
+/* GL set-up, run on the GL thread (the render thread, or this one) */
+typedef struct { int gles, ret, w, h; } GlSetup;
+static void gl_setup(void *p) {
+    GlSetup *g = p; if (glt_on) SDL_GL_MakeCurrent(win, ctx);
+    SDL_GL_SetSwapInterval(getenv("SS2PORT_NOVSYNC") ? 0 : 1);
+    g->ret = gl_init(SDL_GL_GetProcAddress, g->gles);
+    if (!g->ret) { PlatVideoCaps c; gl_caps(&c); glt_set_caps(&c); }
+}
+static void gl_resize(void *p) { GlSetup *g = p; gl_resize_backbuffer(g->w, g->h); }
+static void gl_release(void *p) { (void)p; gl_shutdown(); if (glt_on) SDL_GL_MakeCurrent(win, NULL); }
 int plat_video_open(int w, int h, int fullscreen, const char *title) {
     const char *fs = getenv("SS2PORT_FULLSCREEN"); if (fs) fullscreen = atoi(fs);
     surf_w = w > 0 ? w : 640; surf_h = h > 0 ? h : 480; want_fullscreen = fullscreen;
@@ -37,19 +50,25 @@ int plat_video_open(int w, int h, int fullscreen, const char *title) {
         if (!win) { fprintf(stderr, "SDL window: %s\n", SDL_GetError()); return -1; }
         ctx = SDL_GL_CreateContext(win);
         if (!ctx) { fprintf(stderr, "OpenGL context: %s\n", SDL_GetError()); return -1; }
-        SDL_GL_SetSwapInterval(getenv("SS2PORT_NOVSYNC") ? 0 : 1);
-        if (gl_init(SDL_GL_GetProcAddress, gles)) return -1;
+        const char *rt = getenv("SS2PORT_RENDER_THREAD");
+        if (rt && atoi(rt)) {
+            SDL_GL_MakeCurrent(win, NULL);                                   /* the context moves to the render thread */
+            if (glt_start()) { fprintf(stderr, "render thread: could not start; rendering on this thread\n"); SDL_GL_MakeCurrent(win, ctx); }
+            else port_log_plat_early("renderer on its own thread");
+        }
+        GlSetup g = { gles, 0, 0, 0 }; glt_call(gl_setup, &g);
+        if (g.ret) return -1;
         SDL_StartTextInput();
     } else {
         SDL_SetWindowFullscreen(win, fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
         if (!fullscreen) { int cw, ch; SDL_GetWindowSize(win, &cw, &ch); if (cw < surf_w || ch < surf_h) SDL_SetWindowSize(win, surf_w, surf_h); }
         if (title) SDL_SetWindowTitle(win, title);
     }
-    gl_resize_backbuffer(surf_w, surf_h);
+    { GlSetup g = { 0, 0, surf_w, surf_h }; glt_call(gl_resize, &g); }
     return 0;
 }
-void plat_video_close(void) { if (ctx) { gl_shutdown(); SDL_GL_DeleteContext(ctx); ctx = NULL; } if (win) { SDL_DestroyWindow(win); win = NULL; } }
-void plat_video_caps(PlatVideoCaps *c) { gl_caps(c); }
+void plat_video_close(void) { if (ctx) { glt_call(gl_release, NULL); SDL_GL_DeleteContext(ctx); ctx = NULL; } if (win) { SDL_DestroyWindow(win); win = NULL; } }
+void plat_video_caps(PlatVideoCaps *c) { if (!glt_get_caps(c)) gl_caps(c); }
 void plat_video_window_size(int *w, int *h) { *w = surf_w; *h = surf_h; }
 void plat_video_display_size(int *w, int *h) {
     SDL_DisplayMode m; if (SDL_WasInit(SDL_INIT_VIDEO) || !SDL_InitSubSystem(SDL_INIT_VIDEO)) { if (!SDL_GetDesktopDisplayMode(0, &m)) { *w = m.w; *h = m.h; return; } }

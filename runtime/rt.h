@@ -16,9 +16,22 @@ typedef struct CPU {
     uint8_t  cf, zf, sf, of, pf; /* arithmetic flags crossing call/return boundaries */
     uint32_t fs_base;       /* guest address of the TIB (fs:[0] = SEH chain) */
     int64_t  budget;        /* harness: block budget; <0 => abort */
+    void    *rc;            /* this guest thread's indirect-call cache (rt_icache, --cache-regs); NULL until first used */
 } CPU;
 
 typedef void (*guest_fn)(CPU *);
+
+/* --cache-regs: indirect calls (<prefix>_call, lift.py dispatch_code) remember recent targets in a cache owned by the guest
+ * thread (reached through its CPU struct), so threads never share one and need no synchronisation: 1024 sets of 2
+ * entries, the most recently used first. Keys are guest addresses, which are unique across recompiled modules, so one
+ * cache serves all of them. Hosts create each guest thread's CPU struct zeroed (rc = NULL). */
+typedef struct { uint32_t va; guest_fn fn; } rt_icache_ent;
+typedef struct { rt_icache_ent e[1024][2]; } rt_icache;
+#include <stdlib.h>
+static inline rt_icache *rt_icache_of(CPU *c) {
+    if (__builtin_expect(c->rc == 0, 0)) c->rc = calloc(1, sizeof(rt_icache));
+    return (rt_icache *)c->rc;
+}
 
 extern uint8_t *M;          /* guest memory base */
 
@@ -34,7 +47,8 @@ static inline void rt_cpuid(CPU *c){
 void rt_call_external(CPU *c, uint32_t target); /* indirect call target not in this module */
 void rt_fault(CPU *c, uint32_t addr, int kind); /* never returns */
 void rt_budget_exhausted(CPU *c);               /* never returns */
-enum { RT_FAULT_UNIMPL = 1, RT_FAULT_DIVIDE = 2, RT_FAULT_TRAP = 3, RT_FAULT_BADJUMP = 4, RT_FAULT_BADRET = 5 };
+enum { RT_FAULT_UNIMPL = 1, RT_FAULT_DIVIDE = 2, RT_FAULT_TRAP = 3, RT_FAULT_BADJUMP = 4, RT_FAULT_BADRET = 5,
+       RT_FAULT_X87 = 6 /* --cache-regs: x87 stack depth after a call is not what lift_x87.py inferred (list the address in lift.py --x87-exempt) */ };
 
 /* ---- memory ---- */
 #ifdef RT_IDENTITY   /* guest address == host address (32-bit Windows host) */

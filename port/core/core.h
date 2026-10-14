@@ -136,6 +136,7 @@ uint32_t get_last_error(void);
 /* Maps a Windows path ("C:\Games\SS2\Data\res\a.crf", "Data\res", "./a.txt") to a host path below the game folder,
  * resolving case differences against what exists. Returns out. For a path that does not exist yet, the existing part is
  * case-resolved and the rest kept as given. */
+void  crt_flush_writes(void);              /* crt/stdio.c: writes out what guest FILE streams have buffered */
 char *vfs_map(const char *win, char *out, size_t n);
 char *vfs_map_write(const char *win, char *out, size_t n);     /* the same, for a file the game writes (the write folder, if any) */
 PlatFile *vfs_open(const char *win, int flags, int *err, char *host, size_t hn);

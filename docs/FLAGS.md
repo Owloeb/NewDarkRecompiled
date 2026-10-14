@@ -47,6 +47,12 @@ The rest of this page is reference. Look things up here; you do not need to read
 | `--build DIR` | Build directory [`build/port`, or `build/port-win` for `--target windows`]. |
 | `--install` | Copy the result next to `SS2.exe`. |
 | `--cache-regs` | **Experimental.** Lift with `lift.py --cache-regs`. Normally guest registers live in a struct and every guest memory store forces the C compiler to reload them. This keeps each function's registers in C locals (written back only around calls, faults and returns) and routes indirect calls through a small target cache instead of a binary search. Expected effect: Vita about +20% frame rate (mostly the call cache); x86-64 about +5%; 32-bit Windows hosts probably the best case but unmeasured; ARM under qemu was ~7% *slower* (qemu isn't a reliable speed guide). Passes the full conformance suite (plain and cache-regs) on Linux and on a Windows (`--target windows`) run, sanitizers clean; never measured in the real game on a PC. Switching it on or off relifts everything (~8 minutes). |
+| `--fastpaths` | Native C versions of a few very hot engine functions: the string-name hash, float-to-int, and the 2D bitmap copy to the software canvas (`port/core/fastpaths.c`, three so far). Same behaviour, less CPU; each was checked against the recompiled original on random inputs. Works with `--cache-regs`: `tools/apply_hooks.py` then checks each fast path against the lifter's register summaries and stops the build if one reads or writes a register its original function doesn't. Takes seconds to switch on or off (no re-lift; only three generated files recompile). Off by default. |
+| `--abi-check` | With `--cache-regs`: build with `-DPORT_ABI_CHECK=ON`. Every indirect call and import call checks that EBX/EBP/ESI/EDI came back unchanged, as the lifter assumes; a violation is logged once per call site (`ABI VIOLATION: call at <site> ...`) and corrected. A little slower: for test sessions, not timing runs. List reported sites in a file for `--abi-exempt`. |
+| `--prof` | Sampling profiler (`-DPORT_PROF=ON`): every 20 s the log lists the 30 guest functions and imports that ran most (`[port] PROF  12.3% nd_0068bff0`). Recompiles; no relift. |
+| `--no-x87`, `--no-preserve`, `--no-abi-calls` | With `--cache-regs`: switch off one of the lifter's optimisations (x87 stack in locals, the preservation proof, the calling-convention contract), e.g. to find which one a problem comes from. Each relifts. |
+| `--abi-exempt FILE` | With `--cache-regs`: addresses from `--abi-check` reports (both addresses of each `ABI VIOLATION: call at <site> to <target>` line, hex, one or more per line): those call sites and functions keep the old reload-everything treatment. Passed to `lift.py --abi-exempt`; changing the file relifts. |
+| `--x87-exempt FILE` | With `--cache-regs`: addresses from "x87 stack depth after a call" guest faults (hex, one per line): those functions keep the struct-based x87 translation. Passed to `lift.py --x87-exempt`; changing the file relifts. |
 | `--symbols` | Embed a function-name table (`tools/annotate.py` plus `symbols/manual.sym`) so crash reports name functions (`cmd_crouch`) instead of printing addresses. Adds about 780 KB, so it is off by default. |
 | `--low-dll-bases` | Lift the game's DLLs for load addresses below 32 MB. Only for hosts with a small guest address space (the PS Vita). |
 
@@ -94,6 +100,7 @@ SDL2 backend unless noted.
 | `SS2PORT_FULLSCREEN=0\|1` | Override the game's fullscreen choice. |
 | `SS2PORT_GLES=1` | Use OpenGL ES 2.0 instead of OpenGL 2.1. |
 | `SS2PORT_NOVSYNC` | Present without vsync. |
+| `SS2PORT_RENDER_THREAD=1` | Run the OpenGL renderer on a thread of its own (`backends/sdl2/gl_thread.c`): the game records each frame's drawing and goes on to the next while that thread draws it, at most one frame behind. Off by default on the desktop; on by default on the Vita. |
 | `SS2PORT_NOSOUND` | No audio device. |
 | `SS2PORT_NOALERT` | Log message boxes instead of showing them. |
 | `SS2PORT_WRITE_DIR=DIR` | Write saves and config here, so the game folder can stay read-only. |
@@ -132,6 +139,8 @@ then build with CMake `-DPORT_BACKEND=vita` and the vitasdk toolchain file.
 | `--look-speed N` | Look speed in percent [100]. |
 | `--no-watchdog` | Turn off the hang watchdog (which forces a core dump when the game neither draws nor touches a file for 90 s). |
 | `--no-readahead` | Turn off read-ahead for files read straight through. |
+| `--no-render-thread` | Render on the game's thread. By default vitaGL runs on a render thread of its own on core 1 (`backends/sdl2/gl_thread.c`), so drawing a frame overlaps computing the next; the game runs at most one frame ahead of the screen. The profile line then shows `render N% (..., own thread)` for how busy that thread is and `game waits for renderer N%`. |
+| `--no-sound-cache` | Turn off the cache for `SND.CRF` / `SND2.CRF` (`backends/vita/sndcache.c`: remembers up to 24 MB of recently read sound (less if the host heap gets within 8 MB of full) and reads the next pieces of each playing sound ahead). The log prints a `sound cache:` line every 15 s. |
 
 Without `--guest-space`/`--guest-backed` in that file the Vita uses 208 and 128.
 
@@ -153,7 +162,12 @@ Without `--guest-space`/`--guest-backed` in that file the Vita uses 208 and 128.
 | `--smc` | Analyse and translate self-modifying code (used for `SS2.exe`). |
 | `--rebase ADDR` | Lift a DLL as if loaded at this address (applies its relocations first). |
 | `--iat-indirect` | For DLLs loaded by Windows: call imports through their IAT slot as plain indirect calls. |
-| `--cache-regs` | **Experimental.** Guest registers in C locals per function, indirect calls through a target cache (needs `runtime/rt_fast.h`). Default output is unchanged without it. |
+| `--cache-regs` | **Experimental.** Guest registers in C locals per function, indirect calls through a target cache (needs `runtime/rt_fast.h`). Default output is unchanged without it. Indirect calls and imports are assumed to keep the calling convention (they change only EAX, ECX, EDX and ESP), so only those four are reloaded after them; compile the generated C with `-DRT_ABI_CHECK` (plus `runtime/rt_abi_check.c`) to verify that at run time. |
+| `--no-abi-calls` | With `--cache-regs`: treat indirect calls and imports as changing every register (the older, slower behaviour), e.g. to bisect a problem. |
+| `--no-preserve` | With `--cache-regs`: skip the proof of which callee-saved registers (EBX/EBP/ESI/EDI) each function restores (`lift_preserve.py`). With the proof, a caller keeps those registers in locals across a call to a function that saves and restores them, instead of reloading them; the lifter prints how many call sites that covers. |
+| `--no-x87` | With `--cache-regs`: keep the x87 stack in the CPU struct (the default translation) instead of C locals. With `lift_x87.py`, each function that keeps its x87 stack depth static (compiled code does) holds the stack in C locals, written back only at calls, returns and fnstsw/fxam; about 1.5x faster on float-heavy code in a desktop test. The depth change of each call is checked at run time; a mismatch is a guest fault naming the call site. |
+| `--x87-exempt FILE` | With `--cache-regs`: functions or call sites (hex, one or more per line, `#` comments) left with the struct-based x87 translation. The address in an "x87 stack depth after a call" fault goes here. |
+| `--abi-exempt FILE` | With `--cache-regs`: addresses (hex, one or more per line, `#` comments) from `RT_ABI_CHECK` reports (`ABI VIOLATION: call at <site> to <target> ...`). A listed call site keeps the old reload-everything treatment; a listed function claims no preserved registers. Putting both addresses of each report in the file is always right. |
 | `--funcs-per-file N` | Functions per generated C file [150]. |
 
 ### Conformance tests (`port/tests/run_conformance.py`)
@@ -165,6 +179,7 @@ Builds a game-free 32-bit test program, lifts it and runs it on the host. No gam
 | `--backend null\|sdl2` | Backend to test [`null`]; `sdl2` adds pixel-exact rendering checks (needs a display, e.g. `--wrap "xvfb-run -a"`). |
 | `--target native\|windows` | `windows`: build the Windows exe (run it with `--wrap wine` or on Windows). |
 | `--cache-regs` | Lift the test program with `--cache-regs`. |
+| `--abi-check` | With `--cache-regs`: build with `-DPORT_ABI_CHECK=ON` and fail if any call breaks the calling-convention contract. |
 | `--cflags "..."` | Extra C flags, e.g. `-fsanitize=address,undefined` or `-DRT_PROF`. |
 | `--cc COMPILER` | C compiler to use. |
 | `--config TYPE` | CMake build type [RelWithDebInfo]. |

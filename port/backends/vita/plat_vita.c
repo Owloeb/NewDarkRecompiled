@@ -10,6 +10,7 @@
  * Vita-only options (in ss2port.txt):
  *   --swap-sticks        move with the right stick, look with the left
  *   --look-speed N       right-stick look speed, default 100 (percent)
+ *   --no-render-thread   render on the game's thread (by default vitaGL runs on a thread of its own, on core 1: gl_thread.c)
  *
  * Controls (keys meant to match SS2's usual binds; check them against your bind file and change the table below):
  *   left stick  W A S D           right stick  mouse look / cursor
@@ -53,6 +54,9 @@
 #ifndef VITA_VGL_RAM_MB             /* main-RAM pool of vitaGL (vertex data etc.) */
 #define VITA_VGL_RAM_MB 6
 #endif
+#ifndef VITA_RENDER_STACK             /* the render thread's stack (vitaGL compiles shaders on it); thread stacks come out of the few MB left after the guest block */
+#define VITA_RENDER_STACK (1u << 20)
+#endif
 #ifndef VITA_RAM_THRESHOLD_MB        /* RAM vitaGL leaves free when it sizes its pools (thread stacks are allocated later) */
 #define VITA_RAM_THRESHOLD_MB 32
 #endif
@@ -60,6 +64,16 @@
 #define SCREEN_H 544
 
 unsigned int _newlib_heap_size_user = VITA_HEAP_MB * 1024 * 1024;
+
+/* vita-elf-create needs about 3.5 KB of free space after the code segment (before the data segment starts) for the SCE module data.
+ * vita.cmake now links with a script that always leaves 4 KB there, so "Cannot allocate N bytes for SCE data at end of segment 0;
+ * segment 1 overlaps" should not happen any more. If vita.cmake warned that it could not generate that script, pass
+ * -DVITA_CODE_PAD=<bytes> (in CMAKE_C_FLAGS) to grow the code segment by that much instead. */
+#ifdef VITA_CODE_PAD
+#define VITA_STR2_(x) #x
+#define VITA_STR_(x) VITA_STR2_(x)
+__asm__(".text\n.balign 4\n.space " VITA_STR_(VITA_CODE_PAD) "\n");
+#endif
 void vita_log_free_memory(const char *when);
 static void vlog(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 #include <stdarg.h>
@@ -73,7 +87,7 @@ static void letterbox(int *x, int *y, int *w, int *h) {
 }
 void gl_present_rect(int *x, int *y, int *w, int *h, int *ww, int *wh) { letterbox(x, y, w, h); *ww = SCREEN_W; *wh = SCREEN_H; }
 /* every 5 s: frame rate, and how the time splits between the file layer, presenting the picture and everything else (the game's CPU work) */
-extern uint64_t vp_fs_ns, vp_fs_open, vp_fs_stat, vp_fs_read_calls, vp_fs_sys_reads, vp_fs_bytes;
+extern uint64_t vp_fs_ns, vp_fs_open, vp_fs_stat, vp_fs_read_calls, vp_fs_sys_reads, vp_fs_bytes, vp_fs_game_ns; extern int vita_game_tid;
 extern volatile uint64_t vp_fs_activity;
 uint64_t gl_prof_ns, gl_prof_draws;
 static uint64_t swap_ns; static unsigned frames;
@@ -81,18 +95,20 @@ void vita_log_guest_highwater(const char *when);
 void vita_log_inflight(void);
 void vita_log_readstats(void);
 void vita_profile_tick(uint64_t now) {
-    static uint64_t t0, last_swap, last_fs, last_gl, d0, o0, st0, rc0, sr0, b0; static unsigned f0;
+    static uint64_t t0, last_fsg, last_swap, last_fs, last_gl, last_wait, d0, o0, st0, rc0, sr0, b0; static unsigned f0;
     if (!t0) { t0 = now; return; }
     if (now - t0 < 5000000000ull) return;
     double dt = (double)(now - t0) / 1e9;
-    double gl = (double)(gl_prof_ns - last_gl), fs = (double)(vp_fs_ns - last_fs), sw = (double)(swap_ns - last_swap); unsigned nf = frames - f0;
-    vlog("profile: %.1f fps | render %.0f%% (swap %.0f%%, %llu draws/frame) | files %.0f%% (%llu opens, %llu stats, %llu reads -> %llu system reads, %.1f MB) | game cpu %.0f%%", nf / dt,
-         100.0 * gl / (dt * 1e9), 100.0 * sw / (dt * 1e9), (unsigned long long)(nf ? (gl_prof_draws - d0) / nf : 0),
-         100.0 * fs / (dt * 1e9), (unsigned long long)(vp_fs_open - o0), (unsigned long long)(vp_fs_stat - st0),
+    double gl = (double)(gl_prof_ns - last_gl), fs = (double)(vp_fs_ns - last_fs), sw = (double)(swap_ns - last_swap), wt = (double)(glt_wait_ns - last_wait), fsg = (double)(vp_fs_game_ns - last_fsg); unsigned nf = frames - f0;
+    /* with a render thread, "render" is how busy that thread is (core 1) and "waits" is the game thread waiting for it;
+       without one, rendering happens on the game thread and is subtracted from its CPU time */
+    vlog("profile: %.1f fps | render %.0f%% (swap %.0f%%, %llu draws/frame%s) | files %.0f%%, game thread %.0f%% (%llu opens, %llu stats, %llu reads -> %llu system reads, %.1f MB) | game waits for renderer %.0f%% | game cpu %.0f%%", nf / dt,
+         100.0 * gl / (dt * 1e9), 100.0 * sw / (dt * 1e9), (unsigned long long)(nf ? (gl_prof_draws - d0) / nf : 0), glt_on ? ", own thread" : "",
+         100.0 * fs / (dt * 1e9), 100.0 * fsg / (dt * 1e9), (unsigned long long)(vp_fs_open - o0), (unsigned long long)(vp_fs_stat - st0),
          (unsigned long long)(vp_fs_read_calls - rc0), (unsigned long long)(vp_fs_sys_reads - sr0), (double)(vp_fs_bytes - b0) / 1048576.0,
-         100.0 - 100.0 * (gl + fs) / (dt * 1e9));
+         100.0 * wt / (dt * 1e9), 100.0 - 100.0 * ((glt_on ? wt : gl) + fsg) / (dt * 1e9));
     { static int n; if (++n % 3 == 0) { vita_log_guest_highwater("now"); vita_log_readstats(); } }
-    t0 = now; last_swap = swap_ns; last_fs = vp_fs_ns; last_gl = gl_prof_ns; d0 = gl_prof_draws; o0 = vp_fs_open; st0 = vp_fs_stat; rc0 = vp_fs_read_calls; sr0 = vp_fs_sys_reads; b0 = vp_fs_bytes; f0 = frames;
+    t0 = now; last_fsg = vp_fs_game_ns; last_swap = swap_ns; last_fs = vp_fs_ns; last_gl = gl_prof_ns; last_wait = glt_wait_ns; d0 = gl_prof_draws; o0 = vp_fs_open; st0 = vp_fs_stat; rc0 = vp_fs_read_calls; sr0 = vp_fs_sys_reads; b0 = vp_fs_bytes; f0 = frames;
 }
 uint64_t vita_now_ns(void);
 const char *volatile vita_where; volatile uint64_t vita_where_t0;
@@ -104,10 +120,23 @@ void gl_swap(void) {
     clock_gettime(CLOCK_MONOTONIC, &b); swap_ns += (uint64_t)(b.tv_sec - a.tv_sec) * 1000000000u + (uint64_t)(b.tv_nsec - a.tv_nsec); frames++;
     vita_profile_tick((uint64_t)b.tv_sec * 1000000000u + (uint64_t)b.tv_nsec);
 }
-int plat_video_open(int w, int h, int fullscreen, const char *title) {
-    (void)fullscreen; (void)title;
-    surf_w = w > 0 ? w : 640; surf_h = h > 0 ? h : 480;
-    if (!gl_ready) {
+/* the render thread: core 1 to itself (the game has core 0; audio, file and guest worker threads use core 2) */
+int vita_render_thread = 1;
+typedef struct { void (*fn)(void *); void *arg; } RStart;
+static void *render_main(void *p) {
+    sceKernelChangeThreadCpuAffinityMask(sceKernelGetThreadId(), SCE_KERNEL_CPU_MASK_USER_1);
+    RStart s = *(RStart *)p; free(p); s.fn(s.arg); return NULL;
+}
+int gl_thread_spawn(void (*fn)(void *), void *arg) {
+    RStart *s = malloc(sizeof *s); if (!s) return -1; s->fn = fn; s->arg = arg;
+    pthread_t t; pthread_attr_t a; pthread_attr_init(&a); pthread_attr_setstacksize(&a, VITA_RENDER_STACK); pthread_attr_setdetachstate(&a, PTHREAD_CREATE_DETACHED);
+    int r = pthread_create(&t, &a, render_main, s); pthread_attr_destroy(&a); if (r) free(s); return r ? -1 : 0;
+}
+/* vitaGL set-up, on the GL thread (the render thread, or the game thread with --no-render-thread) */
+static int gl_setup_ret;
+static void gl_setup(void *u) {
+    (void)u; gl_setup_ret = 0;
+    {
         vita_log_free_memory("before vitaGL");
         mkdir(VITA_GAME_DIR "/shader_cache", 0777); vglSetShaderCachePath(VITA_GAME_DIR "/shader_cache");   /* used if vitaGL was built with HAVE_SHADER_CACHE=1 */
         /* explicit pools, not "whatever RAM is left": the guest block has taken nearly all of it. Textures and buffers live in the 112 MB of video memory */
@@ -119,15 +148,27 @@ int plat_video_open(int w, int h, int fullscreen, const char *title) {
             vlog("vitaGL started (RAM pool %d MB%s)", VITA_VGL_RAM_MB, clamped ? ", display size was clamped" : "");
         }       /* started once only: a second plat_video_open reuses it */
         vita_log_free_memory("after vitaGL");
-        if (gl_init(vglGetProcAddress, 1)) return -1;
+        if (gl_init(vglGetProcAddress, 1)) { gl_setup_ret = -1; return; }
+        PlatVideoCaps c; gl_caps(&c); glt_set_caps(&c);
+    }
+}
+static void gl_resize(void *u) { (void)u; gl_resize_backbuffer(surf_w, surf_h); }
+static void gl_down(void *u) { (void)u; gl_shutdown(); }
+int plat_video_open(int w, int h, int fullscreen, const char *title) {
+    (void)fullscreen; (void)title;
+    surf_w = w > 0 ? w : 640; surf_h = h > 0 ? h : 480;
+    if (!gl_ready) {
+        if (vita_render_thread) { if (glt_start()) vlog("render thread: could not start; rendering on the game thread"); else vlog("renderer on its own thread (core 1)"); }
+        glt_call(gl_setup, NULL);
+        if (gl_setup_ret) return -1;
         gl_ready = 1;
     }
     vlog("game picture %dx%d, shown at %dx%d", surf_w, surf_h, SCREEN_W, SCREEN_H);
-    gl_resize_backbuffer(surf_w, surf_h);
+    glt_call(gl_resize, NULL);
     return 0;
 }
-void plat_video_close(void) { if (gl_ready) gl_shutdown(); }    /* vitaGL stays up until the process exits; a reopen reuses it */
-void plat_video_caps(PlatVideoCaps *c) { gl_caps(c); }
+void plat_video_close(void) { if (gl_ready) glt_call(gl_down, NULL); }    /* vitaGL stays up until the process exits; a reopen reuses it */
+void plat_video_caps(PlatVideoCaps *c) { if (!glt_get_caps(c)) gl_caps(c); }
 void plat_video_window_size(int *w, int *h) { *w = surf_w; *h = surf_h; }
 void plat_video_display_size(int *w, int *h) { *w = SCREEN_W; *h = SCREEN_H; }
 void plat_video_set_title(const char *t) { (void)t; }
@@ -239,6 +280,7 @@ int port_main(int argc, char **argv);
 typedef struct { int argc; char **argv; int ret; } MainArgs;
 static void *game_thread(void *p) {
     sceKernelChangeThreadCpuAffinityMask(sceKernelGetThreadId(), SCE_KERNEL_CPU_MASK_USER_0);    /* a core of its own */
+    vita_game_tid = sceKernelGetThreadId();
     MainArgs *a = p; a->ret = port_main(a->argc, a->argv); return NULL;
 }
 
@@ -248,7 +290,7 @@ static void *game_thread(void *p) {
 #ifndef VITA_WATCHDOG_S
 #define VITA_WATCHDOG_S 90
 #endif
-static int watchdog_on = 1; extern int vita_readahead;
+static int watchdog_on = 1; extern int vita_readahead, vita_sound_cache;
 static void *watchdog(void *u) {
     (void)u; unsigned last_f = 0; uint64_t last_r = 0; int idle = 0;
     for (;;) {
@@ -302,6 +344,8 @@ int main(int argc, char **argv) {
         if (!strcmp(opt[i], "--swap-sticks")) { swap_sticks = 1; continue; }
         if (!strcmp(opt[i], "--no-watchdog")) { watchdog_on = 0; continue; }
         if (!strcmp(opt[i], "--no-readahead")) { vita_readahead = 0; continue; }
+        if (!strcmp(opt[i], "--no-sound-cache")) { vita_sound_cache = 0; continue; }
+        if (!strcmp(opt[i], "--no-render-thread")) { vita_render_thread = 0; continue; }
         if (!strcmp(opt[i], "--look-speed") && i + 1 < nopt) { look_speed = (float)atof(opt[++i]) / 100.0f; continue; }
         if (!strcmp(opt[i], "--guest-space") || !strcmp(opt[i], "--guest-backed")) have_space = 1;
         if (ends_with_exe(opt[i])) have_exe = 1;

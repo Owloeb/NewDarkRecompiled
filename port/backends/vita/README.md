@@ -46,13 +46,23 @@ calls through a target cache; see `runtime/rt_fast.h`). It passes the conformanc
 +20% frame rate on the Vita. Switching it on or off relifts everything. For a profile of where the time goes, add
 `-DPORT_PROF=ON` to the `cmake` line (see `PERF.md`).
 
+With `--cache-regs`, indirect calls and imports are assumed to keep EBX/EBP/ESI/EDI (the calling convention), and
+functions the lifter proves to restore them (`lift_preserve.py`) are trusted to. For a test session, add `-DPORT_ABI_CHECK=ON` to the `cmake` line: every such call is checked, and a violation is written to
+`ss2port.log` once per call site (`ABI VIOLATION: call at <site> ...`) and corrected. No such lines means the assumption
+holds; leave the option off for timing runs. Both addresses of a reported line go in a file for `port/build.py --abi-exempt`
+(see `docs/FLAGS.md`). `--fastpaths` can be combined with `--cache-regs`.
+
+`--cache-regs` also keeps the x87 stack in C locals (`lift_x87.py`). If the game ever stops with a guest fault "x87 stack
+depth after a call", put the address it names in a file and add `--x87-exempt FILE` to the `build.py` line.
+
 ## 3. Install
 
 - Install `ss2port.vpk` with VitaShell.
 - Copy the whole game folder (with `SS2.exe`, `Data/`, `OSM/`, `lgvid.dll`, ...) to `ux0:data/ss2/`.
 - Optional `ux0:data/ss2/ss2port.txt` with host options, e.g. `--guest-space 256 --verbose`. Vita-only:
   `--swap-sticks` (move with the right stick, look with the left), `--look-speed 150` (percent), `--no-watchdog`,
-  `--no-readahead`.
+  `--no-readahead`. Sound archives (`SND.CRF`, `SND2.CRF`) also go through a small cache with per-sound read-ahead (`sndcache.c`; `--no-sound-cache` turns it off), because several playing sounds interleave their reads and look random to the window.
+- Rendering runs on a thread of its own on core 1 (`backends/sdl2/gl_thread.c`): the game thread (core 0) records each frame's draw calls into a 4 MB buffer and moves on while the render thread replays them through vitaGL, at most one frame behind. Audio, file and guest worker threads use core 2. `--no-render-thread` in `ss2port.txt` puts rendering back on the game thread.
 - Set the game's resolution low (640x480) in its config to begin with.
 
 Every start rewrites `ux0:data/ss2/ss2port.log`. Every 5 seconds it adds a `profile:` line (frame rate, and the share of time
