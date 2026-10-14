@@ -55,6 +55,9 @@ Vita backend; nothing here changes the PC builds (all Vita-specific or experimen
 
 ## Ideas, in rough order of expected value
 1. (done, see results) indirect-call cache.
+1a. (done, not yet measured on hardware) Render thread: vitaGL on core 1 (gl_thread.c), the game thread only records draws. Takes the
+    GL time (render 5-10% plus most of DrawPrimitiveUP's 10-14%) off the game thread. The D3D front end's own CPU work in
+    dx/d3d9.c (vertex transform, lighting, FVF decoding) stays on the game thread.
 1b. (sound archives done, see sndcache.c; not yet measured) Read-ahead for file reads during play (a prefetch thread or bigger window) to take the 6-16% file wait off the game thread.
 2. Inline tiny functions (lifter, or LTO / fewer files for the generated code).
 3. x87 `top` tracking at lift time (st[] as locals); callee-saved register elision.

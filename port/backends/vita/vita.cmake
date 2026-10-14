@@ -17,7 +17,7 @@ set(VITA_TITLEID "SSHK00002" CACHE STRING "title ID: 4 capital letters and 5 dig
 set(VITA_VERSION "01.00" CACHE STRING "app version, NN.NN")
 
 set(SYS_SRC "")                                                                 # backends/vita brings its own sys/fs part
-list(APPEND BACKEND_SRC ${CMAKE_CURRENT_SOURCE_DIR}/backends/sdl2/gl_render.c)    # the shared OpenGL ES 2.0 renderer
+list(APPEND BACKEND_SRC ${CMAKE_CURRENT_SOURCE_DIR}/backends/sdl2/gl_render.c ${CMAKE_CURRENT_SOURCE_DIR}/backends/sdl2/gl_thread.c)    # the shared OpenGL ES 2.0 renderer, and its render thread
 
 # vita-elf-create appends about 3.5 KB of SCE module data after the code segment, and fails ("Cannot allocate N bytes for SCE
 # data at end of segment 0; segment 1 overlaps") when the data segment starts closer than that. The default linker script

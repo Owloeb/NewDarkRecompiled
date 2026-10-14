@@ -100,6 +100,7 @@ SDL2 backend unless noted.
 | `SS2PORT_FULLSCREEN=0\|1` | Override the game's fullscreen choice. |
 | `SS2PORT_GLES=1` | Use OpenGL ES 2.0 instead of OpenGL 2.1. |
 | `SS2PORT_NOVSYNC` | Present without vsync. |
+| `SS2PORT_RENDER_THREAD=1` | Run the OpenGL renderer on a thread of its own (`backends/sdl2/gl_thread.c`): the game records each frame's drawing and goes on to the next while that thread draws it, at most one frame behind. Off by default on the desktop; on by default on the Vita. |
 | `SS2PORT_NOSOUND` | No audio device. |
 | `SS2PORT_NOALERT` | Log message boxes instead of showing them. |
 | `SS2PORT_WRITE_DIR=DIR` | Write saves and config here, so the game folder can stay read-only. |
@@ -138,6 +139,7 @@ then build with CMake `-DPORT_BACKEND=vita` and the vitasdk toolchain file.
 | `--look-speed N` | Look speed in percent [100]. |
 | `--no-watchdog` | Turn off the hang watchdog (which forces a core dump when the game neither draws nor touches a file for 90 s). |
 | `--no-readahead` | Turn off read-ahead for files read straight through. |
+| `--no-render-thread` | Render on the game's thread. By default vitaGL runs on a render thread of its own on core 1 (`backends/sdl2/gl_thread.c`), so drawing a frame overlaps computing the next; the game runs at most one frame ahead of the screen. The profile line then shows `render N% (..., own thread)` for how busy that thread is and `game waits for renderer N%`. |
 | `--no-sound-cache` | Turn off the cache for `SND.CRF` / `SND2.CRF` (`backends/vita/sndcache.c`: remembers about 4 MB of recently read sound and reads the next pieces of each playing sound ahead). The log prints a `sound cache:` line every 15 s. |
 
 Without `--guest-space`/`--guest-backed` in that file the Vita uses 208 and 128.

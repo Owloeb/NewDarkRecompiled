@@ -93,8 +93,9 @@ void plat_sleep_ns(uint64_t ns) { sceKernelDelayThread((SceUInt)(ns / 1000u)); }
 typedef struct { void (*fn)(void *); void *arg; } Start;
 struct PlatMutex { pthread_mutex_t m; };
 struct PlatCond { pthread_cond_t c; };
-static void *thread_main(void *p) {          /* host and guest worker threads stay off core 0, which belongs to the game's main thread */
-    sceKernelChangeThreadCpuAffinityMask(sceKernelGetThreadId(), SCE_KERNEL_CPU_MASK_USER_1 | SCE_KERNEL_CPU_MASK_USER_2);
+extern int vita_render_thread;              /* plat_vita.c: the render thread has core 1 */
+static void *thread_main(void *p) {          /* host and guest worker threads stay off core 0, which belongs to the game's main thread (and off core 1 when the renderer has it) */
+    sceKernelChangeThreadCpuAffinityMask(sceKernelGetThreadId(), vita_render_thread ? SCE_KERNEL_CPU_MASK_USER_2 : SCE_KERNEL_CPU_MASK_USER_1 | SCE_KERNEL_CPU_MASK_USER_2);
     Start s = *(Start *)p; free(p); s.fn(s.arg); return NULL;
 }
 int plat_thread_start(void (*fn)(void *), void *arg, const char *name) {

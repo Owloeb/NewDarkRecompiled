@@ -157,14 +157,21 @@ static inline void glp_done(uint64_t *t0) { gl_prof_ns += vita_now_ns() - *t0; v
 #else
 #define GLP (void)0
 #endif
-PlatTexture *plat_tex_create(int w, int h, int levels, PlatTexFormat fmt, int rt) { GLP;
+PlatTexture *glr_tex_new(int w, int h, int levels, PlatTexFormat fmt, int rt) {
     if (w < 1 || h < 1 || w > max_tex || h > max_tex) return NULL;
     PlatTexture *t = calloc(1, sizeof *t); t->w = w; t->h = h; t->levels = levels < 1 ? 1 : levels; t->fmt = rt ? PLAT_TEX_RGBA8 : fmt; t->rt = rt;
     if (rt) t->levels = 1;
     if (gles && t->levels > 1) { int full = 1, m = w > h ? w : h; while (m > 1) { full++; m >>= 1; } if (t->levels != full) t->levels = 1; }   /* ES 2.0 needs complete chains */
-    glGenTextures(1, &t->tex); tex_storage(t); return t;
+    return t;
 }
-void plat_tex_upload(PlatTexture *t, int level, int x, int y, int w, int h, const void *data, int pitch) { GLP;
+size_t glr_tex_upload_bytes(const PlatTexture *t, int level, int w, int h, int *rgba8) {
+    *rgba8 = 0; if (!t || level >= t->levels) return 0;
+    *rgba8 = t->fmt == PLAT_TEX_RGBA8;
+    if (t->fmt != PLAT_TEX_RGBA8) { int lw = t->w >> level, lh = t->h >> level; if (lw < 1) lw = 1; if (lh < 1) lh = 1; return (size_t)csize(t->fmt, lw, lh); }
+    return (size_t)w * (size_t)h * 4;
+}
+void glr_tex_init(PlatTexture *t) { GLP; glGenTextures(1, &t->tex); tex_storage(t); }
+void glr_tex_upload(PlatTexture *t, int level, int x, int y, int w, int h, const void *data, int pitch) { GLP;
     if (!t || level >= t->levels) return;
     glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, t->tex); glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     if (t->fmt != PLAT_TEX_RGBA8) { int lw = t->w >> level, lh = t->h >> level; if (lw < 1) lw = 1; if (lh < 1) lh = 1; glCompressedTexImage2D(GL_TEXTURE_2D, level, cfmt(t->fmt), lw, lh, 0, csize(t->fmt, lw, lh), data); return; }
@@ -172,12 +179,12 @@ void plat_tex_upload(PlatTexture *t, int level, int x, int y, int w, int h, cons
     uint8_t *tight = malloc((size_t)w * h * 4); for (int r = 0; r < h; r++) memcpy(tight + (size_t)r * w * 4, (const uint8_t *)data + (size_t)r * pitch, (size_t)w * 4);
     glTexSubImage2D(GL_TEXTURE_2D, level, x, y, w, h, GL_RGBA, GL_UNSIGNED_BYTE, tight); free(tight);
 }
-void plat_tex_destroy(PlatTexture *t) { GLP;
+void glr_tex_destroy(PlatTexture *t) { GLP;
     if (!t || t == &bb) return;
     if (target == t) { target = &bb; bind_target(&bb); }
     if (t->fbo) glDeleteFramebuffers(1, &t->fbo); if (t->depth) glDeleteRenderbuffers(1, &t->depth); glDeleteTextures(1, &t->tex); free(t);
 }
-int plat_tex_read(PlatTexture *t, int x, int y, int w, int h, void *out, int pitch) { GLP;
+int glr_tex_read(PlatTexture *t, int x, int y, int w, int h, void *out, int pitch) { GLP;
     if (!t) t = &bb;
     if (t->fmt != PLAT_TEX_RGBA8) return -1;
     ensure_fbo(t); glBindFramebuffer(GL_FRAMEBUFFER, t->fbo); glPixelStorei(GL_PACK_ALIGNMENT, 1);
@@ -282,11 +289,11 @@ static void apply_scissor(void) {
     if (x1 < x0) x1 = x0; if (y1 < y0) y1 = y0;
     glEnable(GL_SCISSOR_TEST); glScissor(x0, y0, x1 - x0, y1 - y0);
 }
-void plat_gfx_begin_frame(void) {}
-void plat_gfx_set_target(PlatTexture *t) { GLP; target = t ? t : &bb; bind_target(target); }
-void plat_gfx_viewport(const PlatViewport *vp) { cur_vp = *vp; glViewport(vp->x, vp->y, vp->w, vp->h); apply_scissor(); }
-void plat_gfx_scissor(int enable, int x, int y, int w, int h) { sc_on = enable; sc_x = x; sc_y = y; sc_w = w; sc_h = h; apply_scissor(); }
-void plat_gfx_clear(int color, uint32_t argb, int depth, float z, int stencil, uint32_t s) { GLP;
+void glr_begin_frame(void) {}
+void glr_set_target(PlatTexture *t) { GLP; target = t ? t : &bb; bind_target(target); }
+void glr_viewport(const PlatViewport *vp) { cur_vp = *vp; glViewport(vp->x, vp->y, vp->w, vp->h); apply_scissor(); }
+void glr_scissor(int enable, int x, int y, int w, int h) { sc_on = enable; sc_x = x; sc_y = y; sc_w = w; sc_h = h; apply_scissor(); }
+void glr_clear(int color, uint32_t argb, int depth, float z, int stencil, uint32_t s) { GLP;
     GLbitfield m = 0;
     if (color) { glColorMask(1, 1, 1, 1); glClearColor(((argb >> 16) & 255) / 255.0f, ((argb >> 8) & 255) / 255.0f, (argb & 255) / 255.0f, (argb >> 24) / 255.0f); m |= GL_COLOR_BUFFER_BIT; }
     if (depth) { glDepthMask(1); if (glClearDepthf) glClearDepthf(z); else glClearDepth(z); m |= GL_DEPTH_BUFFER_BIT; }
@@ -318,7 +325,7 @@ static void attribs(int quad) {
     glVertexAttribPointer(4, 4, GL_FLOAT, 0, sizeof(PlatVertex), (void *)28);
     for (GLuint i = 0; i <= 4; i++) glEnableVertexAttribArray(i);
 }
-void plat_gfx_draw(int prim, const PlatVertex *v, int nverts, const uint16_t *idx, int nidx, const PlatDrawState *st) { GLP;
+void glr_draw(int prim, const PlatVertex *v, int nverts, const uint16_t *idx, int nidx, const PlatDrawState *st) { GLP;
 #ifdef __vita__
     gl_prof_draws++;
 #endif
@@ -350,7 +357,7 @@ static void quad(GLuint prog, GLuint tex, float u0, float v0, float u1, float v1
     glBindBuffer(GL_ARRAY_BUFFER, vbo); glBufferData(GL_ARRAY_BUFFER, sizeof q, q, GL_STREAM_DRAW); attribs(1);
     glDrawArrays(0x0005, 0, 4);     /* GL_TRIANGLE_STRIP */
 }
-void plat_gfx_copy(PlatTexture *src, int sx, int sy, int sw, int sh, PlatTexture *dst, int dx, int dy, int dw, int dh, int linear) { GLP;
+void glr_copy(PlatTexture *src, int sx, int sy, int sw, int sh, PlatTexture *dst, int dx, int dy, int dw, int dh, int linear) { GLP;
     if (!src) src = &bb; if (!dst) dst = &bb; if (src == dst) return;
     bind_target(dst); glViewport(dx, dy, dw, dh); glDisable(GL_SCISSOR_TEST);
     /* NDC y -1 is the first row of the target here (top-down rows), which must show the first row of the source rectangle */
@@ -360,7 +367,7 @@ void plat_gfx_copy(PlatTexture *src, int sx, int sy, int sw, int sh, PlatTexture
     for (int i = 0; i < 2; i++) { glActiveTexture(GL_TEXTURE0 + (GLenum)i); glBindTexture(GL_TEXTURE_2D, 0); }
     src->last_min = src->last_mag = -1;
 }
-void plat_gfx_present(void) { GLP;
+void glr_present(void) { GLP;
     int x, y, w, h, ww, wh; gl_present_rect(&x, &y, &w, &h, &ww, &wh);
     glBindFramebuffer(GL_FRAMEBUFFER, 0); glDisable(GL_SCISSOR_TEST); glViewport(0, 0, ww, wh); glClearColor(0, 0, 0, 1); glClear(GL_COLOR_BUFFER_BIT);
     glViewport(x, y, w, h);
@@ -371,7 +378,7 @@ void plat_gfx_present(void) { GLP;
     gl_swap();
     bind_target(target); glViewport(cur_vp.x, cur_vp.y, cur_vp.w, cur_vp.h); apply_scissor();
 }
-void plat_gfx_gamma(const uint16_t ramp[3][256]) {
+void glr_gamma(const uint16_t ramp[3][256]) {
     int ident = 1; uint8_t lut[256 * 4];
     for (int i = 0; i < 256; i++) { for (int c = 0; c < 3; c++) { lut[i * 4 + c] = (uint8_t)(ramp[c][i] >> 8); if (ramp[c][i] >> 8 != i) ident = 0; } lut[i * 4 + 3] = 255; }
     gamma_on = !ident; if (!gamma_on) return;
