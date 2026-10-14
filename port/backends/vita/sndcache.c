@@ -47,7 +47,14 @@ typedef struct { int fid, state, pf; int64_t off; uint32_t len, cap; uint8_t *da
 typedef struct { int fid; int64_t next; uint32_t len; uint64_t used; } Stream;
 static Ent ent[SC_ENTRIES]; static Stream str[SC_STREAMS]; static uint32_t bytes_held; static uint64_t tick;
 static char names[SC_FILES + 1][96]; static int wfd[SC_FILES + 1];
-static uint64_t st_hit, st_hit_pf, st_waited, st_miss, st_issued, st_miss_bytes;
+static uint64_t st_hit, st_hit_pf, st_waited, st_miss, st_issued, st_miss_bytes, st_miss_seen, st_touched;
+/* every 32 KB piece of each archive ever read: tells a miss on data read before (evicted: a bigger cache would help) from a miss on new data */
+static uint8_t *seen[SC_FILES + 1]; static uint32_t seen_n[SC_FILES + 1];
+static int seen_test_set(int fid, int64_t pos, int64_t size) {     /* mx held; 1 if the piece at pos was read before */
+    if (!seen[fid]) { seen_n[fid] = (uint32_t)((size >> 15) + 1); seen[fid] = calloc((seen_n[fid] + 7) / 8, 1); if (!seen[fid]) return 0; }
+    uint32_t b = (uint32_t)(pos >> 15); if (b >= seen_n[fid]) return 0;
+    int was = (seen[fid][b >> 3] >> (b & 7)) & 1; if (!was) { seen[fid][b >> 3] |= (uint8_t)(1u << (b & 7)); st_touched++; } return was;
+}
 static pthread_mutex_t mx = PTHREAD_MUTEX_INITIALIZER; static pthread_cond_t cv = PTHREAD_COND_INITIALIZER; static int started;
 
 int sc_eligible(const char *path) {
@@ -118,7 +125,7 @@ int64_t sc_read(int fid, const char *path, int fd, int64_t size, int64_t pos, vo
     pthread_mutex_lock(&mx);
     for (;;) {
         Ent *e = find(fid, pos, n); if (!e) break;
-        if (e->state == E_READY) { memcpy(buf, e->data + (pos - e->off), n); e->used = ++tick; hit = 1; st_hit++; if (e->pf) { e->pf = 0; st_hit_pf++; } if (waited) st_waited++; break; }
+        if (e->state == E_READY) { seen_test_set(fid, pos, size); memcpy(buf, e->data + (pos - e->off), n); e->used = ++tick; hit = 1; st_hit++; if (e->pf) { e->pf = 0; st_hit_pf++; } if (waited) st_waited++; break; }
         waited = 1; pthread_mutex_unlock(&mx); SC_SLEEP_US(300); pthread_mutex_lock(&mx);
     }
     if (!hit) {
@@ -126,7 +133,7 @@ int64_t sc_read(int fid, const char *path, int fd, int64_t size, int64_t pos, vo
         int64_t got = -1; if (lseek(fd, (off_t)pos, SEEK_SET) >= 0) { got = 0; while ((uint64_t)got < n) { ssize_t r = read(fd, (char *)buf + got, n - (uint32_t)got); if (r < 0) { if (got == 0) { got = -1; } break; } if (r == 0) break; got += r; } }
         if (got <= 0) return got < 0 ? -1 : 0;
         n = (uint32_t)got;
-        pthread_mutex_lock(&mx); st_miss++; st_miss_bytes += n;
+        pthread_mutex_lock(&mx); st_miss++; st_miss_bytes += n; st_miss_seen += seen_test_set(fid, pos, size);
         if (!find(fid, pos, n)) { Ent *e = slot_for(n); uint8_t *d = e ? malloc(n) : NULL;
             if (e && d) { memcpy(d, buf, n); e->fid = fid; e->off = pos; e->len = e->cap = n; e->data = d; e->state = E_READY; e->pf = 0; e->used = ++tick; bytes_held += n; } }
     }
@@ -138,15 +145,15 @@ int64_t sc_read(int fid, const char *path, int fd, int64_t size, int64_t pos, vo
     return n;
 }
 void sc_log_stats(void (*out)(const char *)) {
-    pthread_mutex_lock(&mx); uint64_t h = st_hit, hp = st_hit_pf, w = st_waited, m = st_miss, is = st_issued, mb = st_miss_bytes; uint32_t held = bytes_held;
-    st_hit = st_hit_pf = st_waited = st_miss = st_issued = st_miss_bytes = 0; pthread_mutex_unlock(&mx);
+    pthread_mutex_lock(&mx); uint64_t h = st_hit, hp = st_hit_pf, w = st_waited, m = st_miss, is = st_issued, mb = st_miss_bytes, ms = st_miss_seen, tot = st_touched; uint32_t held = bytes_held;
+    st_hit = st_hit_pf = st_waited = st_miss = st_issued = st_miss_bytes = st_miss_seen = 0; pthread_mutex_unlock(&mx);
     if (!h && !m) return;
     int heap_mb = -1;
 #ifdef __vita__
     { struct mallinfo mi = mallinfo(); heap_mb = (int)(mi.uordblks >> 20); }
 #endif
-    char b[300]; snprintf(b, sizeof b, "[vita] sound cache: %llu reads from memory (%llu of them read ahead, %llu had to wait), %llu from the card (%.1f MB), %llu read-aheads started, %.1f MB held (host heap %d of %d MB in use)",
-                          (unsigned long long)h, (unsigned long long)hp, (unsigned long long)w, (unsigned long long)m, (double)mb / 1048576.0, (unsigned long long)is, (double)held / 1048576.0,
-                          heap_mb, VITA_HEAP_MB_FOR_LOG);
+    char b[400]; snprintf(b, sizeof b, "[vita] sound cache: %llu reads from memory (%llu of them read ahead, %llu had to wait), %llu from the card (%.1f MB; %llu of them read before, %llu new), %llu read-aheads started, %.1f MB held (host heap %d of %d MB in use); %.1f MB of sound archives read so far",
+                          (unsigned long long)h, (unsigned long long)hp, (unsigned long long)w, (unsigned long long)m, (double)mb / 1048576.0, (unsigned long long)ms, (unsigned long long)(m - ms),
+                          (unsigned long long)is, (double)held / 1048576.0, heap_mb, VITA_HEAP_MB_FOR_LOG, (double)tot * 32.0 / 1024.0);
     out(b);
 }

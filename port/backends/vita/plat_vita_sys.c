@@ -139,6 +139,8 @@ struct PlatFile { int fd, pfd, warm, sc; int64_t lastend; int ro; int64_t pos, s
 /* what the file layer costs (reported with the frame rate by vita_profile_report in plat_vita.c) */
 void vita_profile_tick(uint64_t now);
 uint64_t vp_fs_ns, vp_fs_open, vp_fs_stat, vp_fs_read_calls, vp_fs_sys_reads, vp_fs_bytes;
+uint64_t vp_fs_game_ns;          /* the part of vp_fs_ns spent on the game's main thread (reads block it; other threads' reads may not) */
+int vita_game_tid;               /* plat_vita.c: the game's main thread */
 volatile uint64_t vp_fs_activity;                           /* any file call: the hang watchdog counts these as progress */
 uint64_t vita_now_ns(void);
 static inline uint64_t vp_now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (uint64_t)t.tv_sec * 1000000000u + (uint64_t)t.tv_nsec; }
@@ -348,7 +350,7 @@ int64_t plat_fs_read(PlatFile *f, void *buf, uint64_t n) {
     }
     op_end(OP_READ); if (out > 0) vp_fs_bytes += (uint64_t)out;
     f->lastend = f->pos;
-    uint64_t t1 = vp_now(); vp_fs_ns += t1 - t0; rs_note(f, t1 - t0, out, seq, refills, adjn, hitn); vita_profile_tick(t1); return out;      /* also reports while loading, when no frames are drawn */
+    uint64_t t1 = vp_now(); vp_fs_ns += t1 - t0; if (sceKernelGetThreadId() == vita_game_tid) vp_fs_game_ns += t1 - t0; rs_note(f, t1 - t0, out, seq, refills, adjn, hitn); vita_profile_tick(t1); return out;      /* also reports while loading, when no frames are drawn */
 }
 int64_t plat_fs_write(PlatFile *f, const void *buf, uint64_t n) {
     if (f->werr) return -1;

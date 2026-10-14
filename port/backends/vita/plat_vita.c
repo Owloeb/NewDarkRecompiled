@@ -87,7 +87,7 @@ static void letterbox(int *x, int *y, int *w, int *h) {
 }
 void gl_present_rect(int *x, int *y, int *w, int *h, int *ww, int *wh) { letterbox(x, y, w, h); *ww = SCREEN_W; *wh = SCREEN_H; }
 /* every 5 s: frame rate, and how the time splits between the file layer, presenting the picture and everything else (the game's CPU work) */
-extern uint64_t vp_fs_ns, vp_fs_open, vp_fs_stat, vp_fs_read_calls, vp_fs_sys_reads, vp_fs_bytes;
+extern uint64_t vp_fs_ns, vp_fs_open, vp_fs_stat, vp_fs_read_calls, vp_fs_sys_reads, vp_fs_bytes, vp_fs_game_ns; extern int vita_game_tid;
 extern volatile uint64_t vp_fs_activity;
 uint64_t gl_prof_ns, gl_prof_draws;
 static uint64_t swap_ns; static unsigned frames;
@@ -95,20 +95,20 @@ void vita_log_guest_highwater(const char *when);
 void vita_log_inflight(void);
 void vita_log_readstats(void);
 void vita_profile_tick(uint64_t now) {
-    static uint64_t t0, last_swap, last_fs, last_gl, last_wait, d0, o0, st0, rc0, sr0, b0; static unsigned f0;
+    static uint64_t t0, last_fsg, last_swap, last_fs, last_gl, last_wait, d0, o0, st0, rc0, sr0, b0; static unsigned f0;
     if (!t0) { t0 = now; return; }
     if (now - t0 < 5000000000ull) return;
     double dt = (double)(now - t0) / 1e9;
-    double gl = (double)(gl_prof_ns - last_gl), fs = (double)(vp_fs_ns - last_fs), sw = (double)(swap_ns - last_swap), wt = (double)(glt_wait_ns - last_wait); unsigned nf = frames - f0;
+    double gl = (double)(gl_prof_ns - last_gl), fs = (double)(vp_fs_ns - last_fs), sw = (double)(swap_ns - last_swap), wt = (double)(glt_wait_ns - last_wait), fsg = (double)(vp_fs_game_ns - last_fsg); unsigned nf = frames - f0;
     /* with a render thread, "render" is how busy that thread is (core 1) and "waits" is the game thread waiting for it;
        without one, rendering happens on the game thread and is subtracted from its CPU time */
-    vlog("profile: %.1f fps | render %.0f%% (swap %.0f%%, %llu draws/frame%s) | files %.0f%% (%llu opens, %llu stats, %llu reads -> %llu system reads, %.1f MB) | game waits for renderer %.0f%% | game cpu %.0f%%", nf / dt,
+    vlog("profile: %.1f fps | render %.0f%% (swap %.0f%%, %llu draws/frame%s) | files %.0f%%, game thread %.0f%% (%llu opens, %llu stats, %llu reads -> %llu system reads, %.1f MB) | game waits for renderer %.0f%% | game cpu %.0f%%", nf / dt,
          100.0 * gl / (dt * 1e9), 100.0 * sw / (dt * 1e9), (unsigned long long)(nf ? (gl_prof_draws - d0) / nf : 0), glt_on ? ", own thread" : "",
-         100.0 * fs / (dt * 1e9), (unsigned long long)(vp_fs_open - o0), (unsigned long long)(vp_fs_stat - st0),
+         100.0 * fs / (dt * 1e9), 100.0 * fsg / (dt * 1e9), (unsigned long long)(vp_fs_open - o0), (unsigned long long)(vp_fs_stat - st0),
          (unsigned long long)(vp_fs_read_calls - rc0), (unsigned long long)(vp_fs_sys_reads - sr0), (double)(vp_fs_bytes - b0) / 1048576.0,
-         100.0 * wt / (dt * 1e9), 100.0 - 100.0 * ((glt_on ? wt : gl) + fs) / (dt * 1e9));
+         100.0 * wt / (dt * 1e9), 100.0 - 100.0 * ((glt_on ? wt : gl) + fsg) / (dt * 1e9));
     { static int n; if (++n % 3 == 0) { vita_log_guest_highwater("now"); vita_log_readstats(); } }
-    t0 = now; last_swap = swap_ns; last_fs = vp_fs_ns; last_gl = gl_prof_ns; last_wait = glt_wait_ns; d0 = gl_prof_draws; o0 = vp_fs_open; st0 = vp_fs_stat; rc0 = vp_fs_read_calls; sr0 = vp_fs_sys_reads; b0 = vp_fs_bytes; f0 = frames;
+    t0 = now; last_fsg = vp_fs_game_ns; last_swap = swap_ns; last_fs = vp_fs_ns; last_gl = gl_prof_ns; last_wait = glt_wait_ns; d0 = gl_prof_draws; o0 = vp_fs_open; st0 = vp_fs_stat; rc0 = vp_fs_read_calls; sr0 = vp_fs_sys_reads; b0 = vp_fs_bytes; f0 = frames;
 }
 uint64_t vita_now_ns(void);
 const char *volatile vita_where; volatile uint64_t vita_where_t0;
@@ -280,6 +280,7 @@ int port_main(int argc, char **argv);
 typedef struct { int argc; char **argv; int ret; } MainArgs;
 static void *game_thread(void *p) {
     sceKernelChangeThreadCpuAffinityMask(sceKernelGetThreadId(), SCE_KERNEL_CPU_MASK_USER_0);    /* a core of its own */
+    vita_game_tid = sceKernelGetThreadId();
     MainArgs *a = p; a->ret = port_main(a->argc, a->argv); return NULL;
 }
 
