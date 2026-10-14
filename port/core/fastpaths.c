@@ -8,7 +8,8 @@
  * They change speed only, never behaviour. Each one notes what the original does and which registers it leaves different
  * from the original (only ones the game's compiler treats as free to clobber after a call). Off by default.
  *
- * To add one: write `int fp_XXXXXXXX(CPU *c)` and list it in FASTPATHS at the bottom. */
+ * To add one: write `int fp_XXXXXXXX(CPU *c)` (tools/apply_hooks.py finds it by name). Check it against the game's own code with
+ * port/tests/fastpaths/check.py (needs a tools/where.py dump of the function; nothing from the game goes into the repository). */
 #include "rt.h"
 
 /* 0x006a17d0: case-insensitive string hash. eax = NUL-terminated string. Two interleaved 8-bit table lookups
@@ -41,6 +42,92 @@ int fp_006f7206(CPU *c) {
     return 1;
 }
 
+/* ---- the engine's hash tables (hot in combat: AI queries object properties and links through them) ----
+ * Table layout (both key sizes): +4 size (slots), +8 a second modulus for the probe step, +0x14 slot states (byte: 0 empty,
+ * 1 deleted, 2 used), +0x18 slot array. Probing: start at hash % size; step = 1 << (hash % [+8]); wrap by subtracting size;
+ * at most `size` probes; an empty slot ends the search. */
+static inline uint32_t T_(uint32_t i) { return RD32(0x7df4a8u + i * 4u); }   /* the engine's 256-entry byte-hash table */
+
+/* 0x006a1960: hash of the 32-bit integer in eax (register argument), result in eax. Leaves ecx and edx as the original. */
+int fp_006a1960(CPU *c) {
+    uint32_t x = c->eax, b0 = x & 0xff, b1 = (x >> 8) & 0xff, b2 = (x >> 16) & 0xff, b3 = x >> 24;
+    uint32_t e1 = T_(b0), s = T_(T_(b1) ^ b0), d = T_(b1 ^ e1), a = T_(b3 ^ d), cc = b2 ^ s;
+    RETCHK(c); c->esp += 4;
+    c->eax = (a << 8) | T_(cc); c->ecx = cc; c->edx = d;
+    return 1;
+}
+/* 0x006a19d0: hash of the eax bytes at ecx (register arguments; eax >= 1), result in eax. Leaves ecx and edx as the original. */
+static uint32_t hashn_(uint32_t n, uint32_t *pp, uint32_t *pedx) {
+    uint32_t p = *pp, a = 0, b = 0, edx;
+    for (;;) {
+        edx = RD8(p) ^ a; a = T_(edx); uint32_t t = --n; p++; n--;
+        if (!t) { edx = 0; break; }
+        edx = RD8(p) ^ b; b = T_(edx); p++;
+        if (!n) break;
+    }
+    *pp = p; *pedx = edx; return (a << 8) | b;
+}
+int fp_006a19d0(CPU *c) {
+    uint32_t n = c->eax, p = c->ecx, edx; if (n == 0 || n > (1u << 24)) return 0;   /* 0 would loop ~2^32 times in the original */
+    uint32_t h = hashn_(n, &p, &edx);
+    RETCHK(c); c->esp += 4;
+    c->eax = h; c->ecx = p; c->edx = edx;
+    return 1;
+}
+/* probe for a key; returns 1 found / 0 not, *slot = where the search stopped; -1: let the original run (a division by zero) */
+static int probe_(uint32_t tbl, uint32_t h, uint32_t esz, uint32_t k0, uint32_t k1, int two, uint32_t *slot) {
+    uint32_t size = RD32(tbl + 4); if ((int32_t)size <= 0) return -1;          /* 0: the original faults; negative: rare, original */
+    uint32_t i = h % size, step = 0, states = RD32(tbl + 0x14), ents = RD32(tbl + 0x18);
+    for (int32_t n = 0; n < (int32_t)size; n++) {
+        uint8_t st = RD8(states + i);
+        if (!st) { *slot = i; return 0; }
+        if (st == 2) { uint32_t e = ents + i * esz; if (RD32(e) == k0 && (!two || RD32(e + 4) == k1)) { *slot = i; return 1; } }
+        if (!step) { uint32_t m = RD32(tbl + 8); if (!m) return -1; step = 1u << ((h % m) & 31); }
+        i += step; while ((int32_t)i >= (int32_t)size) i -= size;
+    }
+    *slot = i; return 0;
+}
+/* 0x00496010: find a 4-byte key in a table. eax = pointer to the key; stack: table, out (stdcall, ret 8). *out = the slot
+ * where the search stopped; eax = 1 if found. ecx/edx differ from the original (the caller treats them as clobbered). */
+int fp_00496010(CPU *c) {
+    uint32_t key = RD32(c->eax), tbl = RD32(c->esp + 4), out = RD32(c->esp + 8), slot;
+    uint32_t x = key, b0 = x & 0xff, b1 = (x >> 8) & 0xff, b2 = (x >> 16) & 0xff, b3 = x >> 24;
+    uint32_t h = (T_(b3 ^ T_(b1 ^ T_(b0))) << 8) | T_(b2 ^ T_(T_(b1) ^ b0));   /* = fp_006a1960 */
+    int r = probe_(tbl, h, 8, key, 0, 0, &slot); if (r < 0) return 0;
+    WR32(out, slot);
+    RETCHK(c); c->esp += 12;
+    c->eax = (uint32_t)r; c->ecx = out; c->edx = 0;
+    return 1;
+}
+/* 0x00536430: find an 8-byte key in a table with 12-byte entries. stack: table, key pointer, out (stdcall, ret 0xc). */
+int fp_00536430(CPU *c) {
+    uint32_t tbl = RD32(c->esp + 4), kp = RD32(c->esp + 8), out = RD32(c->esp + 12), slot, p = kp, edx;
+    uint32_t h = hashn_(8, &p, &edx);
+    int r = probe_(tbl, h, 12, RD32(kp), RD32(kp + 4), 1, &slot); if (r < 0) return 0;
+    WR32(out, slot);
+    RETCHK(c); c->esp += 16;
+    c->eax = (uint32_t)r; c->ecx = out; c->edx = 0;
+    return 1;
+}
+/* 0x0057f640: eax = 1 if the 8 bytes at ecx and edx are equal (register arguments). edx = eax, as the original; ecx differs. */
+int fp_0057f640(CPU *c) {
+    uint32_t eq = RD32(c->ecx) == RD32(c->edx) && RD32(c->ecx + 4) == RD32(c->edx + 4);
+    RETCHK(c); c->esp += 4;
+    c->eax = eq; c->edx = eq;
+    return 1;
+}
+/* 0x006f71d0: _ftol2. With the SSE2 flag at 0xa4ebc8 clear (rt_cpuid reports no SSE2) it jumps to _ftol (0x006f7206)
+ * inside the same recompiled function, so fp_006f7206 never sees those calls: the same conversion here. */
+int fp_006f71d0(CPU *c) {
+    if (RD32(0xa4ebc8u)) return 0;
+    double x = ST(0);
+    if (!(x > -4503599627370496.0 && x < 4503599627370496.0) || (c->cw & 0x0C00)) return 0;
+    int64_t v = (int64_t)x;
+    FPOP(c);
+    RETCHK(c); c->esp += 4;
+    c->eax = (uint32_t)v; c->edx = (uint32_t)((uint64_t)v >> 32);
+    return 1;
+}
 /* 0x006ebc90: copy an 8-bit bitmap onto the software canvas, skipping pixels equal to 0 (colour key).
  * cdecl (bitmap, x, y). bitmap: bits at +0, width (int16) at +8, height (int16) at +0xa, row stride (uint16) at +0xc.
  * canvas descriptor at [0xa523e8]: bits at +0, row pitch (uint16) at +0xc. Leaves ecx = width, as the original does. */
