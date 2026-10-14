@@ -140,7 +140,7 @@ then build with CMake `-DPORT_BACKEND=vita` and the vitasdk toolchain file.
 | `--no-watchdog` | Turn off the hang watchdog (which forces a core dump when the game neither draws nor touches a file for 90 s). |
 | `--no-readahead` | Turn off read-ahead for files read straight through. |
 | `--no-render-thread` | Render on the game's thread. By default vitaGL runs on a render thread of its own on core 1 (`backends/sdl2/gl_thread.c`), so drawing a frame overlaps computing the next; the game runs at most one frame ahead of the screen. The profile line then shows `render N% (..., own thread)` for how busy that thread is and `game waits for renderer N%`. |
-| `--no-sound-cache` | Turn off the cache for `SND.CRF` / `SND2.CRF` (`backends/vita/sndcache.c`: remembers about 4 MB of recently read sound and reads the next pieces of each playing sound ahead). The log prints a `sound cache:` line every 15 s. |
+| `--no-sound-cache` | Turn off the cache for `SND.CRF` / `SND2.CRF` (`backends/vita/sndcache.c`: remembers up to 24 MB of recently read sound (less if the host heap gets within 8 MB of full) and reads the next pieces of each playing sound ahead). The log prints a `sound cache:` line every 15 s. |
 
 Without `--guest-space`/`--guest-backed` in that file the Vita uses 208 and 128.
 

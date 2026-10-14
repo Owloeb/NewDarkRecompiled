@@ -3,7 +3,8 @@
  * While you play, the game streams sound from these archives in pieces of about 30 KB. Several sounds play at once, so the reads of
  * the different sounds interleave and the file looks random to the 64 KB window in plat_vita_sys.c (0% sequential in the log). Each
  * read then costs the game thread a full memory-card access (about 5 ms). This cache does two things:
- *  - it remembers recently read pieces (about 4 MB), so a sound that is read again costs nothing, and
+ *  - it remembers recently read pieces (up to 24 MB, less if the host heap runs short), so a sound that is read again costs nothing
+ *    (combat and ambient loops replay the same sounds; at 4 MB half the reads still went to the card), and
  *  - it follows each sound separately: when a read starts exactly where an earlier read ended (the next piece of the same sound),
  *    a worker thread reads the following two pieces in the background.
  * The data returned is always exactly what the file holds. A read the cache does not hold is read from the file as before. */
@@ -16,16 +17,26 @@
 #include <fcntl.h>
 #include <pthread.h>
 #ifdef __vita__
+#include <malloc.h>
 #include <psp2/kernel/threadmgr.h>
+extern unsigned int _newlib_heap_size_user;
 #define SC_SLEEP_US(us) sceKernelDelayThread(us)
 #else
 #define SC_SLEEP_US(us) usleep(us)
 #endif
 #ifndef VITA_SOUND_CACHE_MB
-#define VITA_SOUND_CACHE_MB 4
+#define VITA_SOUND_CACHE_MB 24
+#endif
+#ifndef VITA_SOUND_CACHE_RESERVE_MB   /* the cache never grows while the host heap has less than this free */
+#define VITA_SOUND_CACHE_RESERVE_MB 8
 #endif
 #define SC_MAX_BYTES ((uint32_t)VITA_SOUND_CACHE_MB << 20)
-#define SC_ENTRIES 160
+#ifdef __vita__
+#define VITA_HEAP_MB_FOR_LOG ((int)(_newlib_heap_size_user >> 20))
+#else
+#define VITA_HEAP_MB_FOR_LOG 0
+#endif
+#define SC_ENTRIES 1024
 #define SC_FILES 4
 #define SC_STREAMS 12
 #define SC_AHEAD 2
@@ -55,10 +66,22 @@ static Ent *find(int fid, int64_t pos, uint32_t n) {           /* an entry (queu
     return NULL;
 }
 static void drop(Ent *e) { if (e->state == E_FREE) return; free(e->data); bytes_held -= e->cap; memset(e, 0, sizeof *e); }
+/* free bytes in the host heap (newlib's: _newlib_heap_size_user in plat_vita.c), checked before the cache grows past 4 MB */
+#ifdef __vita__
+static int heap_short(uint32_t len) {
+    if (bytes_held + len <= (4u << 20)) return 0;
+    struct mallinfo mi = mallinfo(); uint64_t used = (uint64_t)mi.uordblks;
+    return used + len + ((uint64_t)VITA_SOUND_CACHE_RESERVE_MB << 20) > (uint64_t)_newlib_heap_size_user;
+}
+#else
+static int heap_short(uint32_t len) { (void)len; return 0; }
+#endif
 static Ent *slot_for(uint32_t len) {                           /* a free entry with `len` bytes allowed, evicting the least recently used ready ones */
+    int short_ = heap_short(len);                              /* heap tight: only reuse space, never grow */
     for (;;) {
         Ent *fr = NULL, *lru = NULL;
         for (int i = 0; i < SC_ENTRIES; i++) { Ent *e = &ent[i]; if (!e->state) fr = fr ? fr : e; else if (e->state == E_READY && (!lru || e->used < lru->used)) lru = e; }
+        if (short_) { if (!fr || !lru) return NULL; drop(lru); return fr; }   /* heap tight: one out for one in (pieces are all ~32 KB) */
         if (fr && bytes_held + len <= SC_MAX_BYTES) return fr;
         if (!lru) return NULL;
         drop(lru);
@@ -118,7 +141,12 @@ void sc_log_stats(void (*out)(const char *)) {
     pthread_mutex_lock(&mx); uint64_t h = st_hit, hp = st_hit_pf, w = st_waited, m = st_miss, is = st_issued, mb = st_miss_bytes; uint32_t held = bytes_held;
     st_hit = st_hit_pf = st_waited = st_miss = st_issued = st_miss_bytes = 0; pthread_mutex_unlock(&mx);
     if (!h && !m) return;
-    char b[260]; snprintf(b, sizeof b, "[vita] sound cache: %llu reads from memory (%llu of them read ahead, %llu had to wait), %llu from the card (%.1f MB), %llu read-aheads started, %.1f MB held",
-                          (unsigned long long)h, (unsigned long long)hp, (unsigned long long)w, (unsigned long long)m, (double)mb / 1048576.0, (unsigned long long)is, (double)held / 1048576.0);
+    int heap_mb = -1;
+#ifdef __vita__
+    { struct mallinfo mi = mallinfo(); heap_mb = (int)(mi.uordblks >> 20); }
+#endif
+    char b[300]; snprintf(b, sizeof b, "[vita] sound cache: %llu reads from memory (%llu of them read ahead, %llu had to wait), %llu from the card (%.1f MB), %llu read-aheads started, %.1f MB held (host heap %d of %d MB in use)",
+                          (unsigned long long)h, (unsigned long long)hp, (unsigned long long)w, (unsigned long long)m, (double)mb / 1048576.0, (unsigned long long)is, (double)held / 1048576.0,
+                          heap_mb, VITA_HEAP_MB_FOR_LOG);
     out(b);
 }
