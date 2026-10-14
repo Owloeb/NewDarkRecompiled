@@ -22,7 +22,7 @@ int glt_on; uint64_t glt_wait_ns;
 #define ALIGN(n) (((n) + 15u) & ~(size_t)15u)
 
 enum { C_WRAP, C_CALL, C_TEX_INIT, C_TEX_UPLOAD, C_TEX_DESTROY, C_BEGIN, C_TARGET, C_VIEWPORT, C_SCISSOR, C_CLEAR, C_DRAW,
-       C_COPY, C_PRESENT, C_GAMMA };
+       C_COPY, C_PRESENT, C_GAMMA, C_DEFER };
 typedef struct { uint32_t type, size; } Hdr;               /* size: the whole command, header included, 16-aligned */
 typedef struct { Hdr h; void (*fn)(void *); void *arg; volatile int *done; } CCall;
 typedef struct { Hdr h; PlatTexture *t; } CTex;
@@ -33,6 +33,7 @@ typedef struct { Hdr h; int color, depth, stencil; uint32_t argb, s; float z; } 
 typedef struct { Hdr h; int prim, nverts, nidx; PlatDrawState st; } CDraw;               /* + vertices + indices */
 typedef struct { Hdr h; PlatTexture *src, *dst; int sx, sy, sw, sh, dx, dy, dw, dh, linear; } CCopy;
 typedef struct { Hdr h; uint16_t ramp[3][256]; } CGamma;
+typedef struct { Hdr h; void (*fn)(void *, PlatDrawFn); uint32_t n, pad; } CDefer;                   /* + data (16-aligned) */
 
 static uint8_t *ring;
 static uint64_t wpos;                       /* producer: end of what it has written */
@@ -62,6 +63,7 @@ static void exec(Hdr *h) {
     case C_COPY: { CCopy *c = (CCopy *)h; glr_copy(c->src, c->sx, c->sy, c->sw, c->sh, c->dst, c->dx, c->dy, c->dw, c->dh, c->linear); break; }
     case C_PRESENT: glr_present(); plat_mutex_lock(mx); frames_done++; plat_cond_broadcast(cv_prod); plat_mutex_unlock(mx); break;
     case C_GAMMA: glr_gamma((const uint16_t (*)[256])((CGamma *)h)->ramp); break;
+    case C_DEFER: { CDefer *c = (CDefer *)h; c->fn((uint8_t *)c + ALIGN(sizeof *c), glr_draw); break; }
     }
 }
 static void render_thread(void *arg) {
@@ -186,4 +188,14 @@ void plat_gfx_present(void) {
 void plat_gfx_gamma(const uint16_t ramp[3][256]) {
     if (!glt_on) { glr_gamma(ramp); return; }
     CGamma *c = (CGamma *)reserve(ALIGN(sizeof *c)); memcpy(c->ramp, ramp, sizeof c->ramp); publish(&c->h, C_GAMMA);
+}
+typedef struct { void (*fn)(void *, PlatDrawFn); void *data; } DeferArgs;
+static void defer_direct(void *p) { DeferArgs *a = p; a->fn(a->data, glr_draw); }
+void plat_gfx_deferred(void (*fn)(void *data, PlatDrawFn draw), const void *data, size_t n) {
+    if (!glt_on) { fn((void *)data, glr_draw); return; }
+    size_t total = ALIGN(sizeof(CDefer)) + ALIGN(n);
+    if (total > BIG) { DeferArgs a = { fn, (void *)data }; glt_call(defer_direct, &a); return; }
+    CDefer *c = (CDefer *)reserve(total); c->fn = fn; c->n = (uint32_t)n;
+    memcpy((uint8_t *)c + ALIGN(sizeof *c), data, n);
+    publish(&c->h, C_DEFER);
 }

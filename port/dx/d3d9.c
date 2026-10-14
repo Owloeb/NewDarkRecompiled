@@ -59,6 +59,17 @@ typedef struct {
     int32_t scissor[4];
     uint32_t palette;
 } State;
+/* the part of State the per-vertex work reads (vertex()): small enough to copy with every draw, so the work can run on
+ * the render thread (plat_gfx_deferred) */
+typedef struct {
+    uint32_t rs[256], tss[PLAT_MAX_STAGES][33];
+    Mat texm[PLAT_MAX_STAGES];
+    uint32_t vp[6]; float material[17];
+} VState;
+static void vstate_of(const State *s, VState *v) {
+    memcpy(v->rs, s->rs, sizeof v->rs); memcpy(v->tss, s->tss, sizeof v->tss); memcpy(v->texm, s->texm, sizeof v->texm);
+    memcpy(v->vp, s->vp, sizeof v->vp); memcpy(v->material, s->material, sizeof v->material);
+}
 /* which parts of State a state block holds */
 typedef struct {
     uint8_t rs[256], tss[8][33], ss[16][14];
@@ -205,7 +216,7 @@ static uint32_t pack(float r, float g, float b, float a) {
 }
 static void unpack(uint32_t c, float o[4]) { o[0] = ((c >> 16) & 255) / 255.0f; o[1] = ((c >> 8) & 255) / 255.0f; o[2] = (c & 255) / 255.0f; o[3] = (c >> 24) / 255.0f; }
 static void xform3(const Mat *m, const float *v, float w, float *o) { for (int j = 0; j < 4; j++) o[j] = v[0] * m->m[j] + v[1] * m->m[4 + j] + v[2] * m->m[8 + j] + w * m->m[12 + j]; }
-static float fog_factor(uint32_t mode, float d, const State *s) {
+static float fog_factor(uint32_t mode, float d, const VState *s) {
     float start = u2f(s->rs[36]), end = u2f(s->rs[37]), dens = u2f(s->rs[38]), f;
     switch (mode) { case 1: f = expf(-d * dens); break; case 2: f = expf(-(d * dens) * (d * dens)); break; case 3: f = end != start ? (end - d) / (end - start) : 1.0f; break; default: f = 1.0f; }
     return f < 0 ? 0 : f > 1 ? 1 : f;
@@ -225,12 +236,12 @@ static void prepare(Device *d, const Layout *L, Xf *x) {
     }
     x->half_px[0] = s->vp[2] ? 1.0f / (float)s->vp[2] : 0; x->half_px[1] = s->vp[3] ? 1.0f / (float)s->vp[3] : 0;
 }
-static const float *mat_color(const State *s, uint32_t src, const float *mat, const float *c1, const float *c2) {
+static const float *mat_color(const VState *s, uint32_t src, const float *mat, const float *c1, const float *c2) {
     if (!s->rs[141]) return mat;                       /* COLORVERTEX off */
     return src == 1 && c1 ? c1 : src == 2 && c2 ? c2 : mat;
 }
-static void vertex(Device *d, const Layout *L, const Xf *x, const uint8_t *v, PlatVertex *o) {
-    State *s = &d->st; float p[4];
+static void vertex(const VState *s, const Layout *L, const Xf *x, const uint8_t *v, PlatVertex *o) {
+    float p[4];
     memcpy(p, v + L->pos, 4 * (size_t)(L->pos_n < 4 ? L->pos_n : 4)); if (L->pos_n < 3) p[2] = 0; if (L->pos_n < 2) p[1] = 0;
     float c1[4] = { 1, 1, 1, 1 }, c2[4] = { 0, 0, 0, 0 }; uint32_t vd = 0xFFFFFFFFu, vs = 0;
     if (L->diffuse >= 0) { memcpy(&vd, v + L->diffuse, 4); unpack(vd, c1); }
@@ -386,6 +397,19 @@ static int current_layout(Device *d, Layout *L) {
 }
 /* draws prims of type from vertices at guest address vbase (stride bytes apart); indices: NULL for sequential from 0,
  * else guest address of 16- or 32-bit indices, which are offset by base_vertex. min/num give the vertex range. */
+/* A draw whose vertices are processed where the renderer runs (plat_gfx_deferred): the raw vertices and the expanded
+ * 16-bit indices are copied with a snapshot of the state vertex() reads. */
+typedef struct { int prim, nidx; uint32_t span, stride; Layout L; Xf x; VState s; PlatDrawState ps; } Deferred;
+#define DEF_A4(n) (((n) + 3u) & ~(size_t)3u)
+static void deferred_draw(void *data, PlatDrawFn submit) {             /* on the render thread (or here, without one) */
+    Deferred *h = data; const uint8_t *raw = (const uint8_t *)(h + 1); const uint16_t *ix = (const uint16_t *)(raw + DEF_A4((size_t)h->span * h->stride));
+    for (int i = 0; i < h->x.nlights; i++) h->x.lights[i] = &h->x.vlight[i];     /* prepare() points these into vlight */
+    static PlatVertex *out; static uint8_t *done; static uint32_t cap;
+    if (cap < h->span) { cap = h->span; out = realloc(out, (size_t)cap * sizeof *out); done = realloc(done, cap); }
+    memset(done, 0, h->span);
+    for (int i = 0; i < h->nidx; i++) { uint16_t r = ix[i]; if (!done[r]) { done[r] = 1; vertex(&h->s, &h->L, &h->x, raw + (size_t)r * h->stride, &out[r]); } }
+    submit(h->prim, out, (int)h->span, ix, h->nidx, &h->ps);
+}
 static void draw(Device *d, uint32_t type, uint32_t prims, uint32_t vbase, uint32_t stride, uint32_t idx, int idx32, int32_t base_vertex, uint32_t min_index, uint32_t num_vertices) {
     uint32_t nseq; int plat_prim;
     if (!prims || !prim_counts(type, prims, &nseq, &plat_prim)) return;
@@ -404,10 +428,21 @@ static void draw(Device *d, uint32_t type, uint32_t prims, uint32_t vbase, uint3
     uint32_t span = hi - lo + 1;
     size_t maxidx = (size_t)nseq * 3 + 6;
     if (d->icap < (int)maxidx) { d->icap = (int)maxidx; d->ibuf = realloc(d->ibuf, (size_t)d->icap * sizeof *d->ibuf); }
-    if (span <= 65535) {
+    VState vs; vstate_of(&d->st, &vs);
+    if (span <= 65535 && g_valid(vbase + lo * stride, span * stride)) {        /* the usual case: the vertex work goes to the renderer */
+        uint32_t *e32 = malloc(maxidx * sizeof *e32); for (uint32_t i = 0; i < nseq; i++) seq[i] -= lo;
+        int n = expand(type, prims, seq, e32);
+        size_t vbytes = DEF_A4((size_t)span * stride), total = sizeof(Deferred) + vbytes + (size_t)n * 2;
+        static uint8_t *blob; static size_t blob_cap; if (blob_cap < total) { blob_cap = total; blob = realloc(blob, blob_cap); }
+        Deferred *h = (Deferred *)blob; h->prim = plat_prim; h->nidx = n; h->span = span; h->stride = stride; h->L = L; h->x = x; h->s = vs; h->ps = ps;
+        memcpy(h + 1, GP(vbase + lo * stride), (size_t)span * stride);
+        uint16_t *ix = (uint16_t *)((uint8_t *)(h + 1) + vbytes); for (int i = 0; i < n; i++) ix[i] = (uint16_t)e32[i];
+        free(e32);
+        plat_gfx_deferred(deferred_draw, blob, total);
+    } else if (span <= 65535) {                                       /* some vertex outside guest memory: per vertex, here */
         if (d->vcap < (int)span) { d->vcap = (int)span; d->vbuf = realloc(d->vbuf, (size_t)d->vcap * sizeof *d->vbuf); }
         uint8_t *used = calloc(span, 1);
-        for (uint32_t i = 0; i < nseq; i++) { uint32_t r = seq[i] - lo; if (!used[r]) { used[r] = 1; uint32_t a = vbase + (seq[i]) * stride; if (g_valid(a, (uint32_t)L.stride)) vertex(d, &L, &x, GP(a), &d->vbuf[r]); else memset(&d->vbuf[r], 0, sizeof d->vbuf[r]); } seq[i] = r; }
+        for (uint32_t i = 0; i < nseq; i++) { uint32_t r = seq[i] - lo; if (!used[r]) { used[r] = 1; uint32_t a = vbase + (seq[i]) * stride; if (g_valid(a, (uint32_t)L.stride)) vertex(&vs, &L, &x, GP(a), &d->vbuf[r]); else memset(&d->vbuf[r], 0, sizeof d->vbuf[r]); } seq[i] = r; }
         free(used);
         uint32_t *e32 = malloc(maxidx * sizeof *e32); int n = expand(type, prims, seq, e32);
         for (int i = 0; i < n; i++) d->ibuf[i] = (uint16_t)e32[i];      /* < span <= 65535 */
@@ -422,7 +457,7 @@ static void draw(Device *d, uint32_t type, uint32_t prims, uint32_t vbase, uint3
             int cnt = n - start; if (cnt > (int)(65535 / per * per)) cnt = (int)(65535 / per * per);
             for (int i = 0; i < cnt; i++) {
                 uint32_t a = vbase + (lo + tmp[start + i]) * stride;
-                if (g_valid(a, (uint32_t)L.stride)) vertex(d, &L, &x, GP(a), &d->vbuf[i]); else memset(&d->vbuf[i], 0, sizeof d->vbuf[i]);
+                if (g_valid(a, (uint32_t)L.stride)) vertex(&vs, &L, &x, GP(a), &d->vbuf[i]); else memset(&d->vbuf[i], 0, sizeof d->vbuf[i]);
                 d->ibuf[i] = (uint16_t)i;
             }
             plat_gfx_draw(plat_prim, d->vbuf, cnt, d->ibuf, cnt, &ps);

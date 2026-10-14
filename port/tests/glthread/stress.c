@@ -76,6 +76,11 @@ static int presents;
 void glr_present(void) { on_gl(); hi(12); presents++; }
 void glr_gamma(const uint16_t ramp[3][256]) { on_gl(); hi(13); hb(ramp, 3 * 256 * 2); }
 
+static void deferred_fn(void *data, PlatDrawFn submit) {         /* runs on the GL thread: hash the copy, then draw through submit */
+    on_gl(); size_t n; memcpy(&n, data, sizeof n); hi(14); hb(data, n);
+    PlatVertex v[3]; memset(v, 0, sizeof v); memcpy(&v[0].x, (uint8_t *)data + 8, 4); uint16_t ix[3] = { 0, 1, 2 }; PlatDrawState st; memset(&st, 0, sizeof st);
+    submit(PLAT_PRIM_TRIANGLES, v, 3, ix, 3, &st);
+}
 /* ---------------------------------------------------------------- the call stream */
 static uint64_t rs; static uint32_t rnd(void) { rs ^= rs << 13; rs ^= rs >> 7; rs ^= rs << 17; return (uint32_t)rs; }
 static uint64_t run(unsigned seed, int calls, uint64_t *readsum) {
@@ -111,6 +116,10 @@ static uint64_t run(unsigned seed, int calls, uint64_t *readsum) {
         else if (op < 86) plat_gfx_scissor((int)(rnd() % 2), 1, 2, 3, 4);
         else if (op < 92) plat_gfx_clear(1, rnd(), 1, 0.5f, 0, 0);
         else if (op < 96) plat_gfx_set_target(tex[rnd() % 64]);
+        else if (op < 98) {                                     /* deferred work: a blob (sometimes > the ring's limit) that draws from the render thread */
+            static uint8_t blob[1200000]; size_t n = rnd() % 30 == 0 ? 1100000 : 16 + rnd() % 4000; for (size_t i = 0; i < n; i += 4) { uint32_t v = rnd(); memcpy(blob + i, &v, 4); }
+            memcpy(blob, &n, sizeof n); plat_gfx_deferred(deferred_fn, blob, n);
+        }
         else plat_gfx_begin_frame();
     }
     for (int i = 0; i < 64; i++) if (tex[i]) plat_tex_destroy(tex[i]);

@@ -44,6 +44,7 @@ void plat_gfx_copy(PlatTexture *src, int sx, int sy, int sw, int sh, PlatTexture
     (void)src; (void)sx; (void)sy; (void)sw; (void)sh; (void)dst; (void)dx; (void)dy; (void)dw; (void)dh; (void)linear;
 }
 void plat_gfx_present(void) {}
+void plat_gfx_deferred(void (*fn)(void *, PlatDrawFn), const void *data, size_t n) { (void)n; fn((void *)data, plat_gfx_draw); }
 void plat_gfx_gamma(const uint16_t ramp[3][256]) { (void)ramp; }
 
 int  plat_audio_open(int rate, void (*fill)(int16_t *, int, void *), void *user) { (void)rate; (void)fill; (void)user; return 0; }
