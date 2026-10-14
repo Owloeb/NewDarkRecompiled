@@ -17,7 +17,6 @@ for fixes, engine-level mods and ports. Mods (including a VR version) live in se
 | --- | --- | --- |
 | **Play on Windows** | `python host\build_win.py "C:\...\SS2.exe" --install` | [Play on Windows](#play-on-windows) |
 | **Play on Linux or WSL** | `python3 port/build.py "/path/to/SS2.exe"` | [Play on Linux](#play-on-linux-and-other-platforms) |
-| **Play on a PS Vita** (homebrew) | `python3 port/build.py ... --backend null --low-dll-bases --cache-regs --fastpaths` | [port/backends/vita/README.md](port/backends/vita/README.md) |
 | **Help Name Functions** | `python host\build_win.py "C:\...\SS2.exe" --record` | [docs/NAMING.md](docs/NAMING.md) |
 | **Make a Mod** | `python host\build_win.py ... --hooks hooks.txt` | [docs/MODDING.md](docs/MODDING.md) |
 | **Port to a New Platform** | | [port/README.md](port/README.md) |
