@@ -2,20 +2,25 @@
 
 Details of `lift.py` and how it was verified. For using the project, see the [top-level README](../README.md).
 
-Contents: [Layout](#layout) · [Recompiler usage](#recompiler-usage) · [Translation model](#translation-model) · [Verification status](#verification-status) · [Bugs found by the verification](#bugs-found-by-the-verification-all-fixed) · [Known gaps](#known-gaps)
+Contents: [Layout](#layout) · [Recompiler usage](#recompiler-usage) · [Translation model](#translation-model) · [Register caching](#register-caching---cache-regs) · [Verification status](#verification-status) · [Bugs found by the verification](#bugs-found-by-the-verification-all-fixed) · [Known gaps](#known-gaps)
 
 
 ## Layout
 
 ```
 lift.py               PE -> C: function discovery, CFG, C emission, jump tables, import/indirect dispatch,
-                      self-modifying-code analysis (--smc), interprocedural flags analysis
+                      self-modifying-code analysis (--smc), interprocedural flags analysis, --cache-regs
+lift_preserve.py      --cache-regs: proof of which callee-saved registers each function restores
+lift_x87.py           --cache-regs: the x87 stack in C locals
+runtime/rt_fast.h     --cache-regs: register spill/reload macros, run-time convention checks (RT_ABI_CHECK)
+runtime/rt_abi_check.c  reports for RT_ABI_CHECK builds
 runtime/rt.h          guest CPU state, guest memory access, x87 helpers, call/return macros
 harness/hx.c          test host: runs one recompiled function on a given state (faults -> outcomes)
 harness/difftest.py   function-level differential test vs Unicorn running the original x86
 harness/insnfuzz.py   per-instruction differential fuzzer (every distinct encoding in both binaries)
 harness/smc_test.py   targeted test for self-modifying renderer code (live patch values + renderer globals)
 harness/tracecmp.py   lockstep trace: first instruction where C and Unicorn diverge (needs a trace build)
+harness/abi_test/     --cache-regs end to end (run.sh, with negative controls) and Csmith fuzzing (csmith_fuzz.py)
 build.sh              build generated C + harness into a shared library
 build_trace.sh        same, with per-instruction state tracing (RT_TRACE)
 ```
@@ -64,6 +69,46 @@ deprecation warning.
 - `fs:` addressing uses `c->fs_base` (TIB; `fs:[0]` = SEH chain).
 - Build modes: `RT_SHADOW` verifies return addresses with a shadow stack, `RT_BUDGET` bounds execution,
   `RT_TRACE` records state before every instruction.
+
+## Register caching (`--cache-regs`)
+
+The default output keeps the guest registers in the `CPU` struct. Guest memory is written through byte pointers, so the
+C compiler must assume any guest store may have changed the struct and reloads registers constantly. `--cache-regs`
+(opt-in; `port/build.py --cache-regs`) keeps each function's registers in C locals and writes them back to the struct
+only where something outside the function could look: calls, returns, faults. Four pieces decide how little that is.
+
+- **Register summaries.** For each function the lifter computes which registers it (and everything it calls) may read
+  and write. Before a call only the callee's read set is written back; after it only its write set is reloaded.
+- **Calling-convention contract.** An indirect call or an import has no summary. They are assumed to follow the
+  calling convention: they change only EAX, ECX, EDX and ESP, so EBX/EBP/ESI/EDI stay in locals across them.
+  (`--no-abi-calls` turns this off.)
+- **Preservation proof** (`lift_preserve.py`). A function that saves and restores EBX (`push ebx ... pop ebx`) still
+  writes it, so its summary said "changes EBX". The proof follows every path symbolically (registers as entry value or
+  entry stack plus a constant, stack slots at known offsets) and removes registers proven restored on every exit. It
+  starts optimistic and disproves until nothing changes, which is sound by induction on call depth. Assumed, not
+  proven: a saved register's stack slot is not overwritten through a pointer the analysis can't follow.
+  (`--no-preserve` turns this off.)
+- **x87 stack in locals** (`lift_x87.py`). Within a function the x87 stack depth at each instruction is static (compilers
+  keep it so), so each stack position becomes a `double` local, synchronised with the struct only at calls, returns and
+  the few instructions that read the raw state (`fnstsw`, `fxam`). A call's depth change (0, or 1 for a float result;
+  the `_CI*` intrinsics, `_ftol` and functions returning `double` by name) comes from the callee's analysis or the code
+  after the call, and is checked at run time: a mismatch is a guest fault naming the call site (`--x87-exempt` takes it).
+  About 1.5x faster on float-heavy code in a desktop test. (`--no-x87` turns this off.)
+- **Indirect-call cache.** Indirect calls look up recent targets in a 2-way, 1024-set cache before the binary search over
+  all functions. Each guest thread owns its cache (through its `CPU` struct): a shared cache let two threads race and
+  call the wrong function (401 wrong calls in 162 million in a stress test; 0 in 220 million per thread, TSan clean).
+
+In SS2.exe: 1,971 of the 2,186 functions that use the x87 stack keep it in locals; 11,664 functions provably restore all
+of EBX/EBP/ESI/EDI and 4,464 some of them; of 73,105 call sites only 5,248 still reload all eight registers.
+
+**Checking it.** Compiled with `-DRT_ABI_CHECK` (`port/build.py --abi-check`), every call site that relies on the contract
+or a proof compares the four callee-saved registers before and after. A violation is logged once per site
+(`ABI VIOLATION: call at <site> to <target> ...`) and the registers are restored from the caller's locals, so the program
+stays correct; `--abi-exempt` takes both addresses for the next lift. Results so far: no violations in full play sessions
+on Linux and on the PS Vita (menus, saves, level changes, combat). `harness/abi_test/run.sh` checks the whole chain with
+two test functions that break the rules on purpose (both caught; exempting them restores the plain results).
+`harness/abi_test/csmith_fuzz.py` runs random C programs lifted both ways: 0 mismatches (integer: 94 of 120 programs
+compared, the rest skipped for reasons unrelated to this; floating point with `--float`: 106 of 120).
 
 ## Verification status
 
@@ -115,9 +160,6 @@ decodes. The 2 failures are a NaN payload and an `fxam` on an empty x87 register
   support.
 - The mapper variant at 0x52e100-0x52e650 has no references in the exe and is treated as dead. If it's ever
   called, the dispatch fails loudly.
-- The default output keeps registers in the CPU struct. `lift.py --cache-regs` keeps them in C locals per function instead;
-  callers then reload only what a callee may change: indirect calls and imports are assumed to keep the calling convention,
-  and `lift_preserve.py` proves which callee-saved registers each function restores. Both are verified at run time by
-  builds with `-DRT_ABI_CHECK`, and tested by `harness/abi_test/run.sh` and `harness/abi_test/csmith_fuzz.py`.
-  `lift_x87.py` keeps the x87 stack in C locals in every function whose stack depth is static, checking the depth change of
-  each call at run time (`csmith_fuzz.py --float` tests it).
+- `--cache-regs` relies on two assumptions it cannot prove statically (calls through pointers keep the calling
+  convention; saved registers on the stack are not overwritten through stray pointers). Both are checked at run time
+  by `RT_ABI_CHECK` builds; see [Register caching](#register-caching---cache-regs).

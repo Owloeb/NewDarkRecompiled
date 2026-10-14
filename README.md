@@ -17,6 +17,7 @@ for fixes, engine-level mods and ports. Mods (including a VR version) live in se
 | --- | --- | --- |
 | **Play on Windows** | `python host\build_win.py "C:\...\SS2.exe" --install` | [Play on Windows](#play-on-windows) |
 | **Play on Linux or WSL** | `python3 port/build.py "/path/to/SS2.exe"` | [Play on Linux](#play-on-linux-and-other-platforms) |
+| **Play on a PS Vita** (homebrew) | `python3 port/build.py ... --backend null --low-dll-bases --cache-regs --fastpaths` | [port/backends/vita/README.md](port/backends/vita/README.md) |
 | **Help Name Functions** | `python host\build_win.py "C:\...\SS2.exe" --record` | [docs/NAMING.md](docs/NAMING.md) |
 | **Make a Mod** | `python host\build_win.py ... --hooks hooks.txt` | [docs/MODDING.md](docs/MODDING.md) |
 | **Port to a New Platform** | | [port/README.md](port/README.md) |
@@ -172,7 +173,11 @@ variables, switch files and developer tools.
 3. ~~A platform layer so the recompiled game can run beyond 32-bit Windows.~~ Done: see the
    [portable host](port/README.md).
 4. Next for the portable host: shaders and cube/volume textures, native Linux mouselook testing, further backends.
-5. Speed: `port/build.py --cache-regs` (experimental, off by default) and a sampling profiler (`-DPORT_PROF=ON`) are in
-   the portable host; see [Build details](port/README.md#build-details). A PS Vita backend was tried on the
-   [`port/backends/vita/`](port/backends/vita/README.md): it plays, level changes included, but the Vita's CPU manages only
-   about 6 to 20 fps, so it is shelved there as a documented starting point ([`PERF.md`](port/backends/vita/PERF.md)).
+5. Speed, driven by the [PS Vita backend](port/backends/vita/README.md). In place (all opt-in on the PC, default output
+   unchanged): register caching with a checked calling-convention contract, a proof of which registers each function
+   preserves and the x87 stack in C locals (`port/build.py --cache-regs`, verified at run time with `--abi-check`); native
+   fast paths for the hottest engine functions (`--fastpaths`, each checked against the game's own code); a render thread
+   that also does the Direct3D vertex work; buffered file writes; a sampling profiler (`--prof`). On the Vita that brought
+   exploration to about 15-21 fps and fast level changes; firefights still drop to 6-8 fps, CPU-bound across thousands of
+   functions. Measurements, what helped and what did not: [`PERF.md`](port/backends/vita/PERF.md). Next big lever:
+   faster generated code across the board (inlining small functions, profile-guided optimisation).

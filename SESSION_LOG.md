@@ -291,3 +291,30 @@ distributed; stay vanilla.
   (2D -> (u,v,1,0)); UpdateTexture level skip/size check; Reset leaking bound objects; vertex-declaration extent;
   DirectSound rolloff 0 and SetCurrentPosition divide by zero. Regression checks added (469 null / 496 sdl2), all
   pass on Linux, Windows (Wine) and under ASan+UBSan; the old code fails or crashes on them.
+
+## Session 2026-10-13: PS Vita performance (merged to `main` as PR #1)
+
+Owen's goal: 23-30 fps "in most cases" on the Vita (444 MHz). Started at ~10 fps, CPU-bound. Ended at 15-21 fps exploring,
+6-8 in firefights; the remaining cost is the game's own code on one core, spread thin. Details and numbers:
+`port/backends/vita/PERF.md` (results log 3, "What did not help"); design: `docs/RECOMPILER.md` (Register caching).
+
+What landed (all opt-in on PC; default lifted output unchanged):
+- `--cache-regs` grew a calling-convention contract for indirect calls/imports, a preservation proof (`lift_preserve.py`),
+  the x87 stack in C locals (`lift_x87.py`) and run-time verification (`RT_ABI_CHECK`, `build.py --abi-check`,
+  `--abi-exempt`, `--x87-exempt`, `--no-*` bisect switches). The indirect-call cache became per-thread (a shared one raced).
+  Checked sessions on Linux and Vita: no violations. Tests: `harness/abi_test/run.sh`, `csmith_fuzz.py [--float]`.
+- x87 bugs found in play and fixed: `_CI*` intrinsics reached through import thunks, functions returning a double
+  (floor) followed by `_ftol`, undecodable bytes in allobjs.osm.
+- `crt/stdio.c`: 64 KB write buffer (level saves were thousands of unbuffered writes: slow under WSL `/mnt`).
+- Render thread (`backends/sdl2/gl_thread.c`, Vita core 1; `SS2PORT_RENDER_THREAD=1` on desktop) and `plat_gfx_deferred`,
+  which also moves the D3D per-vertex work there. Test: `port/tests/glthread/run.sh` (TSan).
+- Vita: sound cache 24 MB with heap guard, render thread on core 1, helpers on core 2, game-thread file time and
+  re-read/new split in the log. Test: `port/tests/sndcache/run.sh`.
+- Fast paths for the engine's hash tables, an 8-byte compare and `_ftol2`, checked against the game's own instructions by
+  `port/tests/fastpaths/check.py` (takes a `tools/where.py` dump; no game code in the repo).
+
+Tried and ruled out: AI_Efficiency DML on `Monsters` (AI dumber, fps unchanged); GPU settings in cam_ext.cfg (GPU idle).
+`+x?A.osm` in SS2.log is in the original game too.
+
+Next if speed work resumes: inlining small functions / LTO, then PGO or hot/cold layout from PROF data (expect 1.3-1.5x).
+Branches: everything is on `main`; the old branches were deleted.

@@ -1,8 +1,10 @@
 # Vita performance notes
 
-**Status (2026-10-09): port shelved, merged into `main` as a starting point for others.** It runs and plays (level changes included) at roughly 6-20 fps, CPU-bound in the recompiled
-code. The generic pieces (`--cache-regs`, the portable profiler, reads without the guest lock, the guest-lock re-check) are in `main`. Last result: random-access reads now cost ~5-6 ms instead of
-~7.5 ms (the per-read latency of the card dominates, so fetching less only helped ~30%).
+**Status (2026-10-13): plays; about 15-21 fps exploring, 6-8 in firefights.** Level changes are fast, the render thread,
+file layer and sound cache keep their work off the game thread, and what remains is the game's own code on core 0: about
+45 ms per frame plus ~0.3 ms per draw call (it was ~64 ms + ~1 ms on 2026-10-09). See
+[Results log 3](#results-log-3-2026-10-13-cache-regs--x87-pass-render-thread-fast-paths) for what each step did, and
+[What did not help](#what-did-not-help) before trying the same again.
 
 Where the port stands and what has been tried, so work can resume without the conversation history. Everything here is about the
 Vita backend; nothing here changes the PC builds (all Vita-specific or experimental pieces are off by default).
@@ -11,12 +13,16 @@ Vita backend; nothing here changes the PC builds (all Vita-specific or experimen
 - Level transitions: fixed. The level-exit save wrote the level file in thousands of tiny `sceIoWrite` + seek calls and the
   watchdog did not count writes as progress. Files created for writing now stay in memory until close (`plat_vita_sys.c`), and the
   watchdog counts any file activity.
-- Frame rate in play is about 5-20 fps (scene dependent; busy areas with 50-110 draws per frame are the slowest). The game thread
-  is 85-97% busy; rendering is 3-11%. The limit is the CPU cost of the recompiled code.
+- Frame rate in play: 15-21 fps exploring (35-70 draws per frame), 6-8 fps in firefights (110-180 draws per frame). The game
+  thread is 90-100% busy; the render thread 4-9%, and the game almost never waits for it. The limit is the CPU cost of the
+  recompiled code.
 
 ## Tools
-- `lift.py --cache-regs` (`port/build.py --cache-regs`): guest registers in C locals per function, indirect calls through a small
-  recent-target cache. Experimental, off by default. Gain so far: "feels a bit better".
+- `port/build.py --cache-regs`: guest registers and the x87 stack in C locals, the calling-convention contract, the
+  preservation proof, a per-thread indirect-call cache ([docs/RECOMPILER.md](../../../docs/RECOMPILER.md#register-caching---cache-regs)).
+  `cmake -DPORT_ABI_CHECK=ON` (`build.py --abi-check`) checks it at run time: a checked Vita session reported no violations.
+- `port/build.py --fastpaths`: native versions of the hottest engine functions (`port/core/fastpaths.c`).
+- `port/build.py --prof`: the sampling profiler below, without a relift.
 - `cmake -DPORT_PROF=ON`: sampling profiler. Functions and loop heads store their name; a thread samples it every ~1 ms and logs the
   top 30 every 20 s as `PROF xx.x% nd_XXXXXXXX` lines in `ss2port.log`. Time is charged to the last function entered, and host
   work in imports (file reads) is charged to the caller.
@@ -53,17 +59,43 @@ Vita backend; nothing here changes the PC builds (all Vita-specific or experimen
   Fix: a file read at random now fetches only what was asked for (16-64 KB); sequential files keep the 64 KB window and read-ahead.
 - During level loads the guest spends up to ~25% of samples in `Sleep` (the game sleeping, not computing): worth finding out who sleeps.
 
+## Results log 3 (2026-10-13: cache-regs + x87 pass, render thread, fast paths)
+Same kind of sessions (Medical/Engineering, exploration and combat), PORT_PROF builds at 444 MHz.
+- Lifter (`--cache-regs` grew a calling-convention contract, a preservation proof and the x87 stack in locals): exploration
+  went from ~10 to 13-18 fps. A per-thread indirect-call cache fixed a race in the shared one (wrong calls under threads).
+- Level changes were slow on the PC under WSL: the CRT's `fwrite` was unbuffered (thousands of tiny writes per level save).
+  Streams now have a 64 KB write buffer (`crt/stdio.c`). The Vita already kept written files in memory.
+- Render thread (vitaGL on core 1, then also the D3D per-vertex work through `plat_gfx_deferred`): noticeably smoother,
+  but fps moved little: the render thread is only 4-9% busy. GL was never the big cost; the game's own code is.
+- Sound: the game reads `SND.CRF`/`SND2.CRF` in ~32 KB pieces all the time (up to ~1,100 reads per 15 s in combat). At
+  4 MB the cache missed half of them, nearly all re-reads of evicted pieces; it now grows to 24 MB (bounded by free host
+  heap) and the log splits misses into re-reads and new data. These reads are on a background guest thread: the game
+  thread's own file time in play is 0-1%, so sound does not cost frame rate.
+- Fast paths for the combat hot spots (the engine's hash tables, an 8-byte compare, `_ftol2`): those functions left the
+  profile; a few percent overall.
+- Where the time goes now (combat): a flat profile across thousands of functions; float-heavy code (models, animation,
+  lighting) and object queries at the top, none above ~2%. Frame time follows the number of objects drawn.
+
+## What did not help
+- **An AI efficiency mod.** `AI_Efficiency` on the `Monsters` archetype (a gamesys DML: distant AIs think less often, also
+  in combat and in view) loaded fine and made enemies visibly dumber, and combat fps did not change. AI thinking is not
+  the bottleneck. Don't ship it.
+- **GPU settings in `cam_ext.cfg`** (multisampling, anisotropic filtering, mipmaps, distortion effects): no effect; the
+  GPU is idle. The CPU-side ones (`enhanced_*_trace`, `sun_runtime_obj_shadows`) are worth a few percent.
+- **Bigger sound cache for frame rate**: fixed the misses, not the frame rate (the reads are off the game thread).
+
 ## Ideas, in rough order of expected value
-1. (done, see results) indirect-call cache.
-1a. (done, not yet measured on hardware) Render thread: vitaGL on core 1 (gl_thread.c), the game thread only records draws. Takes the
-    GL time (render 5-10% plus most of DrawPrimitiveUP's 10-14%) off the game thread. The D3D front end's own CPU work in
-    dx/d3d9.c (vertex transform, lighting, FVF decoding) stays on the game thread.
-1b. (sound archives done, see sndcache.c; not yet measured) Read-ahead for file reads during play (a prefetch thread or bigger window) to take the 6-16% file wait off the game thread.
-2. Inline tiny functions (lifter, or LTO / fewer files for the generated code).
-3. x87 `top` tracking at lift time (st[] as locals); callee-saved register elision.
-4. Reduce `fread` cost (read-ahead / larger window for the streams the game reads during play).
-5. Lower in-game settings (resolution, view distance, sound channels), skip cutscenes, cache negative `stat` probes at startup.
-6. Compiler experiments: -O2/-Os, ARM instead of Thumb (low expected value).
+1. Faster generated code across the board, the only lever left that moves everything: inline tiny functions (many hot
+   functions are 3-5 instructions of call overhead; the generated C is split over many files, so GCC can't inline across
+   them: LTO, or the lifter inlining small leaf functions), then profile-guided optimisation or hot/cold code layout from
+   the PROF tables (the instruction cache is 32 KB against tens of MB of code). Expected 1.3-1.5x, not more.
+2. More fast paths where the profile shows a clear, self-contained hot function (check each with
+   `port/tests/fastpaths/check.py`). Diminishing returns: the top of the profile is ~2% per function.
+3. The remaining D3D front-end work on the game thread (~5%: index expansion, state snapshot, copying).
+4. Fewer objects per frame in heavy scenes (engine-side: particle and debris limits), if the look can take it.
+5. Compiler experiments: -O3, ARM instead of Thumb (low expected value).
+Done: indirect-call cache, x87 in locals, callee-saved register elision (preservation proof), render thread, read-ahead
+and sound cache, buffered writes.
 
 ## Debugging hangs and crashes (what we learned)
 - The watchdog (`plat_vita.c`) fires when the game neither draws nor touches a file for 90 s. It logs what was in flight (each file

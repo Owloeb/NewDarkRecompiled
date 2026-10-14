@@ -46,8 +46,8 @@ The rest of this page is reference. Look things up here; you do not need to read
 | `--jobs N` | Parallel compile jobs [all CPU cores]. |
 | `--build DIR` | Build directory [`build/port`, or `build/port-win` for `--target windows`]. |
 | `--install` | Copy the result next to `SS2.exe`. |
-| `--cache-regs` | **Experimental.** Lift with `lift.py --cache-regs`. Normally guest registers live in a struct and every guest memory store forces the C compiler to reload them. This keeps each function's registers in C locals (written back only around calls, faults and returns) and routes indirect calls through a small target cache instead of a binary search. Expected effect: Vita about +20% frame rate (mostly the call cache); x86-64 about +5%; 32-bit Windows hosts probably the best case but unmeasured; ARM under qemu was ~7% *slower* (qemu isn't a reliable speed guide). Passes the full conformance suite (plain and cache-regs) on Linux and on a Windows (`--target windows`) run, sanitizers clean; never measured in the real game on a PC. Switching it on or off relifts everything (~8 minutes). |
-| `--fastpaths` | Native C versions of a few very hot engine functions: the string-name hash, float-to-int, and the 2D bitmap copy to the software canvas (`port/core/fastpaths.c`, three so far). Same behaviour, less CPU; each was checked against the recompiled original on random inputs. Works with `--cache-regs`: `tools/apply_hooks.py` then checks each fast path against the lifter's register summaries and stops the build if one reads or writes a register its original function doesn't. Takes seconds to switch on or off (no re-lift; only three generated files recompile). Off by default. |
+| `--cache-regs` | Opt-in speed switch: lift with `lift.py --cache-regs`. Normally guest registers live in a struct and every guest memory store forces the C compiler to reload them. This keeps each function's registers in C locals (written back only around calls, faults and returns), holds indirect calls and imports to the calling convention, proves which registers each function preserves, keeps the x87 stack in locals and routes indirect calls through a per-thread cache of recent targets ([how](RECOMPILER.md#register-caching---cache-regs)). Played on Linux and the PS Vita with `--abi-check` and no violations; passes the conformance suite, `harness/abi_test` and Csmith fuzzing. Switching it on or off relifts everything (5-10 minutes). |
+| `--fastpaths` | Native C versions of the hottest engine functions (`port/core/fastpaths.c`): the string-name hash, the integer and byte-string hashes and the two hash-table lookups behind object property and link queries, an 8-byte key compare, `_ftol` and `_ftol2`, and the 2D bitmap copy to the software canvas. Same behaviour, less CPU: each declines for input it doesn't model (the original then runs), and `port/tests/fastpaths/check.py` compares each with the game's own instructions in an x86 emulator. Works with `--cache-regs`: `tools/apply_hooks.py` then checks each fast path against the lifter's register summaries and stops the build if one reads or writes a register its original function doesn't. Takes seconds to switch on or off (no re-lift). Off by default. |
 | `--abi-check` | With `--cache-regs`: build with `-DPORT_ABI_CHECK=ON`. Every indirect call and import call checks that EBX/EBP/ESI/EDI came back unchanged, as the lifter assumes; a violation is logged once per call site (`ABI VIOLATION: call at <site> ...`) and corrected. A little slower: for test sessions, not timing runs. List reported sites in a file for `--abi-exempt`. |
 | `--prof` | Sampling profiler (`-DPORT_PROF=ON`): every 20 s the log lists the 30 guest functions and imports that ran most (`[port] PROF  12.3% nd_0068bff0`). Recompiles; no relift. |
 | `--no-x87`, `--no-preserve`, `--no-abi-calls` | With `--cache-regs`: switch off one of the lifter's optimisations (x87 stack in locals, the preservation proof, the calling-convention contract), e.g. to find which one a problem comes from. Each relifts. |
@@ -127,9 +127,10 @@ Empty text files next to `ss2_native.exe`; the name is the switch.
 
 ## PS Vita
 
-Shelved (plays at about 6 to 20 fps); see [`port/backends/vita/README.md`](../port/backends/vita/README.md) and
-[`PERF.md`](../port/backends/vita/PERF.md). Lift with `port/build.py ... --backend null --low-dll-bases [--cache-regs]`,
-then build with CMake `-DPORT_BACKEND=vita` and the vitasdk toolchain file.
+Plays at about 15-21 fps exploring, 6-8 in firefights; see [`port/backends/vita/README.md`](../port/backends/vita/README.md)
+and [`PERF.md`](../port/backends/vita/PERF.md). Lift with `port/build.py ... --backend null --low-dll-bases --cache-regs
+--fastpaths`, then build with CMake `-DPORT_BACKEND=vita` and the vitasdk toolchain file (add `-DPORT_ABI_CHECK=ON` for a
+checked test session, `-DPORT_PROF=ON` for the profiler).
 
 **`ux0:data/ss2/ss2port.txt`** (optional; options separated by spaces or new lines; the Vita has no environment variables). Any `ss2port` option above, plus:
 
@@ -162,7 +163,7 @@ Without `--guest-space`/`--guest-backed` in that file the Vita uses 208 and 128.
 | `--smc` | Analyse and translate self-modifying code (used for `SS2.exe`). |
 | `--rebase ADDR` | Lift a DLL as if loaded at this address (applies its relocations first). |
 | `--iat-indirect` | For DLLs loaded by Windows: call imports through their IAT slot as plain indirect calls. |
-| `--cache-regs` | **Experimental.** Guest registers in C locals per function, indirect calls through a target cache (needs `runtime/rt_fast.h`). Default output is unchanged without it. Indirect calls and imports are assumed to keep the calling convention (they change only EAX, ECX, EDX and ESP), so only those four are reloaded after them; compile the generated C with `-DRT_ABI_CHECK` (plus `runtime/rt_abi_check.c`) to verify that at run time. |
+| `--cache-regs` | Opt-in. Guest registers in C locals per function, indirect calls through a per-thread target cache (needs `runtime/rt_fast.h`). Default output is unchanged without it. Indirect calls and imports are assumed to keep the calling convention (they change only EAX, ECX, EDX and ESP), so only those four are reloaded after them; compile the generated C with `-DRT_ABI_CHECK` (plus `runtime/rt_abi_check.c`) to verify that at run time. |
 | `--no-abi-calls` | With `--cache-regs`: treat indirect calls and imports as changing every register (the older, slower behaviour), e.g. to bisect a problem. |
 | `--no-preserve` | With `--cache-regs`: skip the proof of which callee-saved registers (EBX/EBP/ESI/EDI) each function restores (`lift_preserve.py`). With the proof, a caller keeps those registers in locals across a call to a function that saves and restores them, instead of reloading them; the lifter prints how many call sites that covers. |
 | `--no-x87` | With `--cache-regs`: keep the x87 stack in the CPU struct (the default translation) instead of C locals. With `lift_x87.py`, each function that keeps its x87 stack depth static (compiled code does) holds the stack in C locals, written back only at calls, returns and fnstsw/fxam; about 1.5x faster on float-heavy code in a desktop test. The depth change of each call is checked at run time; a mismatch is a guest fault naming the call site. |
@@ -199,6 +200,11 @@ Builds a game-free 32-bit test program, lifts it and runs it on the host. No gam
 | `tools/where.py <exe> <addr> [before] [after]` | Disassemble around a guest address (e.g. from a crash report); `-s` prints the string there. |
 | `tools/fnprof.py <exe> <log> [skip] [top]` | Average the `PROF` tables of a `PORT_PROF` build and describe the hottest guest functions. |
 | `port/tools/check_shims.py`, `check_com.py` | Check every shim's and COM method's stack-pop count against the MinGW headers. |
+| `harness/abi_test/run.sh` | `--cache-regs` end to end: contract, preservation proof, `RT_ABI_CHECK` and `--abi-exempt`, with two negative controls that must be caught. Prints PASS/FAIL per check. |
+| `harness/abi_test/csmith_fuzz.py [--seeds a-b] [--float]` | Random C programs (needs Csmith) lifted plain and with `--cache-regs`; results must agree and the checked build must report nothing. |
+| `port/tests/glthread/run.sh` | Render-thread stress test: 600,000 random renderer calls through the thread and directly must hash identically (ThreadSanitizer). |
+| `port/tests/sndcache/run.sh` | Vita sound-cache test against a replayed working set, every byte checked (ThreadSanitizer). |
+| `port/tests/fastpaths/check.py <dump> [trials]` | Each fast path against the game's own code in Unicorn. `<dump>`: `tools/where.py` output for the functions, from your `SS2.exe` (kept on your machine). Needs `pip install unicorn keystone-engine`. |
 | `port/tools/gen_ifaces.py` | Generate the COM interface tables. |
 
 ### Compile-time defines (`runtime/rt.h`)
