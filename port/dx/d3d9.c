@@ -454,7 +454,47 @@ static int current_layout(Device *d, Layout *L) {
  * else guest address of 16- or 32-bit indices, which are offset by base_vertex. min/num give the vertex range. */
 /* A draw whose vertices are processed where the renderer runs (plat_gfx_deferred): the raw vertices and the expanded
  * 16-bit indices are copied with a snapshot of the state vertex() reads. */
-typedef struct { int prim, nidx; uint32_t span, stride; Layout L; Xf x; VState s; PlatDrawState ps; } Deferred;
+typedef struct { int prim, nidx; uint32_t span, stride; Layout L; Xf x; VState s; PlatDrawState ps; int obj; } Deferred;
+
+/* ---------------------------------------------------------------- per-pixel object lighting (in progress)
+ * NewDark lights models per vertex on the CPU (obj_light_points, symbols/manual.sym) and hands Direct3D pre-transformed
+ * vertices with the result as their colour. For those draws (pre-transformed, depth-tested, one texture, no shader) the
+ * view-space position of every vertex is rebuilt from its screen position and depth, vertices the engine shares are
+ * welded (they arrive with identical coordinates), and a smooth normal is built from the faces around each one.
+ * SS2PORT_PPL_DEBUG=1 draws those normals as colours (x red, y green, z blue; 0.5 = zero) to check them. */
+static int ppl_debug = -1;
+static int ppl_on(void) { if (ppl_debug < 0) { const char *e = getenv("SS2PORT_PPL_DEBUG"); ppl_debug = e && *e && *e != '0'; } return ppl_debug; }
+static void ppl_normals(PlatVertex *v, uint32_t span, const uint16_t *ix, int nidx, const VState *s) {
+    float vw = s->vp[2] ? (float)s->vp[2] : 1, vh = s->vp[3] ? (float)s->vp[3] : 1, kx = 0.75f * vw / vh, ky = 0.75f;   /* focal length H / 1.5 */
+    static float (*P)[3], (*N)[3]; static uint32_t *rep_, *hash; static uint32_t cap, hcap;
+    if (cap < span) { cap = span; P = realloc(P, cap * sizeof *P); N = realloc(N, cap * sizeof *N); rep_ = realloc(rep_, cap * 4); }
+    uint32_t hn = 16; while (hn < span * 2) hn <<= 1;
+    if (hcap < hn) { hcap = hn; hash = realloc(hash, hcap * 4); }
+    memset(hash, 0xFF, hn * 4);
+    for (uint32_t i = 0; i < span; i++) {                     /* view space (x right, y up, z forward) and the weld */
+        float w = v[i].w != 0 ? v[i].w : 1; P[i][0] = v[i].x * kx; P[i][1] = v[i].y * ky; P[i][2] = w;   /* x = ndc_x * w */
+        N[i][0] = N[i][1] = N[i][2] = 0;
+        uint32_t k[3]; memcpy(k, P[i], 12); uint32_t h = (k[0] * 73856093u ^ k[1] * 19349663u ^ k[2] * 83492791u) & (hn - 1);
+        for (;;) {
+            if (hash[h] == 0xFFFFFFFFu) { hash[h] = i; rep_[i] = i; break; }
+            if (!memcmp(P[hash[h]], P[i], 12)) { rep_[i] = hash[h]; break; }
+            h = (h + 1) & (hn - 1);
+        }
+    }
+    for (int t = 0; t + 2 < nidx; t += 3) {                     /* area-weighted face normals, turned toward the eye */
+        const float *a = P[ix[t]], *b = P[ix[t + 1]], *c = P[ix[t + 2]];
+        float e1[3] = { b[0] - a[0], b[1] - a[1], b[2] - a[2] }, e2[3] = { c[0] - a[0], c[1] - a[1], c[2] - a[2] };
+        float n[3] = { e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0] };
+        if (n[0] * a[0] + n[1] * a[1] + n[2] * a[2] > 0) { n[0] = -n[0]; n[1] = -n[1]; n[2] = -n[2]; }
+        for (int k = 0; k < 3; k++) { float *d = N[rep_[ix[t + k]]]; d[0] += n[0]; d[1] += n[1]; d[2] += n[2]; }
+    }
+    for (uint32_t i = 0; i < span; i++) {
+        const float *n = N[rep_[i]]; float l = sqrtf(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]); if (l <= 0) l = 1;
+        float r = 0.5f + 0.5f * n[0] / l, g = 0.5f + 0.5f * n[1] / l, b = 0.5f - 0.5f * n[2] / l;   /* blue: facing the eye */
+        v[i].diffuse = 0xFF000000u | (uint32_t)(r * 255) << 16 | (uint32_t)(g * 255) << 8 | (uint32_t)(b * 255);
+    }
+}
+
 #define DEF_A4(n) (((n) + 3u) & ~(size_t)3u)
 static void deferred_draw(void *data, PlatDrawFn submit) {             /* on the render thread (or here, without one) */
     Deferred *h = data; const uint8_t *raw = (const uint8_t *)(h + 1); const uint16_t *ix = (const uint16_t *)(raw + DEF_A4((size_t)h->span * h->stride));
@@ -463,6 +503,7 @@ static void deferred_draw(void *data, PlatDrawFn submit) {             /* on the
     if (cap < h->span) { cap = h->span; out = realloc(out, (size_t)cap * sizeof *out); done = realloc(done, cap); }
     memset(done, 0, h->span);
     for (int i = 0; i < h->nidx; i++) { uint16_t r = ix[i]; if (!done[r]) { done[r] = 1; vertex(&h->s, &h->L, &h->x, raw + (size_t)r * h->stride, &out[r]); } }
+    if (h->obj && ppl_debug > 0) { PlatDrawState ps = h->ps; ps.stage[0].color_op = PLAT_TOP_SELECTARG2; ps.stage[0].color_arg2 = PLAT_ARG_DIFFUSE; ps.stage[1].color_op = ps.stage[1].alpha_op = PLAT_TOP_DISABLE; ps.fog = 0; ppl_normals(out, h->span, ix, h->nidx, &h->s); submit(h->prim, out, (int)h->span, ix, h->nidx, &ps); return; }
     submit(h->prim, out, (int)h->span, ix, h->nidx, &h->ps);
 }
 static void draw(Device *d, uint32_t type, uint32_t prims, uint32_t vbase, uint32_t stride, uint32_t idx, int idx32, int32_t base_vertex, uint32_t min_index, uint32_t num_vertices) {
@@ -492,6 +533,7 @@ static void draw(Device *d, uint32_t type, uint32_t prims, uint32_t vbase, uint3
         size_t vbytes = DEF_A4((size_t)span * stride), total = sizeof(Deferred) + vbytes + (size_t)n * 2;
         static uint8_t *blob; static size_t blob_cap; if (blob_cap < total) { blob_cap = total; blob = realloc(blob, blob_cap); }
         Deferred *h = (Deferred *)blob; h->prim = plat_prim; h->nidx = n; h->span = span; h->stride = stride; h->L = L; h->x = x; h->s = vs; h->ps = ps;
+        h->obj = ppl_on() && L.rhw && plat_prim == PLAT_PRIM_TRIANGLES && ps.depth_test && !ps.shader && L.diffuse >= 0 && L.ntex == 1;
         memcpy(h + 1, GP(vbase + lo * stride), (size_t)span * stride);
         uint16_t *ix = (uint16_t *)((uint8_t *)(h + 1) + vbytes); for (int i = 0; i < n; i++) ix[i] = (uint16_t)e32[i];
         free(e32);
