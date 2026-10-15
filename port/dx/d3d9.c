@@ -94,6 +94,7 @@ struct Device {
 static Device *DEV(ComObj *o) { return (Device *)o->data; }
 typedef struct { Device *dev; PlatShader *sh; int nconst; uint32_t *tok; uint32_t ntok; } PShader;   /* a pixel shader */
 static int shaders_on(void);
+static void ppl_flush(void);   /* per-pixel lighting: draws held back to be smoothed together go out first (below) */
 static void bind(ComObj **slot, ComObj *o) { if (*slot == o) return; if (o) com_addref(o); if (*slot) com_release(*slot); *slot = o; }
 static void *scratch(Device *d, size_t n) { if (d->scratch_n < n) { d->scratch = realloc(d->scratch, n); d->scratch_n = n; } return d->scratch; }
 
@@ -109,6 +110,7 @@ static void upload(Res *t) {
     Device *d = t->dev;
     if (t->fmt == FMT_P8 && t->pal_ver != d->pal_ver[d->st.palette]) { t->dirty[0] = 0xFFFF; t->pal_ver = d->pal_ver[d->st.palette]; }
     if (!t->dirty[0] && t->pt) return;
+    ppl_flush();                                                     /* held draws may use this texture's old contents */
     PlatVideoCaps caps; plat_video_caps(&caps);
     int levels = (int)t->levels;
     if (!t->pt) {
@@ -158,6 +160,7 @@ static void default_state(State *s, int zenable) {
     s->vp[4] = f2u(0.0f); s->vp[5] = f2u(1.0f);
 }
 static void apply_viewport(Device *d) {
+    ppl_flush();
     PlatViewport v = { (int)d->st.vp[0], (int)d->st.vp[1], (int)d->st.vp[2], (int)d->st.vp[3], u2f(d->st.vp[4]), u2f(d->st.vp[5]) };
     plat_gfx_viewport(&v);
     plat_gfx_scissor((int)d->st.rs[174], d->st.scissor[0], d->st.scissor[1], d->st.scissor[2] - d->st.scissor[0], d->st.scissor[3] - d->st.scissor[1]);
@@ -494,7 +497,7 @@ static void ppl_dump_draw(const Deferred *h, const PlatVertex *v, const uint16_t
     for (uint32_t i = 0; i < h->span; i++) fprintf(ppl_dumpf, "V %u %.7g %.7g %.7g %.7g %08x\n", i, v[i].x, v[i].y, v[i].z, v[i].w, v[i].diffuse);
     for (int i = 0; i < h->nidx; i++) fprintf(ppl_dumpf, "%s%u", i ? " " : "I ", ix[i]); fprintf(ppl_dumpf, "\n");
 }                                    /* the first-person weapon's zoom (focal length H * zoom / 1.5) */
-static void ppl_normals(PlatVertex *v, uint32_t span, const uint16_t *ix, int nidx, const VState *s, float zoom) {
+static void ppl_normals(PlatVertex *v, uint32_t span, const uint32_t *ix, int nidx, const VState *s, float zoom) {
     float vw = s->vp[2] ? (float)s->vp[2] : 1, vh = s->vp[3] ? (float)s->vp[3] : 1, kx = 0.75f * vw / vh / zoom, ky = 0.75f / zoom;   /* focal length H * zoom / 1.5 */
     static float (*P)[3], (*N)[3]; static uint32_t *rep_, *hash; static uint32_t cap, hcap;
     if (cap < span) { cap = span; P = realloc(P, cap * sizeof *P); N = realloc(N, cap * sizeof *N); rep_ = realloc(rep_, cap * 4); }
@@ -534,14 +537,54 @@ static void deferred_draw(void *data, PlatDrawFn submit) {             /* on the
     memset(done, 0, h->span);
     for (int i = 0; i < h->nidx; i++) { uint16_t r = ix[i]; if (!done[r]) { done[r] = 1; vertex(&h->s, &h->L, &h->x, raw + (size_t)r * h->stride, &out[r]); } }
     ppl_dump_draw(h, out, ix, h->obj);
-    if (h->obj) {                                                   /* every vertex at one depth: a flat HUD quad (the minimap), not a model */
-        float w0 = out[ix[0]].w; int flat = 1; for (int i = 1; i < h->nidx && flat; i++) flat = out[ix[i]].w == w0;
-        if (flat) h->obj = 0;
-    }
-    if (h->obj && ppl_debug > 0 && h->ps.blend && h->ps.dst_blend == PLAT_BLEND_ONE) return;   /* debug view: the additive fill / rim passes would wash it out */
-    if (h->obj && ppl_debug > 0) { PlatDrawState ps = h->ps; ps.stage[0].color_op = PLAT_TOP_SELECTARG2; ps.stage[0].color_arg2 = PLAT_ARG_DIFFUSE; ps.stage[1].color_op = ps.stage[1].alpha_op = PLAT_TOP_DISABLE; ps.fog = 0; if (ppl_wzoom < 0) { const char *e = getenv("SS2PORT_PPL_WZOOM"); ppl_wzoom = e && atof(e) > 0 ? (float)atof(e) : 0.5f; }
-        ppl_normals(out, h->span, ix, h->nidx, &h->s, h->obj == 2 ? ppl_wzoom : 1.0f); submit(h->prim, out, (int)h->span, ix, h->nidx, &ps); return; }
     submit(h->prim, out, (int)h->span, ix, h->nidx, &h->ps);
+}
+/* A run of model draws held back by ppl_hold, in order: their vertices are processed together so that normals can be
+ * smoothed across draws (the engine draws the first-person weapon one polygon per draw), then each goes out as it came. */
+static void group_draw(void *data, PlatDrawFn submit) {
+    const uint8_t *g = data; size_t n; memcpy(&n, g, sizeof n); const uint8_t *p = g + sizeof n, *end = p + n;
+    static PlatVertex *V; static uint32_t *I; static uint32_t vcap, icap; static uint8_t *done; static uint32_t dcap;
+    uint32_t nv = 0, ni = 0; const VState *vs0 = NULL; int cls = 0;
+    for (const uint8_t *q = p; q < end; ) {                          /* pass 1: vertices of every draw, one index list */
+        size_t total; memcpy(&total, q, sizeof total); Deferred *h = (Deferred *)(void *)(q + sizeof total); q += sizeof total + total;
+        const uint8_t *raw = (const uint8_t *)(h + 1); const uint16_t *ix = (const uint16_t *)(raw + DEF_A4((size_t)h->span * h->stride));
+        for (int i = 0; i < h->x.nlights; i++) h->x.lights[i] = &h->x.vlight[i];
+        if (vcap < nv + h->span) { vcap = (nv + h->span) * 2; V = realloc(V, (size_t)vcap * sizeof *V); }
+        if (icap < ni + (uint32_t)h->nidx) { icap = (ni + (uint32_t)h->nidx) * 2; I = realloc(I, (size_t)icap * 4); }
+        if (dcap < h->span) { dcap = h->span; done = realloc(done, dcap); }
+        memset(done, 0, h->span);
+        for (int i = 0; i < h->nidx; i++) { uint16_t r = ix[i]; if (!done[r]) { done[r] = 1; vertex(&h->s, &h->L, &h->x, raw + (size_t)r * h->stride, &V[nv + r]); } I[ni + (uint32_t)i] = nv + r; }
+        ppl_dump_draw(h, V + nv, ix, h->obj);
+        nv += h->span; ni += (uint32_t)h->nidx; vs0 = &h->s; cls = h->obj;
+    }
+    if (ppl_wzoom < 0) { const char *e = getenv("SS2PORT_PPL_WZOOM"); ppl_wzoom = e && atof(e) > 0 ? (float)atof(e) : 0.5f; }
+    if (vs0) ppl_normals(V, nv, I, (int)ni, vs0, cls == 2 ? ppl_wzoom : 1.0f);
+    static uint16_t *ix16; static uint32_t i16cap; nv = 0;
+    for (const uint8_t *q = p; q < end; ) {                          /* pass 2: each draw as it came */
+        size_t total; memcpy(&total, q, sizeof total); Deferred *h = (Deferred *)(void *)(q + sizeof total); q += sizeof total + total;
+        const uint8_t *raw = (const uint8_t *)(h + 1); const uint16_t *ix = (const uint16_t *)(raw + DEF_A4((size_t)h->span * h->stride));
+        PlatVertex *out = V + nv; nv += h->span;
+        float w0 = out[ix[0]].w; int flat = 1; for (int i = 1; i < h->nidx && flat; i++) flat = out[ix[i]].w == w0;
+        if (flat || !ppl_debug) { submit(h->prim, out, (int)h->span, ix, h->nidx, &h->ps); continue; }   /* a flat HUD quad (the minimap) */
+        if (h->ps.blend && h->ps.dst_blend == PLAT_BLEND_ONE) continue;  /* debug view: the additive fill / rim passes would wash it out */
+        PlatDrawState ps = h->ps; ps.stage[0].color_op = PLAT_TOP_SELECTARG2; ps.stage[0].color_arg2 = PLAT_ARG_DIFFUSE; ps.stage[1].color_op = ps.stage[1].alpha_op = PLAT_TOP_DISABLE; ps.fog = 0;
+        if (i16cap < (uint32_t)h->nidx) { i16cap = (uint32_t)h->nidx; ix16 = realloc(ix16, i16cap * 2); }
+        memcpy(ix16, ix, (size_t)h->nidx * 2);
+        submit(h->prim, out, (int)h->span, ix16, h->nidx, &ps);
+    }
+}
+static uint8_t *grp; static size_t grp_n, grp_cap; static int grp_cls;
+static void ppl_flush(void) {
+    if (!grp_n) return;
+    size_t n = grp_n - sizeof n; memcpy(grp, &n, sizeof n);
+    plat_gfx_deferred(group_draw, grp, grp_n); grp_n = 0;
+}
+static void ppl_hold(const void *blob, size_t total, int cls) {
+    if (grp_n && (cls != grp_cls || grp_n + total > (4u << 20) - 64)) ppl_flush();
+    if (!grp_n) grp_n = sizeof(size_t);
+    size_t need = grp_n + sizeof total + total;
+    if (grp_cap < need) { grp_cap = need * 2; grp = realloc(grp, grp_cap); }
+    memcpy(grp + grp_n, &total, sizeof total); memcpy(grp + grp_n + sizeof total, blob, total); grp_n += sizeof total + total; grp_cls = cls;
 }
 static void draw(Device *d, uint32_t type, uint32_t prims, uint32_t vbase, uint32_t stride, uint32_t idx, int idx32, int32_t base_vertex, uint32_t min_index, uint32_t num_vertices) {
     uint32_t nseq; int plat_prim;
@@ -575,8 +618,9 @@ static void draw(Device *d, uint32_t type, uint32_t prims, uint32_t vbase, uint3
         memcpy(h + 1, GP(vbase + lo * stride), (size_t)span * stride);
         uint16_t *ix = (uint16_t *)((uint8_t *)(h + 1) + vbytes); for (int i = 0; i < n; i++) ix[i] = (uint16_t)e32[i];
         free(e32);
-        plat_gfx_deferred(deferred_draw, blob, total);
+        if (h->obj) ppl_hold(blob, total, h->obj); else { ppl_flush(); plat_gfx_deferred(deferred_draw, blob, total); }
     } else if (span <= 65535) {                                       /* some vertex outside guest memory: per vertex, here */
+        ppl_flush();
         if (d->vcap < (int)span) { d->vcap = (int)span; d->vbuf = realloc(d->vbuf, (size_t)d->vcap * sizeof *d->vbuf); }
         uint8_t *used = calloc(span, 1);
         for (uint32_t i = 0; i < nseq; i++) { uint32_t r = seq[i] - lo; if (!used[r]) { used[r] = 1; uint32_t a = vbase + (seq[i]) * stride; if (g_valid(a, (uint32_t)L.stride)) vertex(&vs, &L, &x, GP(a), &d->vbuf[r]); else memset(&d->vbuf[r], 0, sizeof d->vbuf[r]); } seq[i] = r; }
@@ -586,6 +630,7 @@ static void draw(Device *d, uint32_t type, uint32_t prims, uint32_t vbase, uint3
         free(e32);
         plat_gfx_draw(plat_prim, d->vbuf, (int)span, d->ibuf, n, &ps);
     } else {                                                          /* rare: a range too wide for 16-bit indices, draw it unindexed */
+        ppl_flush();
         uint32_t per = plat_prim == PLAT_PRIM_TRIANGLES ? 3 : plat_prim == PLAT_PRIM_LINES ? 2 : 1;
         uint32_t *tmp = malloc(maxidx * sizeof *tmp); for (uint32_t i = 0; i < nseq; i++) seq[i] -= lo;
         int n = expand(type, prims, seq, tmp);
@@ -616,6 +661,7 @@ static void surf_changed(Res *s) { if (s->container) R(s->container)->dirty[s->f
 static int is_target(Res *s) { return s->backbuffer || (s->usage & 1) || (s->container && (R(s->container)->usage & 1)) || s->srt; }
 /* draws an RGBA8 image into rectangle dst of target t (NULL = back buffer), stretched */
 static void blit_rgba(Device *d, const uint8_t *rgba, uint32_t w, uint32_t h, const int32_t *sr, PlatTexture *t, const int32_t *dr, int linear) {
+    ppl_flush();
     PlatTexture *tmp = plat_tex_create((int)w, (int)h, 1, PLAT_TEX_RGBA8, 0); if (!tmp) return;
     plat_tex_upload(tmp, 0, 0, 0, (int)w, (int)h, rgba, (int)w * 4);
     plat_gfx_set_target(t);
@@ -637,6 +683,7 @@ static void rect_or_full(uint32_t r, uint32_t w, uint32_t h, int32_t o[4]) {
 }
 /* RGBA8 copy of a surface's contents (render targets are read back) */
 static uint8_t *surf_rgba(Device *d, Res *s, uint32_t *w, uint32_t *h) {
+    ppl_flush();
     surf_size(s, w, h); uint8_t *rgba = malloc((size_t)*w * *h * 4);
     if (is_target(s) && !s->lock_dirty) { if (plat_tex_read(surface_target(s), 0, 0, (int)*w, (int)*h, rgba, (int)*w * 4)) memset(rgba, 0, (size_t)*w * *h * 4); return rgba; }
     uint32_t pitch, m = surf_mem(s, &pitch); fmt_to_rgba8(s->fmt, GP(m), pitch, *w, *h, rgba, s->fmt == FMT_P8 ? d->palettes[d->st.palette] : NULL); return rgba;
@@ -732,6 +779,7 @@ ComClass c_d3d9 = { "IDirect3D9", IFACE_IDirect3D9, iids_d3d9, 1, d3d_m, D3D_OK,
 
 /* ================================================================ resources: common */
 static void res_destroy(ComObj *o) {
+    ppl_flush();
     Res *r = R(o);
     for (int f = 0; f < 6; f++) for (int l = 0; l < 16; l++) { if (r->mem[f][l]) g_free(r->mem[f][l]); if (r->level_surf[f][l]) { R(r->level_surf[f][l])->container = NULL; com_release(r->level_surf[f][l]); } }
     if (r->pt) plat_tex_destroy(r->pt); if (r->srt) plat_tex_destroy(r->srt);
@@ -771,6 +819,7 @@ static void lock_out(uint32_t out, Res *t, int face, int l, uint32_t rect) {
     WR32(out, pitch); WR32(out + 4, m + off);
 }
 static void tex_lock(CPU *c, ComObj *s) {
+    ppl_flush();
     Res *t = R(s); uint32_t l = A(1); if (!lvl_ok(t, l)) { RET(D3DERR_INVALIDCALL); return; }
     if (t->pt_rt) { /* reading a render-target texture back */ uint32_t w = level_w(t, (int)l), h = level_h(t, (int)l), pitch, size; fmt_layout(t->fmt, w, h, &pitch, &size); uint8_t *rgba = malloc((size_t)w * h * 4); if (!plat_tex_read(t->pt, 0, 0, (int)w, (int)h, rgba, (int)w * 4)) fmt_from_rgba8(t->fmt, rgba, w, h, GP(level_mem(t, 0, (int)l)), pitch); free(rgba); }
     lock_out(A(2), t, 0, (int)l, A(3)); RET(0);
@@ -801,6 +850,7 @@ static ComObj *new_surface(Device *d, uint32_t w, uint32_t h, uint32_t fmt, uint
 static void surf_getdesc(CPU *c, ComObj *s) { Res *r = R(s); uint32_t w, h; surf_size(r, &w, &h); put_desc(A(1), r, w, h); RET(0); }
 static void surf_container(CPU *c, ComObj *s) { Res *r = R(s); ComObj *o = r->container ? r->container : r->dev->obj; com_addref(o); OUTP(2, o->guest); RET(0); }
 static void surf_lock(CPU *c, ComObj *s) {
+    ppl_flush();
     Res *r = R(s); if (r->depth) { RET(D3DERR_INVALIDCALL); return; }
     uint32_t w, h, pitch; surf_size(r, &w, &h); uint32_t m = surf_mem(r, &pitch);
     if (is_target(r) && !r->container) {        /* render target or back buffer: read the picture back into the lockable copy */
@@ -942,7 +992,7 @@ static void dev_reset(CPU *c, ComObj *s) {
 }
 static void dev_present(CPU *c, ComObj *s) {
     Device *d = DEV(s); (void)c;
-    trace_frame_end(); plat_gfx_present(); port_frame_presented(); plat_gfx_begin_frame(); plat_gfx_set_target(surface_target(R(d->rt))); apply_viewport(d);
+    ppl_flush(); trace_frame_end(); plat_gfx_present(); port_frame_presented(); plat_gfx_begin_frame(); plat_gfx_set_target(surface_target(R(d->rt))); apply_viewport(d);
     c->eax = 0;
 }
 static void dev_getbackbuffer(CPU *c, ComObj *s) { Device *d = DEV(s); if (A(1) || A(2)) { RET(D3DERR_INVALIDCALL); return; } com_addref(d->backbuf); OUTP(4, d->backbuf->guest); RET(0); }
@@ -999,10 +1049,12 @@ static void dev_updatetexture(CPU *c, ComObj *s) {
     RET(0);
 }
 static void dev_getrtdata(CPU *c, ComObj *s) {
+    ppl_flush();
     Device *d = DEV(s); Res *src = R(com_get(A(1))), *dst = R(com_get(A(2))); if (!src || !dst) { RET(D3DERR_INVALIDCALL); return; }
     uint32_t w, h, pitch; uint8_t *rgba = surf_rgba(d, src, &w, &h); uint32_t m = surf_mem(dst, &pitch); fmt_from_rgba8(dst->fmt, rgba, w, h, GP(m), pitch); free(rgba); RET(0);
 }
 static void dev_stretchrect(CPU *c, ComObj *s) {
+    ppl_flush();
     Device *d = DEV(s); Res *src = R(com_get(A(1))), *dst = R(com_get(A(3))); if (!src || !dst) { RET(D3DERR_INVALIDCALL); return; }
     uint32_t sw, sh, dw, dh; surf_size(src, &sw, &sh); surf_size(dst, &dw, &dh); int32_t sr[4], dr[4]; rect_or_full(A(2), sw, sh, sr); rect_or_full(A(4), dw, dh, dr);
     int linear = A(5) == 2;
@@ -1022,6 +1074,7 @@ static void dev_stretchrect(CPU *c, ComObj *s) {
     RET(0);
 }
 static void dev_colorfill(CPU *c, ComObj *s) {
+    ppl_flush();
     Device *d = DEV(s); Res *r = R(com_get(A(1))); if (!r) { RET(D3DERR_INVALIDCALL); return; }
     uint32_t w, h; surf_size(r, &w, &h); int32_t rc[4]; rect_or_full(A(2), w, h, rc);
     if (is_target(r)) {
@@ -1036,6 +1089,7 @@ static void dev_colorfill(CPU *c, ComObj *s) {
     RET(0);
 }
 static void dev_setrt(CPU *c, ComObj *s) {
+    ppl_flush();
     Device *d = DEV(s); if (A(1) != 0) { RET(A(2) ? D3DERR_INVALIDCALL : 0); return; }
     ComObj *o = com_get(A(2)); if (!o) { RET(D3DERR_INVALIDCALL); return; }
     bind(&d->rt, o); plat_gfx_set_target(surface_target(R(o)));
@@ -1046,8 +1100,9 @@ static void dev_getrt(CPU *c, ComObj *s) { Device *d = DEV(s); if (A(1) || !d->r
 static void dev_setds(CPU *c, ComObj *s) { Device *d = DEV(s); bind(&d->ds, com_get(A(1))); RET(0); }
 static void dev_getds(CPU *c, ComObj *s) { Device *d = DEV(s); if (!d->ds) { OUTP(1, 0); RET(D3DERR_NOTFOUND); return; } com_addref(d->ds); OUTP(1, d->ds->guest); RET(0); }
 static void dev_beginscene(CPU *c, ComObj *s) { Device *d = DEV(s); if (d->in_scene) { RET(D3DERR_INVALIDCALL); return; } d->in_scene = 1; RET(0); }
-static void dev_endscene(CPU *c, ComObj *s) { Device *d = DEV(s); if (!d->in_scene) { RET(D3DERR_INVALIDCALL); return; } d->in_scene = 0; d->weapon_phase = 0; RET(0); }
+static void dev_endscene(CPU *c, ComObj *s) { Device *d = DEV(s); ppl_flush(); if (!d->in_scene) { RET(D3DERR_INVALIDCALL); return; } d->in_scene = 0; d->weapon_phase = 0; RET(0); }
 static void dev_clear(CPU *c, ComObj *s) {
+    ppl_flush();
     Device *d = DEV(s); uint32_t n = A(1), rects = A(2), flags = A(3); float z = u2f(A(5));
     int color = (flags & 1) != 0, depth = (flags & 2) && d->ds, sten = (flags & 4) && d->ds;
     d->weapon_phase = (flags & 7) == 2 ? 1 : color ? 0 : d->weapon_phase;   /* the engine clears depth alone before the first-person weapon */
