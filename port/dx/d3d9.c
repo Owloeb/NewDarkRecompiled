@@ -381,6 +381,7 @@ static void draw_state(Device *d, PlatDrawState *ps) {
  * draw they make, and the table is logged every 600 frames, so a feature can be traced from the draws back to the
  * engine function that produced them. */
 static CPU *trace_cpu;
+static FILE *ppl_dumpf; static uint32_t ppl_frame;          /* per-pixel lighting's draw dump (below) */
 typedef struct { uint32_t chain[8]; int n; uint32_t fvf, tex_w, tex_h; int rhw, ztest, lit, frames; uint64_t draws, tris; } TraceRow;
 static TraceRow *trace_rows; static int trace_n, trace_on = -1; static uint32_t trace_frame;
 static int is_retaddr(uint32_t v) {
@@ -482,7 +483,7 @@ static int ppl_on(void) { if (ppl_debug < 0) { const char *e = getenv("SS2PORT_P
 static float ppl_wzoom = -1;
 /* SS2PORT_PPL_DUMP=1: writes the draws of frame 600 to ppl_dump.txt (every draw: its class and state; model draws: their
  * vertices) so the classification and the rebuilt geometry can be checked offline. */
-static int ppl_dump = -1; static FILE *ppl_dumpf; static uint32_t ppl_frame;
+static int ppl_dump = -1;
 static void ppl_dump_draw(const Deferred *h, const PlatVertex *v, const uint16_t *ix, int cls) {
     if (ppl_dump < 0) { const char *e = getenv("SS2PORT_PPL_DUMP"); ppl_dump = e && *e && *e != '0'; }
     if (!ppl_dump || ppl_frame != 600) return;
