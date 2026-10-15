@@ -183,3 +183,38 @@ int fp_006412e0(CPU *c) { return entry_trace(c, 0x6412e0); }   /* slot 0x50 */
 int fp_006414f0(CPU *c) { return entry_trace(c, 0x6414f0); }   /* slot 0x54 */
 int fp_00641760(CPU *c) { return entry_trace(c, 0x641760); }   /* slot 0x58 */
 int fp_00637650(CPU *c) { return entry_trace(c, 0x637650); }   /* float-heavy helper of 0x6380a0 */
+
+/* ---------------------------------------------------------------- per-pixel lighting: what the light callback sees
+ * SS2PORT_PPL_LIGHTS=1: entry hook on obj_light_callback (0x5ed7d0, symbols/manual.sym) that writes the inputs of a few
+ * calls (after the game has run a while) to ppl_lights.txt: the light lists, the object transform and the first vertices
+ * with their transformed points, so the light and view transforms can be worked out offline. Returns 0: the game is
+ * unchanged. */
+static void dump_words(FILE *f, const char *tag, uint32_t a, uint32_t n) {
+    fprintf(f, "%s %08x", tag, a);
+    for (uint32_t i = 0; i < n; i++) { uint32_t v = RD32(a + 4 * i); float x; memcpy(&x, &v, 4); fprintf(f, " %08x:%.6g", v, x); }
+    fprintf(f, "\n");
+}
+int fp_005ed7d0(CPU *c) {
+    static int on = -1; static uint32_t calls; static FILE *f;
+    if (on < 0) { const char *e = getenv("SS2PORT_PPL_LIGHTS"); on = e && *e && *e != '0'; }
+    if (!on || ++calls < 20000 || calls > 20012) { if (f && calls > 20012) { fclose(f); f = NULL; port_warn("per-pixel lighting: wrote ppl_lights.txt"); } return 0; }
+    if (!f && !(f = fopen("ppl_lights.txt", "w"))) { on = 0; return 0; }
+    uint32_t sp = c->esp, n = RD32(sp + 4), out = RD32(sp + 8), ent = RD32(sp + 12), verts = RD32(sp + 16), pts = RD32(sp + 20);
+    uint32_t ctx = RD32(0xa458b0u), np = RD32(0x940458u), nd = RD32(0x94045cu);
+    fprintf(f, "CALL %u count=%u out=%08x entries=%08x verts=%08x points=%08x ctx=%08x pointlights=%u otherlights=%u rgb=%u selfillum_flag=%u lightsdirty=%u\n",
+            calls, n, out, ent, verts, pts, ctx, np, nd, RD8(0xa3acdeu), RD8(0xa459b4u), RD32(0x7e7bf0u));
+    dump_words(f, "CAM", 0xa57e00u, 8);
+    dump_words(f, "CTX", ctx, 64);
+    dump_words(f, "WLIGHTS", 0x93fe48u, 12 * (np < 8 ? np : 8));
+    dump_words(f, "OLIGHTS", 0x940468u, 12 * (np < 8 ? np : 8));
+    dump_words(f, "AROUND", 0x9403f0u, 32);
+    dump_words(f, "MODEL", RD32(0xa4597cu), 32);
+    for (uint32_t i = 0; i < n && i < 10; i++) {
+        uint32_t e = ent + 8 * i, pi = RD16(e + 2);
+        fprintf(f, "ENTRY %u point=%u normal=%08x\n", i, pi, RD32(e + 4));
+        dump_words(f, " VERT", verts + 12 * pi, 3);
+    }
+    dump_words(f, "POINTS", pts, 64);
+    dump_words(f, "PTOFFS", RD32(0xa45ee0u), 16);
+    return 0;
+}
