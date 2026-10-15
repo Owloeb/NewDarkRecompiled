@@ -455,7 +455,7 @@ static int current_layout(Device *d, Layout *L) {
  * else guest address of 16- or 32-bit indices, which are offset by base_vertex. min/num give the vertex range. */
 /* A draw whose vertices are processed where the renderer runs (plat_gfx_deferred): the raw vertices and the expanded
  * 16-bit indices are copied with a snapshot of the state vertex() reads. */
-typedef struct { int prim, nidx; uint32_t span, stride; Layout L; Xf x; VState s; PlatDrawState ps; int obj; } Deferred;
+typedef struct { int prim, nidx; uint32_t span, stride; Layout L; Xf x; VState s; PlatDrawState ps; int obj; } Deferred;   /* obj: 1 model, 2 first-person weapon */
 
 /* ---------------------------------------------------------------- per-pixel object lighting (in progress)
  * NewDark lights models per vertex on the CPU (obj_light_points, symbols/manual.sym) and hands Direct3D pre-transformed
@@ -478,8 +478,9 @@ static int md_draw(void) {
     return 0;
 }
 static int ppl_on(void) { if (ppl_debug < 0) { const char *e = getenv("SS2PORT_PPL_DEBUG"); ppl_debug = e && *e && *e != '0'; } return ppl_debug; }
-static void ppl_normals(PlatVertex *v, uint32_t span, const uint16_t *ix, int nidx, const VState *s) {
-    float vw = s->vp[2] ? (float)s->vp[2] : 1, vh = s->vp[3] ? (float)s->vp[3] : 1, kx = 0.75f * vw / vh, ky = 0.75f;   /* focal length H / 1.5 */
+static float ppl_wzoom = -1;                                    /* the first-person weapon's zoom (focal length H * zoom / 1.5) */
+static void ppl_normals(PlatVertex *v, uint32_t span, const uint16_t *ix, int nidx, const VState *s, float zoom) {
+    float vw = s->vp[2] ? (float)s->vp[2] : 1, vh = s->vp[3] ? (float)s->vp[3] : 1, kx = 0.75f * vw / vh / zoom, ky = 0.75f / zoom;   /* focal length H * zoom / 1.5 */
     static float (*P)[3], (*N)[3]; static uint32_t *rep_, *hash; static uint32_t cap, hcap;
     if (cap < span) { cap = span; P = realloc(P, cap * sizeof *P); N = realloc(N, cap * sizeof *N); rep_ = realloc(rep_, cap * 4); }
     uint32_t hn = 16; while (hn < span * 2) hn <<= 1;
@@ -517,8 +518,13 @@ static void deferred_draw(void *data, PlatDrawFn submit) {             /* on the
     if (cap < h->span) { cap = h->span; out = realloc(out, (size_t)cap * sizeof *out); done = realloc(done, cap); }
     memset(done, 0, h->span);
     for (int i = 0; i < h->nidx; i++) { uint16_t r = ix[i]; if (!done[r]) { done[r] = 1; vertex(&h->s, &h->L, &h->x, raw + (size_t)r * h->stride, &out[r]); } }
+    if (h->obj) {                                                   /* every vertex at one depth: a flat HUD quad (the minimap), not a model */
+        float w0 = out[ix[0]].w; int flat = 1; for (int i = 1; i < h->nidx && flat; i++) flat = out[ix[i]].w == w0;
+        if (flat) h->obj = 0;
+    }
     if (h->obj && ppl_debug > 0 && h->ps.blend && h->ps.dst_blend == PLAT_BLEND_ONE) return;   /* debug view: the additive fill / rim passes would wash it out */
-    if (h->obj && ppl_debug > 0) { PlatDrawState ps = h->ps; ps.stage[0].color_op = PLAT_TOP_SELECTARG2; ps.stage[0].color_arg2 = PLAT_ARG_DIFFUSE; ps.stage[1].color_op = ps.stage[1].alpha_op = PLAT_TOP_DISABLE; ps.fog = 0; ppl_normals(out, h->span, ix, h->nidx, &h->s); submit(h->prim, out, (int)h->span, ix, h->nidx, &ps); return; }
+    if (h->obj && ppl_debug > 0) { PlatDrawState ps = h->ps; ps.stage[0].color_op = PLAT_TOP_SELECTARG2; ps.stage[0].color_arg2 = PLAT_ARG_DIFFUSE; ps.stage[1].color_op = ps.stage[1].alpha_op = PLAT_TOP_DISABLE; ps.fog = 0; if (ppl_wzoom < 0) { const char *e = getenv("SS2PORT_PPL_WZOOM"); ppl_wzoom = e && atof(e) > 0 ? (float)atof(e) : 0.5f; }
+        ppl_normals(out, h->span, ix, h->nidx, &h->s, h->obj == 2 ? ppl_wzoom : 1.0f); submit(h->prim, out, (int)h->span, ix, h->nidx, &ps); return; }
     submit(h->prim, out, (int)h->span, ix, h->nidx, &h->ps);
 }
 static void draw(Device *d, uint32_t type, uint32_t prims, uint32_t vbase, uint32_t stride, uint32_t idx, int idx32, int32_t base_vertex, uint32_t min_index, uint32_t num_vertices) {
@@ -549,6 +555,7 @@ static void draw(Device *d, uint32_t type, uint32_t prims, uint32_t vbase, uint3
         static uint8_t *blob; static size_t blob_cap; if (blob_cap < total) { blob_cap = total; blob = realloc(blob, blob_cap); }
         Deferred *h = (Deferred *)blob; h->prim = plat_prim; h->nidx = n; h->span = span; h->stride = stride; h->L = L; h->x = x; h->s = vs; h->ps = ps;
         h->obj = ppl_on() && L.rhw && plat_prim == PLAT_PRIM_TRIANGLES && ps.depth_test && !ps.shader && L.diffuse >= 0 && L.ntex == 1 && (d->weapon_phase || md_draw());
+        if (h->obj && d->weapon_phase) h->obj = 2;
         memcpy(h + 1, GP(vbase + lo * stride), (size_t)span * stride);
         uint16_t *ix = (uint16_t *)((uint8_t *)(h + 1) + vbytes); for (int i = 0; i < n; i++) ix[i] = (uint16_t)e32[i];
         free(e32);
