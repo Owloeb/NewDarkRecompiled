@@ -475,7 +475,7 @@ static int ppl_debug = -1;
 static int is_retaddr(uint32_t v);
 static int md_draw(void) {
     if (!trace_cpu) return 0;
-    for (uint32_t a = trace_cpu->esp, n = 0; n < 24 && a < trace_cpu->esp + 8192 && g_valid(a, 4); a += 4) {
+    for (uint32_t a = trace_cpu->esp, n = 0; n < 96 && a < trace_cpu->esp + 32768 && g_valid(a, 4); a += 4) {   /* deep: near-plane clipping adds frames */
         uint32_t v = RD32(a); if (!is_retaddr(v)) continue;
         if (v >= 0x006271e0u && v < 0x006282c0u) return 1;
         n++;
