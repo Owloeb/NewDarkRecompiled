@@ -43,3 +43,4 @@
 0x005ea980 func obj_light_points           # per-vertex lighting kernel: count, out, packed normals (stride 8), point indices, verts
 0x006380a0 func r3_draw_polygon_list       # (polygons of 0x164 bytes, vertex count 3..50) through the renderer interface (vtable 0x77efb0)
 0x0063f7f0 func r3_flush_batch             # renderer interface slot 0x04: flushes the queued polygons (slot 0xac, 0x650f40) to Direct3D
+0x00608440 func obj_render_pass            # draws the scene's objects: installs the md light callback, renders, then flushes the polygons it queued (0x6478f0)

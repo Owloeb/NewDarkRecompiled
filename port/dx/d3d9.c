@@ -469,8 +469,8 @@ typedef struct { int prim, nidx; uint32_t span, stride; Layout L; Xf x; VState s
  * welded (they arrive with identical coordinates), and a smooth normal is built from the faces around each one.
  * SS2PORT_PPL_DEBUG=1 draws those normals as colours (x red, y green, z blue; 0.5 = zero) to check them. */
 static int ppl_debug = -1;
-/* a model draw: the engine's model renderer (md_render_node .. md_render_polygon, 0x6271e0-0x6282c0) is on the guest call
- * stack. It flushes its polygons before it returns, so their draws happen inside it; the HUD, the world and particles
+/* a model draw: the engine's model renderer (md_render_node .. md_render_polygon, 0x6271e0-0x6282c0) or its object pass
+ * (0x608440) is on the guest call stack. It flushes its polygons before it returns, so their draws happen inside it; the HUD, the world and particles
  * never come through it, while the first-person weapon (drawn in the HUD phase) does. */
 static int is_retaddr(uint32_t v);
 static int md_draw(void) {
@@ -478,6 +478,7 @@ static int md_draw(void) {
     for (uint32_t a = trace_cpu->esp, n = 0; n < 96 && a < trace_cpu->esp + 32768 && g_valid(a, 4); a += 4) {   /* deep: near-plane clipping adds frames */
         uint32_t v = RD32(a); if (!is_retaddr(v)) continue;
         if (v >= 0x006271e0u && v < 0x006282c0u) return 1;
+        if (v >= 0x00608440u && v < 0x006089d0u) return 1;     /* the object pass: polygons it queued (close to the eye, sorted) are flushed at its end */
         n++;
     }
     return 0;
