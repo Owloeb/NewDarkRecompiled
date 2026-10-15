@@ -412,6 +412,7 @@ static void trace_draw(const Layout *L, uint32_t prims, uint32_t type, Device *d
 }
 void port_entrytrace_dump(void);
 static void trace_frame_end(void) {
+    ppl_frame++; if (ppl_frame == 601 && ppl_dumpf) { fclose(ppl_dumpf); ppl_dumpf = NULL; port_warn("per-pixel lighting: wrote ppl_dump.txt"); }
     if (trace_on <= 0) return;
     if (++trace_frame % 600) return;
     port_entrytrace_dump();
@@ -478,7 +479,20 @@ static int md_draw(void) {
     return 0;
 }
 static int ppl_on(void) { if (ppl_debug < 0) { const char *e = getenv("SS2PORT_PPL_DEBUG"); ppl_debug = e && *e && *e != '0'; } return ppl_debug; }
-static float ppl_wzoom = -1;                                    /* the first-person weapon's zoom (focal length H * zoom / 1.5) */
+static float ppl_wzoom = -1;
+/* SS2PORT_PPL_DUMP=1: writes the draws of frame 600 to ppl_dump.txt (every draw: its class and state; model draws: their
+ * vertices) so the classification and the rebuilt geometry can be checked offline. */
+static int ppl_dump = -1; static FILE *ppl_dumpf; static uint32_t ppl_frame;
+static void ppl_dump_draw(const Deferred *h, const PlatVertex *v, const uint16_t *ix, int cls) {
+    if (ppl_dump < 0) { const char *e = getenv("SS2PORT_PPL_DUMP"); ppl_dump = e && *e && *e != '0'; }
+    if (!ppl_dump || ppl_frame != 600) return;
+    if (!ppl_dumpf && !(ppl_dumpf = fopen("ppl_dump.txt", "w"))) { ppl_dump = 0; return; }
+    fprintf(ppl_dumpf, "DRAW class=%d obj=%d prim=%d nidx=%d span=%u rhw=%d ztest=%d blend=%d src=%d dst=%d ntex=%d tex=%p\n", cls, h->obj, h->prim, h->nidx, h->span,
+            h->L.rhw, h->ps.depth_test, h->ps.blend, h->ps.src_blend, h->ps.dst_blend, h->L.ntex, (void *)h->ps.stage[0].texture);
+    if (!h->obj && !h->ps.depth_test) return;
+    for (uint32_t i = 0; i < h->span; i++) fprintf(ppl_dumpf, "V %u %.7g %.7g %.7g %.7g %08x\n", i, v[i].x, v[i].y, v[i].z, v[i].w, v[i].diffuse);
+    for (int i = 0; i < h->nidx; i++) fprintf(ppl_dumpf, "%s%u", i ? " " : "I ", ix[i]); fprintf(ppl_dumpf, "\n");
+}                                    /* the first-person weapon's zoom (focal length H * zoom / 1.5) */
 static void ppl_normals(PlatVertex *v, uint32_t span, const uint16_t *ix, int nidx, const VState *s, float zoom) {
     float vw = s->vp[2] ? (float)s->vp[2] : 1, vh = s->vp[3] ? (float)s->vp[3] : 1, kx = 0.75f * vw / vh / zoom, ky = 0.75f / zoom;   /* focal length H * zoom / 1.5 */
     static float (*P)[3], (*N)[3]; static uint32_t *rep_, *hash; static uint32_t cap, hcap;
@@ -518,6 +532,7 @@ static void deferred_draw(void *data, PlatDrawFn submit) {             /* on the
     if (cap < h->span) { cap = h->span; out = realloc(out, (size_t)cap * sizeof *out); done = realloc(done, cap); }
     memset(done, 0, h->span);
     for (int i = 0; i < h->nidx; i++) { uint16_t r = ix[i]; if (!done[r]) { done[r] = 1; vertex(&h->s, &h->L, &h->x, raw + (size_t)r * h->stride, &out[r]); } }
+    ppl_dump_draw(h, out, ix, h->obj);
     if (h->obj) {                                                   /* every vertex at one depth: a flat HUD quad (the minimap), not a model */
         float w0 = out[ix[0]].w; int flat = 1; for (int i = 1; i < h->nidx && flat; i++) flat = out[ix[i]].w == w0;
         if (flat) h->obj = 0;
