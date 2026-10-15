@@ -478,7 +478,7 @@ static int md_draw(void) {
     for (uint32_t a = trace_cpu->esp, n = 0; n < 96 && a < trace_cpu->esp + 32768 && g_valid(a, 4); a += 4) {   /* deep: near-plane clipping adds frames */
         uint32_t v = RD32(a); if (!is_retaddr(v)) continue;
         if (v >= 0x006271e0u && v < 0x006282c0u) return 1;
-        if (v >= 0x00608440u && v < 0x006089d0u) return 1;     /* the object pass: polygons it queued (close to the eye, sorted) are flushed at its end */
+        if (v >= 0x00608440u && v < 0x00608861u) return 1;     /* the object pass: polygons it queued (close to the eye, sorted) are flushed at its end */
         n++;
     }
     return 0;

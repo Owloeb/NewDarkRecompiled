@@ -197,7 +197,7 @@ static void dump_words(FILE *f, const char *tag, uint32_t a, uint32_t n) {
 int fp_005ed7d0(CPU *c) {
     static int on = -1; static uint32_t calls; static FILE *f;
     if (on < 0) { const char *e = getenv("SS2PORT_PPL_LIGHTS"); on = e && *e && *e != '0'; }
-    if (!on || ++calls < 20000 || calls > 20012) { if (f && calls > 20012) { fclose(f); f = NULL; port_warn("per-pixel lighting: wrote ppl_lights.txt"); } return 0; }
+    if (!on || ++calls > 40) { if (f) { fclose(f); f = NULL; port_warn("per-pixel lighting: wrote ppl_lights.txt"); } return 0; }   /* the engine caches object lighting: few calls */
     if (!f && !(f = fopen("ppl_lights.txt", "w"))) { on = 0; return 0; }
     uint32_t sp = c->esp, n = RD32(sp + 4), out = RD32(sp + 8), ent = RD32(sp + 12), verts = RD32(sp + 16), pts = RD32(sp + 20);
     uint32_t ctx = RD32(0xa458b0u), np = RD32(0x940458u), nd = RD32(0x94045cu);
@@ -216,5 +216,7 @@ int fp_005ed7d0(CPU *c) {
     }
     dump_words(f, "POINTS", pts, 64);
     dump_words(f, "PTOFFS", RD32(0xa45ee0u), 16);
+    fflush(f);
+    if (calls == 1) port_warn("per-pixel lighting: the light callback ran; writing ppl_lights.txt");
     return 0;
 }
