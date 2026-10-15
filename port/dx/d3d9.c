@@ -89,6 +89,7 @@ struct Device {
     uint16_t gamma[3][256];
     int in_scene;
     float psc[32][4];                /* pixel shader float constants */
+    int weapon_phase;                /* after the scene's depth-only clear: the first-person weapon (until EndScene) */
 };
 static Device *DEV(ComObj *o) { return (Device *)o->data; }
 typedef struct { Device *dev; PlatShader *sh; int nconst; uint32_t *tok; uint32_t ntok; } PShader;   /* a pixel shader */
@@ -547,7 +548,7 @@ static void draw(Device *d, uint32_t type, uint32_t prims, uint32_t vbase, uint3
         size_t vbytes = DEF_A4((size_t)span * stride), total = sizeof(Deferred) + vbytes + (size_t)n * 2;
         static uint8_t *blob; static size_t blob_cap; if (blob_cap < total) { blob_cap = total; blob = realloc(blob, blob_cap); }
         Deferred *h = (Deferred *)blob; h->prim = plat_prim; h->nidx = n; h->span = span; h->stride = stride; h->L = L; h->x = x; h->s = vs; h->ps = ps;
-        h->obj = ppl_on() && L.rhw && plat_prim == PLAT_PRIM_TRIANGLES && ps.depth_test && !ps.shader && L.diffuse >= 0 && L.ntex == 1 && md_draw();
+        h->obj = ppl_on() && L.rhw && plat_prim == PLAT_PRIM_TRIANGLES && ps.depth_test && !ps.shader && L.diffuse >= 0 && L.ntex == 1 && (d->weapon_phase || md_draw());
         memcpy(h + 1, GP(vbase + lo * stride), (size_t)span * stride);
         uint16_t *ix = (uint16_t *)((uint8_t *)(h + 1) + vbytes); for (int i = 0; i < n; i++) ix[i] = (uint16_t)e32[i];
         free(e32);
@@ -1022,10 +1023,11 @@ static void dev_getrt(CPU *c, ComObj *s) { Device *d = DEV(s); if (A(1) || !d->r
 static void dev_setds(CPU *c, ComObj *s) { Device *d = DEV(s); bind(&d->ds, com_get(A(1))); RET(0); }
 static void dev_getds(CPU *c, ComObj *s) { Device *d = DEV(s); if (!d->ds) { OUTP(1, 0); RET(D3DERR_NOTFOUND); return; } com_addref(d->ds); OUTP(1, d->ds->guest); RET(0); }
 static void dev_beginscene(CPU *c, ComObj *s) { Device *d = DEV(s); if (d->in_scene) { RET(D3DERR_INVALIDCALL); return; } d->in_scene = 1; RET(0); }
-static void dev_endscene(CPU *c, ComObj *s) { Device *d = DEV(s); if (!d->in_scene) { RET(D3DERR_INVALIDCALL); return; } d->in_scene = 0; RET(0); }
+static void dev_endscene(CPU *c, ComObj *s) { Device *d = DEV(s); if (!d->in_scene) { RET(D3DERR_INVALIDCALL); return; } d->in_scene = 0; d->weapon_phase = 0; RET(0); }
 static void dev_clear(CPU *c, ComObj *s) {
     Device *d = DEV(s); uint32_t n = A(1), rects = A(2), flags = A(3); float z = u2f(A(5));
     int color = (flags & 1) != 0, depth = (flags & 2) && d->ds, sten = (flags & 4) && d->ds;
+    d->weapon_phase = (flags & 7) == 2 ? 1 : color ? 0 : d->weapon_phase;   /* the engine clears depth alone before the first-person weapon */
     if (!n || !rects) { plat_gfx_clear(color, A(4), depth, z, sten, A(6)); RET(0); return; }
     for (uint32_t i = 0; i < n; i++) { uint32_t r = rects + 16 * i; plat_gfx_scissor(1, (int32_t)RD32(r), (int32_t)RD32(r + 4), (int32_t)(RD32(r + 8) - RD32(r)), (int32_t)(RD32(r + 12) - RD32(r + 4))); plat_gfx_clear(color, A(4), depth, z, sten, A(6)); }
     apply_viewport(d); RET(0);
