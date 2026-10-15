@@ -204,7 +204,7 @@ codes for keys.
 - **Mouselook:** verified on the Windows build. Under WSLg it cannot be judged (no pointer lock); native Linux is untried.
 - **Rendering:** fixed-function vertex processing; pixel shaders up to ps_2_0 are translated to GLSL
   (`dx/d3d9_shader.c`; the game's own 16 post-processing shaders all translate, and two are checked pixel for pixel
-  against hand-computed results on Mesa, desktop GL and GLES). Vertex shaders are refused (the game has none). Cube
+  against hand-computed results on Mesa, desktop GL and GLES; bloom matches the native Direct3D build in game). Vertex shaders are refused (the game has none). Cube
   and volume textures are not drawn; `ProcessVertices` is not implemented.
 - **PS Vita:** `backends/vita/` plays, level changes and saves included: about 15-21 fps exploring, 6-8 in firefights,
   limited by the CPU running the recompiled code. Build steps in its README, measurements and ideas in `backends/vita/PERF.md`.

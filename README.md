@@ -105,7 +105,7 @@ Put options **before** `SS2.exe`; anything after it goes to the game. Under WSL,
 **Status:** plays through Rickenbacker and Body of the Many on Linux (WSL) and as a 64-bit Windows build. Mouselook is
 verified on Windows only: WSLg cannot capture the pointer and native Linux is untested. **Gaps:** vertex shaders and
 cube/volume textures (the game falls back to fixed-function), C++ exceptions, `fmsel.dll`. Pixel shaders (the
-post-processing: bloom, colour correction, blur) are translated to GLSL; untested in game so far.
+post-processing: bloom, colour correction, blur) are translated to GLSL and look the same as on native Direct3D.
 
 ## How It Works
 
@@ -172,7 +172,9 @@ variables, switch files and developer tools.
    AI, save/load), in `symbols/manual.sym`.
 3. ~~A platform layer so the recompiled game can run beyond 32-bit Windows.~~ Done: see the
    [portable host](port/README.md).
-4. Next for the portable host: per-pixel lighting, cube/volume textures, native Linux mouselook testing, further backends.
+4. Next for the portable host: ~~pixel shaders~~ (done: the game's ps_2_0 post-processing, bloom included, is translated
+   to GLSL and matches the native Direct3D build), per-pixel lighting, cube/volume textures, native Linux mouselook
+   testing, further backends.
 5. Speed, driven by the [PS Vita backend](port/backends/vita/README.md). In place (all opt-in on the PC, default output
    unchanged): register caching with a checked calling-convention contract, a proof of which registers each function
    preserves and the x87 stack in C locals (`port/build.py --cache-regs`, verified at run time with `--abi-check`); native
