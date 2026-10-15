@@ -462,8 +462,20 @@ typedef struct { int prim, nidx; uint32_t span, stride; Layout L; Xf x; VState s
  * view-space position of every vertex is rebuilt from its screen position and depth, vertices the engine shares are
  * welded (they arrive with identical coordinates), and a smooth normal is built from the faces around each one.
  * SS2PORT_PPL_DEBUG=1 draws those normals as colours (x red, y green, z blue; 0.5 = zero) to check them. */
-extern int port_in_overlay;                                     /* core/fastpaths.c (needs --fastpaths) */
 static int ppl_debug = -1;
+/* a model draw: the engine's model renderer (md_render_node .. md_render_polygon, 0x6271e0-0x6282c0) is on the guest call
+ * stack. It flushes its polygons before it returns, so their draws happen inside it; the HUD, the world and particles
+ * never come through it, while the first-person weapon (drawn in the HUD phase) does. */
+static int is_retaddr(uint32_t v);
+static int md_draw(void) {
+    if (!trace_cpu) return 0;
+    for (uint32_t a = trace_cpu->esp, n = 0; n < 24 && a < trace_cpu->esp + 8192 && g_valid(a, 4); a += 4) {
+        uint32_t v = RD32(a); if (!is_retaddr(v)) continue;
+        if (v >= 0x006271e0u && v < 0x006282c0u) return 1;
+        n++;
+    }
+    return 0;
+}
 static int ppl_on(void) { if (ppl_debug < 0) { const char *e = getenv("SS2PORT_PPL_DEBUG"); ppl_debug = e && *e && *e != '0'; } return ppl_debug; }
 static void ppl_normals(PlatVertex *v, uint32_t span, const uint16_t *ix, int nidx, const VState *s) {
     float vw = s->vp[2] ? (float)s->vp[2] : 1, vh = s->vp[3] ? (float)s->vp[3] : 1, kx = 0.75f * vw / vh, ky = 0.75f;   /* focal length H / 1.5 */
@@ -535,7 +547,7 @@ static void draw(Device *d, uint32_t type, uint32_t prims, uint32_t vbase, uint3
         size_t vbytes = DEF_A4((size_t)span * stride), total = sizeof(Deferred) + vbytes + (size_t)n * 2;
         static uint8_t *blob; static size_t blob_cap; if (blob_cap < total) { blob_cap = total; blob = realloc(blob, blob_cap); }
         Deferred *h = (Deferred *)blob; h->prim = plat_prim; h->nidx = n; h->span = span; h->stride = stride; h->L = L; h->x = x; h->s = vs; h->ps = ps;
-        h->obj = ppl_on() && !port_in_overlay && L.rhw && plat_prim == PLAT_PRIM_TRIANGLES && ps.depth_test && !ps.shader && L.diffuse >= 0 && L.ntex == 1;
+        h->obj = ppl_on() && L.rhw && plat_prim == PLAT_PRIM_TRIANGLES && ps.depth_test && !ps.shader && L.diffuse >= 0 && L.ntex == 1 && md_draw();
         memcpy(h + 1, GP(vbase + lo * stride), (size_t)span * stride);
         uint16_t *ix = (uint16_t *)((uint8_t *)(h + 1) + vbytes); for (int i = 0; i < n; i++) ix[i] = (uint16_t)e32[i];
         free(e32);

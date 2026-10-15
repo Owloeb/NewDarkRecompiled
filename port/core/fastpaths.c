@@ -183,10 +183,3 @@ int fp_006412e0(CPU *c) { return entry_trace(c, 0x6412e0); }   /* slot 0x50 */
 int fp_006414f0(CPU *c) { return entry_trace(c, 0x6414f0); }   /* slot 0x54 */
 int fp_00641760(CPU *c) { return entry_trace(c, 0x641760); }   /* slot 0x58 */
 int fp_00637650(CPU *c) { return entry_trace(c, 0x637650); }   /* float-heavy helper of 0x6380a0 */
-
-/* ---------------------------------------------------------------- overlay marks (no behaviour change; return 0)
- * The engine's Direct3D display device brackets its 2D/HUD drawing with set_overlay / end_overlay (symbols/manual.sym).
- * dx/d3d9.c reads this to tell the HUD's depth-tested quads (the minimap, 3D inventory icons) from models in the world. */
-int port_in_overlay;
-int fp_006c9e30(CPU *c) { (void)c; port_in_overlay = 1; return 0; }   /* d3d_display_set_overlay */
-int fp_006c9ee0(CPU *c) { (void)c; port_in_overlay = 0; return 0; }   /* d3d_display_end_overlay */
