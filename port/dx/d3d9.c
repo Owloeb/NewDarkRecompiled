@@ -460,7 +460,7 @@ static int current_layout(Device *d, Layout *L) {
  * else guest address of 16- or 32-bit indices, which are offset by base_vertex. min/num give the vertex range. */
 /* A draw whose vertices are processed where the renderer runs (plat_gfx_deferred): the raw vertices and the expanded
  * 16-bit indices are copied with a snapshot of the state vertex() reads. */
-typedef struct { int prim, nidx; uint32_t span, stride; Layout L; Xf x; VState s; PlatDrawState ps; int obj; } Deferred;   /* obj: 1 model, 2 first-person weapon */
+typedef struct { int prim, nidx; uint32_t span, stride; Layout L; Xf x; VState s; PlatDrawState ps; int obj; uint32_t chain[12]; } Deferred;   /* obj: 1 model, 2 first-person weapon */
 
 /* ---------------------------------------------------------------- per-pixel object lighting (in progress)
  * NewDark lights models per vertex on the CPU (obj_light_points, symbols/manual.sym) and hands Direct3D pre-transformed
@@ -493,6 +493,7 @@ static void ppl_dump_draw(const Deferred *h, const PlatVertex *v, const uint16_t
     if (!ppl_dumpf && !(ppl_dumpf = fopen("ppl_dump.txt", "w"))) { ppl_dump = 0; return; }
     fprintf(ppl_dumpf, "DRAW class=%d obj=%d prim=%d nidx=%d span=%u rhw=%d ztest=%d blend=%d src=%d dst=%d ntex=%d tex=%p\n", cls, h->obj, h->prim, h->nidx, h->span,
             h->L.rhw, h->ps.depth_test, h->ps.blend, h->ps.src_blend, h->ps.dst_blend, h->L.ntex, (void *)h->ps.stage[0].texture);
+    fprintf(ppl_dumpf, "CHAIN"); for (int k = 0; k < 12 && h->chain[k]; k++) fprintf(ppl_dumpf, " %06x", h->chain[k]); fprintf(ppl_dumpf, "\n");
     if (!h->obj && !h->ps.depth_test) return;
     for (uint32_t i = 0; i < h->span; i++) fprintf(ppl_dumpf, "V %u %.7g %.7g %.7g %.7g %08x\n", i, v[i].x, v[i].y, v[i].z, v[i].w, v[i].diffuse);
     for (int i = 0; i < h->nidx; i++) fprintf(ppl_dumpf, "%s%u", i ? " " : "I ", ix[i]); fprintf(ppl_dumpf, "\n");
@@ -615,6 +616,9 @@ static void draw(Device *d, uint32_t type, uint32_t prims, uint32_t vbase, uint3
         Deferred *h = (Deferred *)blob; h->prim = plat_prim; h->nidx = n; h->span = span; h->stride = stride; h->L = L; h->x = x; h->s = vs; h->ps = ps;
         h->obj = ppl_on() && L.rhw && plat_prim == PLAT_PRIM_TRIANGLES && ps.depth_test && !ps.shader && L.diffuse >= 0 && L.ntex == 1 && (d->weapon_phase || md_draw());
         if (h->obj && d->weapon_phase) h->obj = 2;
+        memset(h->chain, 0, sizeof h->chain);
+        if (ppl_dump > 0 && ppl_frame == 600 && trace_cpu)               /* the dump records who drew it */
+            for (uint32_t a = trace_cpu->esp, k = 0; k < 12 && a < trace_cpu->esp + 32768 && g_valid(a, 4); a += 4) { uint32_t v = RD32(a); if (is_retaddr(v)) h->chain[k++] = v; }
         memcpy(h + 1, GP(vbase + lo * stride), (size_t)span * stride);
         uint16_t *ix = (uint16_t *)((uint8_t *)(h + 1) + vbytes); for (int i = 0; i < n; i++) ix[i] = (uint16_t)e32[i];
         free(e32);
