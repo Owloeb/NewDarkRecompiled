@@ -75,6 +75,9 @@ void glr_copy(PlatTexture *s, int sx, int sy, int sw, int sh, PlatTexture *d, in
 static int presents;
 void glr_present(void) { on_gl(); hi(12); presents++; }
 void glr_gamma(const uint16_t ramp[3][256]) { on_gl(); hi(13); hb(ramp, 3 * 256 * 2); }
+PlatShader *glr_shader_new(const char *glsl) { (void)glsl; return NULL; }
+void glr_shader_destroy(PlatShader *s) { (void)s; }
+void glr_shader_constants(int start, int count, const float *v) { on_gl(); hi(20); hi(start); hi(count); hb(v, (size_t)count * 16); }
 
 static void deferred_fn(void *data, PlatDrawFn submit) {         /* runs on the GL thread: hash the copy, then draw through submit */
     on_gl(); size_t n; memcpy(&n, data, sizeof n); hi(14); hb(data, n);

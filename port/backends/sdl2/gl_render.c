@@ -105,7 +105,7 @@ typedef unsigned int GLenum, GLuint, GLbitfield; typedef int GLint, GLsizei; typ
     GLF(void, glAttachShader, (GLuint, GLuint)) GLF(void, glBindAttribLocation, (GLuint, GLuint, const GLchar *)) GLF(void, glLinkProgram, (GLuint)) \
     GLF(void, glGetProgramiv, (GLuint, GLenum, GLint *)) GLF(void, glGetProgramInfoLog, (GLuint, GLsizei, GLsizei *, GLchar *)) GLF(void, glUseProgram, (GLuint)) \
     GLF(GLint, glGetUniformLocation, (GLuint, const GLchar *)) GLF(void, glUniform1i, (GLint, GLint)) GLF(void, glUniform1f, (GLint, GLfloat)) \
-    GLF(void, glUniform4f, (GLint, GLfloat, GLfloat, GLfloat, GLfloat)) GLF(void, glDeleteShader, (GLuint)) GLF(void, glDeleteProgram, (GLuint)) \
+    GLF(void, glUniform4f, (GLint, GLfloat, GLfloat, GLfloat, GLfloat)) GLF(void, glUniform4fv, (GLint, GLsizei, const GLfloat *)) GLF(void, glDeleteShader, (GLuint)) GLF(void, glDeleteProgram, (GLuint)) \
     GLF(void, glGenBuffers, (GLsizei, GLuint *)) GLF(void, glBindBuffer, (GLenum, GLuint)) GLF(void, glBufferData, (GLenum, GLsizeiptr, const void *, GLenum)) \
     GLF(void, glDeleteBuffers, (GLsizei, const GLuint *)) GLF(void, glEnableVertexAttribArray, (GLuint)) GLF(void, glDisableVertexAttribArray, (GLuint)) \
     GLF(void, glVertexAttribPointer, (GLuint, GLint, GLenum, GLboolean, GLsizei, const void *)) GLF(void, glDrawElements, (GLenum, GLsizei, GLenum, const void *)) \
@@ -271,6 +271,34 @@ static Prog *program(const PlatDrawState *st) {
     glUseProgram(p->prog); glUniform1i(p->u_t0, 0); glUniform1i(p->u_t1, 1);
     return p;
 }
+/* pixel shaders from the front end (plat_shader_create): one program per alpha-test setting, linked at first use */
+struct PlatShader { char *src; GLuint prog[9]; GLint u_c[9], u_aref[9], u_zbias[9]; int nc, failed; };
+static float shader_c[32][4];
+PlatShader *glr_shader_new(const char *glsl) { PlatShader *s = calloc(1, sizeof *s); if (!s) return NULL; s->src = malloc(strlen(glsl) + 1); strcpy(s->src, glsl);
+    const char *u = strstr(glsl, "u_c["); s->nc = u ? atoi(u + 4) : 0; if (s->nc > 32) s->nc = 32; return s; }
+void glr_shader_destroy(PlatShader *s) { if (!s) return; for (int i = 0; i < 9; i++) if (s->prog[i]) glDeleteProgram(s->prog[i]); free(s->src); free(s); }
+void glr_shader_constants(int start, int count, const float *v) {
+    if (start < 0 || start >= 32) return; if (count > 32 - start) count = 32 - start;
+    if (count > 0) memcpy(shader_c[start], v, (size_t)count * 16);
+}
+static GLuint shader_program(PlatShader *sh, const PlatDrawState *st, int *slot) {
+    int k = st->alpha_test ? st->alpha_func + 1 : 0; *slot = k;
+    if (sh->prog[k] || sh->failed) return sh->prog[k];
+    static const char *cmp[8] = { "false", "<", "==", "<=", ">", "!=", ">=", "true" };
+    size_t n = strlen(sh->src) + 1024; char *fs = malloc(n); size_t o = 0;
+    o += (size_t)snprintf(fs + o, n - o, "varying vec4 v_diff; varying vec4 v_spec; varying float v_fog; varying vec4 v_uv;\n"
+                          "uniform sampler2D u_t0; uniform sampler2D u_t1; uniform float u_aref;\n%s\nvoid main() { vec4 cur = ps_main();\n", sh->src);
+    if (k == PLAT_CMP_NEVER + 1) o += (size_t)snprintf(fs + o, n - o, "  discard;\n");
+    else if (k && k != PLAT_CMP_ALWAYS + 1) o += (size_t)snprintf(fs + o, n - o, "  if (!(floor(cur.a * 255.0 + 0.5) %s u_aref)) discard;\n", cmp[k - 1]);
+    snprintf(fs + o, n - o, "  gl_FragColor = cur; }\n");
+    GLuint p = link(VS, fs); free(fs);
+    GLint ok = 0; glGetProgramiv(p, GL_LINK_STATUS, &ok);
+    if (!ok) { glDeleteProgram(p); sh->failed = 1; fprintf(stderr, "[gl] a game pixel shader did not link; draws with it are skipped\n"); return 0; }
+    sh->prog[k] = p; sh->u_c[k] = glGetUniformLocation(p, "u_c"); sh->u_aref[k] = glGetUniformLocation(p, "u_aref"); sh->u_zbias[k] = glGetUniformLocation(p, "u_zbias");
+    glUseProgram(p); glUniform1i(glGetUniformLocation(p, "u_t0"), 0); glUniform1i(glGetUniformLocation(p, "u_t1"), 1);
+    return p;
+}
+
 /* the quad shader for copies and present: position in NDC, uv; with an optional gamma table */
 static GLuint quad_prog, gamma_prog, gamma_tex; static int gamma_on;
 static const char *QVS = "attribute vec4 a_pos; attribute vec4 a_uv; varying vec2 v_uv; void main() { v_uv = a_uv.xy; gl_Position = vec4(a_pos.xy, 0.0, 1.0); }\n";
@@ -331,10 +359,16 @@ void glr_draw(int prim, const PlatVertex *v, int nverts, const uint16_t *idx, in
 #endif
 
     if (!nverts || !nidx) return;
+    if (st->shader) {
+        int k; GLuint sp = shader_program(st->shader, st, &k); if (!sp) return;
+        glUseProgram(sp); if (st->shader->u_c[k] >= 0 && st->shader->nc > 0) glUniform4fv(st->shader->u_c[k], st->shader->nc, shader_c[0]);
+        glUniform1f(st->shader->u_aref[k], (float)st->alpha_ref); glUniform1f(st->shader->u_zbias[k], st->depth_bias);
+    } else {
     Prog *p = program(st); glUseProgram(p->prog);
     glUniform4f(p->u_tf, ((st->texture_factor >> 16) & 255) / 255.0f, ((st->texture_factor >> 8) & 255) / 255.0f, (st->texture_factor & 255) / 255.0f, (st->texture_factor >> 24) / 255.0f);
     glUniform4f(p->u_fogc, ((st->fog_color >> 16) & 255) / 255.0f, ((st->fog_color >> 8) & 255) / 255.0f, (st->fog_color & 255) / 255.0f, 1.0f);
     glUniform1f(p->u_aref, (float)st->alpha_ref); glUniform1f(p->u_zbias, st->depth_bias);
+    }
     for (int i = 0; i < PLAT_MAX_STAGES; i++) sampler(i, &st->stage[i]);
     if (st->blend) { glEnable(GL_BLEND); glBlendFunc(blend_gl[st->src_blend < 11 ? st->src_blend : 1], blend_gl[st->dst_blend < 11 ? st->dst_blend : 0]); } else glDisable(GL_BLEND);
     if (st->depth_test) { glEnable(GL_DEPTH_TEST); glDepthFunc(GL_NEVER + st->depth_func); } else glDisable(GL_DEPTH_TEST);
@@ -410,7 +444,7 @@ int gl_init(void *(*get)(const char *), int es) {
 }
 void gl_shutdown(void) {}
 void gl_caps(PlatVideoCaps *c) {
-    memset(c, 0, sizeof *c); c->max_texture_size = max_tex; c->dxt = has_dxt; c->npot = !gles || has_ext("GL_OES_texture_npot"); c->render_targets = 1; c->max_anisotropy = has_aniso ? (int)max_aniso : 1;
+    memset(c, 0, sizeof *c); c->max_texture_size = max_tex; c->dxt = has_dxt; c->npot = !gles || has_ext("GL_OES_texture_npot"); c->render_targets = 1; c->max_anisotropy = has_aniso ? (int)max_aniso : 1; c->pixel_shaders = 1;
 }
 void gl_resize_backbuffer(int w, int h) {
     if (bb.tex && bb.w == w && bb.h == h) return;

@@ -22,7 +22,7 @@ int glt_on; uint64_t glt_wait_ns;
 #define ALIGN(n) (((n) + 15u) & ~(size_t)15u)
 
 enum { C_WRAP, C_CALL, C_TEX_INIT, C_TEX_UPLOAD, C_TEX_DESTROY, C_BEGIN, C_TARGET, C_VIEWPORT, C_SCISSOR, C_CLEAR, C_DRAW,
-       C_COPY, C_PRESENT, C_GAMMA, C_DEFER };
+       C_COPY, C_PRESENT, C_GAMMA, C_DEFER, C_SCONST };
 typedef struct { uint32_t type, size; } Hdr;               /* size: the whole command, header included, 16-aligned */
 typedef struct { Hdr h; void (*fn)(void *); void *arg; volatile int *done; } CCall;
 typedef struct { Hdr h; PlatTexture *t; } CTex;
@@ -33,7 +33,8 @@ typedef struct { Hdr h; int color, depth, stencil; uint32_t argb, s; float z; } 
 typedef struct { Hdr h; int prim, nverts, nidx; PlatDrawState st; } CDraw;               /* + vertices + indices */
 typedef struct { Hdr h; PlatTexture *src, *dst; int sx, sy, sw, sh, dx, dy, dw, dh, linear; } CCopy;
 typedef struct { Hdr h; uint16_t ramp[3][256]; } CGamma;
-typedef struct { Hdr h; void (*fn)(void *, PlatDrawFn); uint32_t n, pad; } CDefer;                   /* + data (16-aligned) */
+typedef struct { Hdr h; void (*fn)(void *, PlatDrawFn); uint32_t n, pad; } CDefer;
+typedef struct { Hdr h; int start, count; } CConst;                                                   /* + count vec4s */                   /* + data (16-aligned) */
 
 static uint8_t *ring;
 static uint64_t wpos;                       /* producer: end of what it has written */
@@ -64,6 +65,7 @@ static void exec(Hdr *h) {
     case C_PRESENT: glr_present(); plat_mutex_lock(mx); frames_done++; plat_cond_broadcast(cv_prod); plat_mutex_unlock(mx); break;
     case C_GAMMA: glr_gamma((const uint16_t (*)[256])((CGamma *)h)->ramp); break;
     case C_DEFER: { CDefer *c = (CDefer *)h; c->fn((uint8_t *)c + ALIGN(sizeof *c), glr_draw); break; }
+    case C_SCONST: { CConst *c = (CConst *)h; glr_shader_constants(c->start, c->count, (const float *)(c + 1)); break; }
     }
 }
 static void render_thread(void *arg) {
@@ -198,4 +200,15 @@ void plat_gfx_deferred(void (*fn)(void *data, PlatDrawFn draw), const void *data
     CDefer *c = (CDefer *)reserve(total); c->fn = fn; c->n = (uint32_t)n;
     memcpy((uint8_t *)c + ALIGN(sizeof *c), data, n);
     publish(&c->h, C_DEFER);
+}
+
+/* pixel shaders: the handle is made here (no GL); the program is compiled on the render thread at its first draw */
+PlatShader *plat_shader_create(const char *glsl) { return glsl ? glr_shader_new(glsl) : NULL; }
+static void shader_destroy_direct(void *p) { glr_shader_destroy(p); }
+void plat_shader_destroy(PlatShader *s) { if (s) glt_call(shader_destroy_direct, s); }
+void plat_gfx_shader_constants(int start, int count, const float *v) {
+    if (count <= 0) return;
+    if (!glt_on) { glr_shader_constants(start, count, v); return; }
+    CConst *c = (CConst *)reserve(ALIGN(sizeof *c + (size_t)count * 16)); c->start = start; c->count = count;
+    memcpy(c + 1, v, (size_t)count * 16); publish(&c->h, C_SCONST);
 }

@@ -30,6 +30,9 @@ void glr_draw(int prim, const PlatVertex *v, int nverts, const uint16_t *idx, in
 void glr_copy(PlatTexture *src, int sx, int sy, int sw, int sh, PlatTexture *dst, int dx, int dy, int dw, int dh, int linear);
 void glr_present(void);
 void glr_gamma(const uint16_t ramp[3][256]);
+PlatShader *glr_shader_new(const char *glsl);                    /* no GL: any thread; compiled at first use */
+void glr_shader_destroy(PlatShader *s);
+void glr_shader_constants(int start, int count, const float *v);
 
 /* gl_thread.c: the render thread. The windowing code calls glt_start() before setting up GL when it wants one, then does
  * all its GL work (context, gl_init, gl_resize_backbuffer, gl_caps) through glt_call, which runs fn on the GL thread and

@@ -115,6 +115,7 @@ typedef struct {
     int npot;              /* non-power-of-two textures with mipmaps and wrapping */
     int render_targets;    /* textures can be rendered to */
     int max_anisotropy;
+    int pixel_shaders;     /* plat_shader_create works (GLSL fragment shaders, see below) */
 } PlatVideoCaps;
 
 /* Opens (or reconfigures) the one game window with a drawing surface of w x h pixels. fullscreen is a request; the
@@ -180,8 +181,23 @@ typedef struct {
     uint32_t fog_color, texture_factor;
     float depth_bias;              /* added to window-space depth (D3DRS_DEPTHBIAS); slope bias ignored */
     PlatStage stage[PLAT_MAX_STAGES];
+    struct PlatShader *shader;     /* a pixel shader replaces the stages' colour and alpha operations (their textures and
+                                      sampler settings still apply); alpha test, colour write, blending and depth stay */
 } PlatDrawState;
 typedef struct { int x, y, w, h; float min_z, max_z; } PlatViewport;
+
+/* Pixel shaders, for a front end that translates the game's own (Direct3D bytecode) into GLSL. The source is the body of
+ * a GLSL ES 1.00 / GLSL 1.20 fragment shader (no #version or precision line) that defines `vec4 ps_main()` and may use:
+ *   varying vec4 v_diff, v_spec;   the vertex diffuse and specular colours (RGBA, 0..1)
+ *   varying vec4 v_uv;             texture coordinate sets 0 (xy) and 1 (zw)
+ *   uniform sampler2D u_t0, u_t1;  the textures of stages 0 and 1, with those stages' filtering and wrapping
+ *   uniform vec4 u_c[N];           constants (declared by the source itself, N <= 32), set with plat_gfx_shader_constants
+ * Creation returns at once (compilation may happen at first use); NULL when shaders are not supported. */
+typedef struct PlatShader PlatShader;
+PlatShader *plat_shader_create(const char *glsl);
+void plat_shader_destroy(PlatShader *s);
+/* vec4 constants u_c[start..start+count) for the draws that follow (in order with them), for every shader */
+void plat_gfx_shader_constants(int start, int count, const float *v);
 
 void plat_gfx_begin_frame(void);
 void plat_gfx_set_target(PlatTexture *target);                    /* NULL: the window's back buffer */

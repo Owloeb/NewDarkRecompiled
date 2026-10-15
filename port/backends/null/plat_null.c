@@ -44,6 +44,9 @@ void plat_gfx_copy(PlatTexture *src, int sx, int sy, int sw, int sh, PlatTexture
     (void)src; (void)sx; (void)sy; (void)sw; (void)sh; (void)dst; (void)dx; (void)dy; (void)dw; (void)dh; (void)linear;
 }
 void plat_gfx_present(void) {}
+PlatShader *plat_shader_create(const char *glsl) { (void)glsl; return NULL; }
+void plat_shader_destroy(PlatShader *s) { (void)s; }
+void plat_gfx_shader_constants(int start, int count, const float *v) { (void)start; (void)count; (void)v; }
 void plat_gfx_deferred(void (*fn)(void *, PlatDrawFn), const void *data, size_t n) { (void)n; fn((void *)data, plat_gfx_draw); }
 void plat_gfx_gamma(const uint16_t ramp[3][256]) { (void)ramp; }
 

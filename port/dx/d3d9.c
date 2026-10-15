@@ -5,13 +5,15 @@
  * backend's small interface (plat.h): vertices in clip space with colours, fog and texture coordinates already
  * computed, plus a PlatDrawState for the fixed-function pixel pipeline. Transforms, lighting, fog, texture coordinate
  * transforms, FVF and vertex declaration decoding, format conversion, state blocks and surface copies all happen here,
- * once, for every backend. The capabilities it reports describe exactly this pipeline: fixed function only (no
- * shaders), two texture stages, one vertex stream. */
+ * once, for every backend. The capabilities it reports describe exactly this pipeline: fixed-function vertex processing,
+ * two texture stages, one vertex stream, and pixel shaders up to ps_2_0 when the backend runs GLSL (d3d9_shader.c turns
+ * the bytecode into GLSL; SS2PORT_NOSHADERS=1 turns them off). */
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
 #include "com.h"
 #include "d3d9_format.h"
+#include "d3d9_shader.h"
 
 #define D3D_OK 0u
 #define D3DERR_INVALIDCALL 0x8876086Cu
@@ -86,8 +88,11 @@ struct Device {
     PlatVertex *vbuf; int vcap; uint16_t *ibuf; int icap; uint8_t *scratch; size_t scratch_n;
     uint16_t gamma[3][256];
     int in_scene;
+    float psc[32][4];                /* pixel shader float constants */
 };
 static Device *DEV(ComObj *o) { return (Device *)o->data; }
+typedef struct { Device *dev; PlatShader *sh; int nconst; uint32_t *tok; uint32_t ntok; } PShader;   /* a pixel shader */
+static int shaders_on(void);
 static void bind(ComObj **slot, ComObj *o) { if (*slot == o) return; if (o) com_addref(o); if (*slot) com_release(*slot); *slot = o; }
 static void *scratch(Device *d, size_t n) { if (d->scratch_n < n) { d->scratch = realloc(d->scratch, n); d->scratch_n = n; } return d->scratch; }
 
@@ -362,8 +367,9 @@ static void draw_state(Device *d, PlatDrawState *ps) {
         g->mag_filter = filt(sm[5]); g->min_filter = filt(sm[6]); g->mip_filter = sm[7] == 1 ? PLAT_MIP_NEAREST : sm[7] >= 2 ? PLAT_MIP_LINEAR : PLAT_MIP_NONE;
         g->wrap_u = wrap(sm[1]); g->wrap_v = wrap(sm[2]); g->border_color = sm[4]; g->anisotropy = (uint8_t)(sm[6] == 3 || sm[5] == 3 ? (sm[10] > 16 ? 16 : sm[10]) : 1);
         Res *tx = R(s->tex[i]);
-        if (tx && tx->kind == R_TEX && g->color_op != PLAT_TOP_DISABLE) { upload(tx); g->texture = tx->pt; if (tx->levels <= 1 && !tx->autogen) g->mip_filter = PLAT_MIP_NONE; }
+        if (tx && tx->kind == R_TEX && (g->color_op != PLAT_TOP_DISABLE || s->ps)) { upload(tx); g->texture = tx->pt; if (tx->levels <= 1 && !tx->autogen) g->mip_filter = PLAT_MIP_NONE; }
     }
+    if (s->ps) { PShader *p = s->ps->data; ps->shader = p->sh; ps->fog = 0; ps->specular = 0; }   /* the shader writes the final colour */
     if (s->tss[PLAT_MAX_STAGES][1] != 1 && s->tss[PLAT_MAX_STAGES - 1][1] != 1) { static int w; if (!w++) port_debug("Direct3D: more than %d texture stages enabled; the rest are ignored", PLAT_MAX_STAGES); }
 }
 
@@ -391,7 +397,7 @@ static int expand(uint32_t type, uint32_t prims, const uint32_t *seq, uint32_t *
     return k;
 }
 static int current_layout(Device *d, Layout *L) {
-    if (d->st.vs || d->st.ps) { static int w; if (!w++) port_warn("Direct3D: a shader is set; shaders are not supported, the draw is skipped"); return 0; }
+    if (d->st.vs) { static int w; if (!w++) port_warn("Direct3D: a vertex shader is set; vertex shaders are not supported, the draw is skipped"); return 0; }
     if (d->st.decl) return layout_decl((Decl *)d->st.decl->data, L);
     return layout_fvf(d->st.fvf, L);
 }
@@ -418,6 +424,7 @@ static void draw(Device *d, uint32_t type, uint32_t prims, uint32_t vbase, uint3
     if (!d->in_scene) { static int w; if (!w++) port_debug("Direct3D: draw outside BeginScene/EndScene"); }
     Xf x; prepare(d, &L, &x);
     PlatDrawState ps; draw_state(d, &ps);
+    if (ps.shader) { PShader *p = d->st.ps->data; if (p->nconst) plat_gfx_shader_constants(0, p->nconst, d->psc[0]); }
     uint32_t *seq = scratch(d, (size_t)nseq * 4);
     uint32_t lo = 0xFFFFFFFFu, hi = 0;
     for (uint32_t i = 0; i < nseq; i++) {
@@ -532,7 +539,8 @@ static void fill_caps(uint32_t p) {
     WR32(p + 136, 0x1FF); WR32(p + 140, 0x80008); WR32(p + 144, 0x0001FFFF & ~0x00006000u);   /* TextureOpCaps */
     WR32(p + 148, PLAT_MAX_STAGES); WR32(p + 152, PLAT_MAX_STAGES); WR32(p + 156, 0x17B); WR32(p + 160, MAX_LIGHTS); WR32(p + 164, 0); WR32(p + 168, 0); WR32(p + 172, 0);
     WR32(p + 176, f2u(64.0f)); WR32(p + 180, 0xFFFFF); WR32(p + 184, 0xFFFFF); WR32(p + 188, 1); WR32(p + 192, 255);
-    WR32(p + 196, 0xFFFE0000u); WR32(p + 200, 0); WR32(p + 204, 0xFFFF0000u); WR32(p + 208, f2u(0)); WR32(p + 212, 0x11); WR32(p + 216, f2u(0));
+    WR32(p + 196, 0xFFFE0000u); WR32(p + 200, 0); WR32(p + 204, shaders_on() ? 0xFFFF0200u : 0xFFFF0000u); WR32(p + 208, f2u(shaders_on() ? 8.0f : 0));
+    if (shaders_on()) { WR32(p + 272, 12); WR32(p + 280, 96); WR32(p + 292, 96); }              /* PS20Caps NumTemps, NumInstructionSlots; MaxPShaderInstructionsExecuted */ WR32(p + 212, 0x11); WR32(p + 216, f2u(0));
     WR32(p + 224, 0); WR32(p + 228, 0); WR32(p + 232, 1); WR32(p + 236, 0x3); WR32(p + 240, 1); WR32(p + 244, 0x03000300);
 }
 static void d3d_adapter_id(CPU *c, ComObj *s) {
@@ -714,7 +722,19 @@ static const ComMethod decl_m[] = { { "GetDeclaration", decl_getdecl }, { 0, 0 }
 static const uint8_t iids_decl[][16] = { IID_IDirect3DVertexDeclaration9 }, iids_vs[][16] = { IID_IDirect3DVertexShader9 }, iids_ps[][16] = { IID_IDirect3DPixelShader9 };
 ComClass c_decl = { "IDirect3DVertexDeclaration9", IFACE_IDirect3DVertexDeclaration9, iids_decl, 1, decl_m, D3D_OK, decl_destroy };
 ComClass c_vs = { "IDirect3DVertexShader9", IFACE_IDirect3DVertexShader9, iids_vs, 1, NULL, D3DERR_INVALIDCALL, NULL };
-ComClass c_ps = { "IDirect3DPixelShader9", IFACE_IDirect3DPixelShader9, iids_ps, 1, NULL, D3DERR_INVALIDCALL, NULL };
+static void ps_getdevice(CPU *c, ComObj *s) { Device *d = ((PShader *)s->data)->dev; com_addref(d->obj); OUTP(1, d->obj->guest); RET(0); }
+static void ps_getfunction(CPU *c, ComObj *s) {
+    PShader *p = s->data; uint32_t bytes = p->ntok * 4;
+    if (A(1)) { memcpy(GP(A(1)), p->tok, bytes); } OUTP(2, bytes); RET(0);
+}
+static void ps_destroy(ComObj *o) { PShader *p = o->data; plat_shader_destroy(p->sh); free(p->tok); free(p); }
+static const ComMethod ps_m[] = { { "GetDevice", ps_getdevice }, { "GetFunction", ps_getfunction }, { 0, 0 } };
+ComClass c_ps = { "IDirect3DPixelShader9", IFACE_IDirect3DPixelShader9, iids_ps, 1, ps_m, D3DERR_INVALIDCALL, ps_destroy };
+static int shaders_on(void) {
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("SS2PORT_NOSHADERS"); PlatVideoCaps vc; plat_video_caps(&vc); on = vc.pixel_shaders && !(e && *e && *e != '0'); }
+    return on;
+}
 static void dev_present(CPU *c, ComObj *s);
 static void swap_present(CPU *c, ComObj *s) { Device *d = s->data; dev_present(c, d->obj); }
 static void swap_backbuffer(CPU *c, ComObj *s) { Device *d = s->data; com_addref(d->backbuf); OUTP(3, d->backbuf->guest); RET(0); }
@@ -980,7 +1000,34 @@ static void dev_setfvf(CPU *c, ComObj *s) {
     if (RECORDING(d)) { d->recording->m.fvf = 1; d->recording->st.decl = NULL; d->recording->m.decl = 1; } else bind(&d->st.decl, NULL); RET(0);
 }
 static void dev_getfvf(CPU *c, ComObj *s) { Device *d = DEV(s); OUTP(1, d->st.fvf); RET(0); }
-static void dev_createshader(CPU *c, ComObj *s) { (void)s; static int w; if (!w++) port_warn("Direct3D: the game asked for a shader; shaders are not supported (fixed function only)"); OUTP(2, 0); RET(D3DERR_INVALIDCALL); }
+static void dev_createshader(CPU *c, ComObj *s) { (void)s; static int w; if (!w++) port_warn("Direct3D: the game asked for a vertex shader; vertex shaders are not supported (fixed-function vertex processing)"); OUTP(2, 0); RET(D3DERR_INVALIDCALL); }
+/* CreatePixelShader(function, out): the bytecode becomes GLSL now; a shader the translation cannot express is refused,
+ * which the engine handles as it does on hardware without pixel shaders */
+static void dev_createps(CPU *c, ComObj *s) {
+    Device *d = DEV(s); uint32_t f = A(1); OUTP(2, 0);
+    if (!shaders_on() || !f || !g_valid(f, 4)) { RET(D3DERR_INVALIDCALL); return; }
+    size_t max = 1; while (max < 65536 && g_valid(f, (uint32_t)(max * 2 * 4))) max *= 2;
+    size_t n = d3d_shader_length((const uint32_t *)GP(f), max);
+    char err[200] = ""; int nc = 0; char *glsl = n ? d3d_ps_to_glsl((const uint32_t *)GP(f), n, &nc, err, sizeof err) : NULL;
+    PlatShader *sh = glsl ? plat_shader_create(glsl) : NULL;
+    if (!sh) { port_warn("Direct3D: pixel shader (version %08x, %u tokens) not supported: %s", RD32(f), (unsigned)n, glsl ? "the renderer refused it" : err[0] ? err : "no end token"); free(glsl); RET(D3DERR_INVALIDCALL); return; }
+    free(glsl);
+    PShader *p = calloc(1, sizeof *p); p->dev = d; p->sh = sh; p->nconst = nc; p->ntok = (uint32_t)n; p->tok = malloc(n * 4); memcpy(p->tok, GP(f), n * 4);
+    ComObj *o = com_create(&c_ps, p); OUTP(2, o->guest);
+    static int told; if (!told++) port_debug("Direct3D: pixel shaders are translated to GLSL");
+    RET(0);
+}
+static void dev_setpsconst(CPU *c, ComObj *s) {
+    Device *d = DEV(s); uint32_t start = A(1), p = A(2), n = A(3);
+    if (start >= 32 || n > 32 - start || (n && !g_valid(p, n * 16))) { RET(D3DERR_INVALIDCALL); return; }
+    memcpy(d->psc[start], GP(p), (size_t)n * 16); RET(0);
+}
+static void dev_getpsconst(CPU *c, ComObj *s) {
+    Device *d = DEV(s); uint32_t start = A(1), p = A(2), n = A(3);
+    if (start >= 32 || n > 32 - start || (n && !g_valid(p, n * 16))) { RET(D3DERR_INVALIDCALL); return; }
+    memcpy(GP(p), d->psc[start], (size_t)n * 16); RET(0);
+}
+static void dev_getps(CPU *c, ComObj *s) { Device *d = DEV(s); if (d->st.ps) com_addref(d->st.ps); OUTP(1, d->st.ps ? d->st.ps->guest : 0); RET(0); }
 static void dev_setvs(CPU *c, ComObj *s) { Device *d = DEV(s); ComObj *o = A(1) ? com_get(A(1)) : NULL; if (RECORDING(d)) { d->recording->st.vs = o; d->recording->m.vs = 1; } else bind(&d->st.vs, o); RET(0); }
 static void dev_setps(CPU *c, ComObj *s) { Device *d = DEV(s); ComObj *o = A(1) ? com_get(A(1)) : NULL; if (RECORDING(d)) { d->recording->st.ps = o; d->recording->m.ps = 1; } else bind(&d->st.ps, o); RET(0); }
 static void dev_getnull(CPU *c, ComObj *s) { (void)s; OUTP(1, 0); RET(0); }
@@ -1031,7 +1078,8 @@ static const ComMethod dev_m[] = {
     { "ProcessVertices", dev_processvertices }, { "CreateVertexDeclaration", dev_createdecl }, { "SetVertexDeclaration", dev_setdecl }, { "GetVertexDeclaration", dev_getdecl },
     { "SetFVF", dev_setfvf }, { "GetFVF", dev_getfvf }, { "CreateVertexShader", dev_createshader }, { "SetVertexShader", dev_setvs }, { "GetVertexShader", dev_getnull },
     { "SetStreamSource", dev_setstream }, { "GetStreamSource", dev_getstream }, { "SetStreamSourceFreq", dev_setstreamfreq }, { "GetStreamSourceFreq", dev_getstreamfreq },
-    { "SetIndices", dev_setindices }, { "GetIndices", dev_getindices }, { "CreatePixelShader", dev_createshader }, { "SetPixelShader", dev_setps }, { "GetPixelShader", dev_getnull },
+    { "SetIndices", dev_setindices }, { "GetIndices", dev_getindices }, { "CreatePixelShader", dev_createps }, { "SetPixelShader", dev_setps }, { "GetPixelShader", dev_getps },
+    { "SetPixelShaderConstantF", dev_setpsconst }, { "GetPixelShaderConstantF", dev_getpsconst },
     { "CreateQuery", dev_createquery }, { 0, 0 } };
 static const uint8_t iids_dev[][16] = { IID_IDirect3DDevice9 };
 ComClass c_dev = { "IDirect3DDevice9", IFACE_IDirect3DDevice9, iids_dev, 1, dev_m, D3D_OK, dev_destroy };
