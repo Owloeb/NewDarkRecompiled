@@ -373,6 +373,53 @@ static void draw_state(Device *d, PlatDrawState *ps) {
     if (s->tss[PLAT_MAX_STAGES][1] != 1 && s->tss[PLAT_MAX_STAGES - 1][1] != 1) { static int w; if (!w++) port_debug("Direct3D: more than %d texture stages enabled; the rest are ignored", PLAT_MAX_STAGES); }
 }
 
+
+/* ---------------------------------------------------------------- SS2PORT_DRAWTRACE=1: which engine code draws what
+ * A development aid. For each draw, the engine's call chain is recovered by scanning the guest stack for return addresses
+ * (values inside the exe's code that follow a call instruction); distinct chains are counted together with what kind of
+ * draw they make, and the table is logged every 600 frames, so a feature can be traced from the draws back to the
+ * engine function that produced them. */
+static CPU *trace_cpu;
+typedef struct { uint32_t chain[8]; int n; uint32_t fvf, tex_w, tex_h; int rhw, ztest, lit, frames; uint64_t draws, tris; } TraceRow;
+static TraceRow *trace_rows; static int trace_n, trace_on = -1; static uint32_t trace_frame;
+static int is_retaddr(uint32_t v) {
+    if (v < 0x00401006u || v >= 0x00780000u || !g_valid(v - 7, 7)) return 0;
+    const uint8_t *p = GP(v);
+    if (p[-5] == 0xE8) return 1;                                                         /* call rel32 */
+    if (p[-2] == 0xFF && (p[-1] & 0x38) == 0x10 && (p[-1] & 0xC0) == 0xC0) return 1;     /* call reg */
+    if (p[-3] == 0xFF && (p[-2] & 0x38) == 0x10 && (p[-2] & 0xC0) == 0x40) return 1;     /* call [reg+d8] */
+    if (p[-6] == 0xFF && (p[-5] & 0x38) == 0x10) return 1;                               /* call [abs] / [reg+d32] */
+    if (p[-2] == 0xFF && (p[-1] & 0x38) == 0x10 && (p[-1] & 0xC0) == 0x00) return 1;     /* call [reg] */
+    return 0;
+}
+static void trace_draw(const Layout *L, uint32_t prims, uint32_t type, Device *d) {
+    if (trace_on < 0) { const char *e = getenv("SS2PORT_DRAWTRACE"); trace_on = e && *e && *e != '0'; }
+    if (!trace_on || !trace_cpu) return;
+    TraceRow r; memset(&r, 0, sizeof r);
+    for (uint32_t a = trace_cpu->esp; r.n < 8 && a < trace_cpu->esp + 4096 && g_valid(a, 4); a += 4) { uint32_t v = RD32(a); if (is_retaddr(v)) r.chain[r.n++] = v; }
+    r.fvf = d->st.decl ? 0xDEC : d->st.fvf; r.rhw = L->rhw; r.ztest = d->st.rs[7] != 0; r.lit = d->st.rs[137] != 0;
+    Res *t = R(d->st.tex[0]); if (t && t->kind == R_TEX) { r.tex_w = t->w; r.tex_h = t->h; }
+    for (int i = 0; i < trace_n; i++) {
+        TraceRow *q = &trace_rows[i];
+        if (q->n == r.n && !memcmp(q->chain, r.chain, sizeof r.chain) && q->fvf == r.fvf && q->rhw == r.rhw && q->ztest == r.ztest) {
+            q->draws++; q->tris += type >= 4 ? prims : 0; if (q->frames != (int)trace_frame) q->frames = (int)trace_frame; return;
+        }
+    }
+    if (trace_n >= 4096) return;
+    trace_rows = realloc(trace_rows, (size_t)(trace_n + 1) * sizeof *trace_rows);
+    r.draws = 1; r.tris = type >= 4 ? prims : 0; r.frames = (int)trace_frame; trace_rows[trace_n++] = r;
+}
+static void trace_frame_end(void) {
+    if (trace_on <= 0) return;
+    if (++trace_frame % 600) return;
+    port_warn("DRAWTRACE frame %u: %d distinct call chains (draws, triangles, fvf, rhw, ztest, D3D lighting, texture 0, chain innermost first)", trace_frame, trace_n);
+    for (int i = 0; i < trace_n; i++) {
+        TraceRow *q = &trace_rows[i]; char ch[160]; int o = 0;
+        for (int k = 0; k < q->n; k++) o += snprintf(ch + o, sizeof ch - (size_t)o, " %06x", q->chain[k]);
+        port_warn("DRAWTRACE %8llu %9llu fvf=%03x rhw=%d z=%d lit=%d tex=%ux%u:%s", (unsigned long long)q->draws, (unsigned long long)q->tris, q->fvf, q->rhw, q->ztest, q->lit, q->tex_w, q->tex_h, ch);
+    }
+}
+
 /* ---------------------------------------------------------------- draws */
 static int prim_counts(uint32_t type, uint32_t prims, uint32_t *nverts, int *plat) {
     switch (type) {
@@ -420,6 +467,7 @@ static void draw(Device *d, uint32_t type, uint32_t prims, uint32_t vbase, uint3
     uint32_t nseq; int plat_prim;
     if (!prims || !prim_counts(type, prims, &nseq, &plat_prim)) return;
     Layout L; if (!current_layout(d, &L)) return;
+    trace_draw(&L, prims, type, d);
     if (!stride) stride = (uint32_t)L.stride;
     if (!d->in_scene) { static int w; if (!w++) port_debug("Direct3D: draw outside BeginScene/EndScene"); }
     Xf x; prepare(d, &L, &x);
@@ -812,7 +860,7 @@ static void dev_reset(CPU *c, ComObj *s) {
 }
 static void dev_present(CPU *c, ComObj *s) {
     Device *d = DEV(s); (void)c;
-    plat_gfx_present(); port_frame_presented(); plat_gfx_begin_frame(); plat_gfx_set_target(surface_target(R(d->rt))); apply_viewport(d);
+    trace_frame_end(); plat_gfx_present(); port_frame_presented(); plat_gfx_begin_frame(); plat_gfx_set_target(surface_target(R(d->rt))); apply_viewport(d);
     c->eax = 0;
 }
 static void dev_getbackbuffer(CPU *c, ComObj *s) { Device *d = DEV(s); if (A(1) || A(2)) { RET(D3DERR_INVALIDCALL); return; } com_addref(d->backbuf); OUTP(4, d->backbuf->guest); RET(0); }
@@ -974,19 +1022,23 @@ static void dev_setscissor(CPU *c, ComObj *s) { Device *d = DEV(s); memcpy(TARGE
 static void dev_getscissor(CPU *c, ComObj *s) { Device *d = DEV(s); memcpy(GP(A(1)), d->st.scissor, 16); RET(0); }
 static void dev_swvp(CPU *c, ComObj *s) { (void)s; RET(0); }
 static void dev_drawprim(CPU *c, ComObj *s) {
+    trace_cpu = c;
     Device *d = DEV(s); Res *vb = R(d->st.vb); if (!vb) { RET(D3DERR_INVALIDCALL); return; }
     draw(d, A(1), A(3), vb->data + d->st.vb_off + A(2) * d->st.vb_stride, d->st.vb_stride, 0, 0, 0, 0, 0); RET(0);
 }
 static void dev_drawindexed(CPU *c, ComObj *s) {
+    trace_cpu = c;
     Device *d = DEV(s); Res *vb = R(d->st.vb), *ib = R(d->st.ib); if (!vb || !ib) { RET(D3DERR_INVALIDCALL); return; }
     int i32 = ib->fmt == FMT_INDEX32;
     draw(d, A(1), A(6), vb->data + d->st.vb_off, d->st.vb_stride, ib->data + A(5) * (i32 ? 4u : 2u), i32, (int32_t)A(2), A(3), A(4)); RET(0);
 }
 static void dev_drawup(CPU *c, ComObj *s) {
+    trace_cpu = c;
     Device *d = DEV(s); draw(d, A(1), A(2), A(3), A(4), 0, 0, 0, 0, 0);
     bind(&d->st.vb, NULL); d->st.vb_off = d->st.vb_stride = 0; RET(0);                 /* D3D9 unbinds stream 0 after a UP draw */
 }
 static void dev_drawindexedup(CPU *c, ComObj *s) {
+    trace_cpu = c;
     Device *d = DEV(s); draw(d, A(1), A(4), A(7), A(8), A(5), A(6) == FMT_INDEX32, 0, A(2), A(3));
     bind(&d->st.vb, NULL); bind(&d->st.ib, NULL); d->st.vb_off = d->st.vb_stride = 0; RET(0);
 }

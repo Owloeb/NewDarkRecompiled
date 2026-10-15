@@ -101,6 +101,7 @@ SDL2 backend unless noted.
 | --- | --- |
 | `SS2PORT_FULLSCREEN=0\|1` | Override the game's fullscreen choice. |
 | `SS2PORT_GLES=1` | Use OpenGL ES 2.0 instead of OpenGL 2.1. |
+| `SS2PORT_DRAWTRACE=1` | Development aid: every 600 frames, log each distinct engine call chain that draws, with how many draws and triangles it made and what kind (vertex format, depth test, texture size). Used to find the engine code behind a rendering feature. |
 | `SS2PORT_NOSHADERS=1` | Report no pixel shader support to the game (as before pixel shaders were translated): it then skips its post-processing. |
 | `SS2PORT_NOVSYNC` | Present without vsync. |
 | `SS2PORT_RENDER_THREAD=1` | Run the OpenGL renderer on a thread of its own (`backends/sdl2/gl_thread.c`): the game records each frame's drawing and goes on to the next while that thread draws it, at most one frame behind. Off by default on the desktop; on by default on the Vita. |
