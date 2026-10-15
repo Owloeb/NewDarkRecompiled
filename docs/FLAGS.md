@@ -49,6 +49,7 @@ The rest of this page is reference. Look things up here; you do not need to read
 | `--cache-regs` | Opt-in speed switch: lift with `lift.py --cache-regs`. Normally guest registers live in a struct and every guest memory store forces the C compiler to reload them. This keeps each function's registers in C locals (written back only around calls, faults and returns), holds indirect calls and imports to the calling convention, proves which registers each function preserves, keeps the x87 stack in locals and routes indirect calls through a per-thread cache of recent targets ([how](RECOMPILER.md#register-caching---cache-regs)). Played on Linux and the PS Vita with `--abi-check` and no violations; passes the conformance suite, `harness/abi_test` and Csmith fuzzing. Switching it on or off relifts everything (5-10 minutes). |
 | `--fastpaths` | Native C versions of the hottest engine functions (`port/core/fastpaths.c`): the string-name hash, the integer and byte-string hashes and the two hash-table lookups behind object property and link queries, an 8-byte key compare, `_ftol` and `_ftol2`, and the 2D bitmap copy to the software canvas. Same behaviour, less CPU: each declines for input it doesn't model (the original then runs), and `port/tests/fastpaths/check.py` compares each with the game's own instructions in an x86 emulator. Works with `--cache-regs`: `tools/apply_hooks.py` then checks each fast path against the lifter's register summaries and stops the build if one reads or writes a register its original function doesn't. Takes seconds to switch on or off (no re-lift). Off by default. |
 | `--abi-check` | With `--cache-regs`: build with `-DPORT_ABI_CHECK=ON`. Every indirect call and import call checks that EBX/EBP/ESI/EDI came back unchanged, as the lifter assumes; a violation is logged once per call site (`ABI VIOLATION: call at <site> ...`) and corrected. A little slower: for test sessions, not timing runs. List reported sites in a file for `--abi-exempt`. |
+| `--no-shaders` | Build without pixel shader support (`-DPORT_SHADERS=OFF`): the game is told there are none and skips its post-processing (bloom, colour correction, distortion). For slow GPUs; `SS2PORT_NOSHADERS=1` does the same at run time. Recompiles; no relift. |
 | `--prof` | Sampling profiler (`-DPORT_PROF=ON`): every 20 s the log lists the 30 guest functions and imports that ran most (`[port] PROF  12.3% nd_0068bff0`). Recompiles; no relift. |
 | `--no-x87`, `--no-preserve`, `--no-abi-calls` | With `--cache-regs`: switch off one of the lifter's optimisations (x87 stack in locals, the preservation proof, the calling-convention contract), e.g. to find which one a problem comes from. Each relifts. |
 | `--abi-exempt FILE` | With `--cache-regs`: addresses from `--abi-check` reports (both addresses of each `ABI VIOLATION: call at <site> to <target>` line, hex, one or more per line): those call sites and functions keep the old reload-everything treatment. Passed to `lift.py --abi-exempt`; changing the file relifts. |
@@ -70,6 +71,7 @@ For building by hand: `cmake -S port -B build/port -DPORT_GENERATED=out/port [-D
 | `PORT_PREEMPT` | [ON] Let other guest threads run at loop heads. The game spin-waits, so leave it on. |
 | `PORT_VIDEO` | [ON] Built-in cutscene decoder (AVI, Indeo 5, PCM; LGPL code from `video/`). OFF: no cutscenes. |
 | `PORT_PROF` | [OFF] **Profiling build.** Every 20 s the log lists the 30 guest functions and host imports that took the most time (`[port] PROF 12.3% nd_0068bff0`). Summarise with `tools/fnprof.py`. Slightly slower. |
+| `PORT_SHADERS` | [ON] Translate the game's pixel shaders to GLSL (`dx/d3d9_shader.c`). OFF: report none; the game skips its post-processing. |
 | `CMAKE_BUILD_TYPE` | [RelWithDebInfo] Usual CMake meaning. |
 
 ## Running
@@ -99,7 +101,6 @@ SDL2 backend unless noted.
 | --- | --- |
 | `SS2PORT_FULLSCREEN=0\|1` | Override the game's fullscreen choice. |
 | `SS2PORT_GLES=1` | Use OpenGL ES 2.0 instead of OpenGL 2.1. |
-| `port/build.py --no-shaders` | Build without pixel shader support (same effect as `SS2PORT_NOSHADERS=1`, fixed at build time). |
 | `SS2PORT_NOSHADERS=1` | Report no pixel shader support to the game (as before pixel shaders were translated): it then skips its post-processing. |
 | `SS2PORT_NOVSYNC` | Present without vsync. |
 | `SS2PORT_RENDER_THREAD=1` | Run the OpenGL renderer on a thread of its own (`backends/sdl2/gl_thread.c`): the game records each frame's drawing and goes on to the next while that thread draws it, at most one frame behind. Off by default on the desktop; on by default on the Vita. |
