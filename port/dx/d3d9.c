@@ -409,9 +409,11 @@ static void trace_draw(const Layout *L, uint32_t prims, uint32_t type, Device *d
     trace_rows = realloc(trace_rows, (size_t)(trace_n + 1) * sizeof *trace_rows);
     r.draws = 1; r.tris = type >= 4 ? prims : 0; r.frames = (int)trace_frame; trace_rows[trace_n++] = r;
 }
+void port_entrytrace_dump(void);
 static void trace_frame_end(void) {
     if (trace_on <= 0) return;
     if (++trace_frame % 600) return;
+    port_entrytrace_dump();
     port_warn("DRAWTRACE frame %u: %d distinct call chains (draws, triangles, fvf, rhw, ztest, D3D lighting, texture 0, chain innermost first)", trace_frame, trace_n);
     for (int i = 0; i < trace_n; i++) {
         TraceRow *q = &trace_rows[i]; char ch[160]; int o = 0;
