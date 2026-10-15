@@ -731,6 +731,9 @@ static void ps_destroy(ComObj *o) { PShader *p = o->data; plat_shader_destroy(p-
 static const ComMethod ps_m[] = { { "GetDevice", ps_getdevice }, { "GetFunction", ps_getfunction }, { 0, 0 } };
 ComClass c_ps = { "IDirect3DPixelShader9", IFACE_IDirect3DPixelShader9, iids_ps, 1, ps_m, D3DERR_INVALIDCALL, ps_destroy };
 static int shaders_on(void) {
+#ifdef PORT_NO_SHADERS
+    return 0;                                                                         /* built with port/build.py --no-shaders */
+#endif
     static int on = -1;
     if (on < 0) { const char *e = getenv("SS2PORT_NOSHADERS"); PlatVideoCaps vc; plat_video_caps(&vc); on = vc.pixel_shaders && !(e && *e && *e != '0'); }
     return on;

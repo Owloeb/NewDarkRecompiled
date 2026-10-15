@@ -53,6 +53,7 @@ def main():
     ap.add_argument("--cache-regs", action="store_true", help="lift with lift.py --cache-regs (experimental)")
     ap.add_argument("--fastpaths", action="store_true", help="native C versions of a few very hot engine functions (port/core/fastpaths.c): same behaviour, less CPU")
     ap.add_argument("--abi-exempt", metavar="FILE", help="with --cache-regs: call sites reported by --abi-check (one hex address per line) that keep the old reload-everything treatment; passed to lift.py, relifts when the file changes")
+    ap.add_argument("--no-shaders", action="store_true", help="build without pixel shader support (cmake -DPORT_SHADERS=OFF): the game is told there are none and skips its post-processing (bloom, colour correction, distortion), as before shaders were translated; for slow GPUs. SS2PORT_NOSHADERS=1 does the same at run time")
     ap.add_argument("--prof", action="store_true", help="sampling profiler (cmake -DPORT_PROF=ON): every 20 s the log lists the 30 guest functions and imports that ran most; recompiles, no relift")
     ap.add_argument("--no-x87", action="store_true", help="with --cache-regs: keep the x87 stack in the CPU struct (lift.py --no-x87), e.g. to rule it out")
     ap.add_argument("--no-preserve", action="store_true", help="with --cache-regs: skip the callee-saved preservation proof (lift.py --no-preserve)")
@@ -119,7 +120,7 @@ def main():
 
     print("[2/2] building the host", flush=True)
     gen = "Ninja" if shutil.which("ninja") else "Unix Makefiles"
-    cfg = ["cmake", "-S", os.path.join(ROOT, "port"), "-B", a.build, "-G", gen, f"-DPORT_GENERATED={OUT}", f"-DPORT_BACKEND={a.backend}", "-DCMAKE_BUILD_TYPE=Release", f"-DPORT_ABI_CHECK={'ON' if a.abi_check else 'OFF'}", f"-DPORT_PROF={'ON' if a.prof else 'OFF'}"]
+    cfg = ["cmake", "-S", os.path.join(ROOT, "port"), "-B", a.build, "-G", gen, f"-DPORT_GENERATED={OUT}", f"-DPORT_BACKEND={a.backend}", "-DCMAKE_BUILD_TYPE=Release", f"-DPORT_ABI_CHECK={'ON' if a.abi_check else 'OFF'}", f"-DPORT_PROF={'ON' if a.prof else 'OFF'}", f"-DPORT_SHADERS={'OFF' if a.no_shaders else 'ON'}"]
     if win:
         sys.path.insert(0, os.path.join(ROOT, "port", "tools")); import deps
         os.environ["ZIG_PY"] = sys.executable                       # used by port/cmake/zig-* (the compiler wrappers)
