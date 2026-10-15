@@ -564,8 +564,8 @@ static void group_draw(void *data, PlatDrawFn submit) {
         size_t total; memcpy(&total, q, sizeof total); Deferred *h = (Deferred *)(void *)(q + sizeof total); q += sizeof total + total;
         const uint8_t *raw = (const uint8_t *)(h + 1); const uint16_t *ix = (const uint16_t *)(raw + DEF_A4((size_t)h->span * h->stride));
         PlatVertex *out = V + nv; nv += h->span;
-        float w0 = out[ix[0]].w; int flat = 1; for (int i = 1; i < h->nidx && flat; i++) flat = out[ix[i]].w == w0;
-        if (flat || !ppl_debug) { submit(h->prim, out, (int)h->span, ix, h->nidx, &h->ps); continue; }   /* a flat HUD quad (the minimap) */
+        int hud = 1; for (int i = 0; i < h->nidx && hud; i++) hud = out[ix[i]].z <= 0;   /* every vertex on the near plane: a HUD quad (the minimap) */
+        if (hud || !ppl_debug) { submit(h->prim, out, (int)h->span, ix, h->nidx, &h->ps); continue; }
         if (h->ps.blend && h->ps.dst_blend == PLAT_BLEND_ONE) continue;  /* debug view: the additive fill / rim passes would wash it out */
         PlatDrawState ps = h->ps; ps.stage[0].color_op = PLAT_TOP_SELECTARG2; ps.stage[0].color_arg2 = PLAT_ARG_DIFFUSE; ps.stage[1].color_op = ps.stage[1].alpha_op = PLAT_TOP_DISABLE; ps.fog = 0;
         if (i16cap < (uint32_t)h->nidx) { i16cap = (uint32_t)h->nidx; ix16 = realloc(ix16, i16cap * 2); }
