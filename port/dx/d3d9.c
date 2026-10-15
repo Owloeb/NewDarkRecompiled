@@ -462,6 +462,7 @@ typedef struct { int prim, nidx; uint32_t span, stride; Layout L; Xf x; VState s
  * view-space position of every vertex is rebuilt from its screen position and depth, vertices the engine shares are
  * welded (they arrive with identical coordinates), and a smooth normal is built from the faces around each one.
  * SS2PORT_PPL_DEBUG=1 draws those normals as colours (x red, y green, z blue; 0.5 = zero) to check them. */
+extern int port_in_overlay;                                     /* core/fastpaths.c (needs --fastpaths) */
 static int ppl_debug = -1;
 static int ppl_on(void) { if (ppl_debug < 0) { const char *e = getenv("SS2PORT_PPL_DEBUG"); ppl_debug = e && *e && *e != '0'; } return ppl_debug; }
 static void ppl_normals(PlatVertex *v, uint32_t span, const uint16_t *ix, int nidx, const VState *s) {
@@ -503,6 +504,7 @@ static void deferred_draw(void *data, PlatDrawFn submit) {             /* on the
     if (cap < h->span) { cap = h->span; out = realloc(out, (size_t)cap * sizeof *out); done = realloc(done, cap); }
     memset(done, 0, h->span);
     for (int i = 0; i < h->nidx; i++) { uint16_t r = ix[i]; if (!done[r]) { done[r] = 1; vertex(&h->s, &h->L, &h->x, raw + (size_t)r * h->stride, &out[r]); } }
+    if (h->obj && ppl_debug > 0 && h->ps.blend && h->ps.dst_blend == PLAT_BLEND_ONE) return;   /* debug view: the additive fill / rim passes would wash it out */
     if (h->obj && ppl_debug > 0) { PlatDrawState ps = h->ps; ps.stage[0].color_op = PLAT_TOP_SELECTARG2; ps.stage[0].color_arg2 = PLAT_ARG_DIFFUSE; ps.stage[1].color_op = ps.stage[1].alpha_op = PLAT_TOP_DISABLE; ps.fog = 0; ppl_normals(out, h->span, ix, h->nidx, &h->s); submit(h->prim, out, (int)h->span, ix, h->nidx, &ps); return; }
     submit(h->prim, out, (int)h->span, ix, h->nidx, &h->ps);
 }
@@ -533,7 +535,7 @@ static void draw(Device *d, uint32_t type, uint32_t prims, uint32_t vbase, uint3
         size_t vbytes = DEF_A4((size_t)span * stride), total = sizeof(Deferred) + vbytes + (size_t)n * 2;
         static uint8_t *blob; static size_t blob_cap; if (blob_cap < total) { blob_cap = total; blob = realloc(blob, blob_cap); }
         Deferred *h = (Deferred *)blob; h->prim = plat_prim; h->nidx = n; h->span = span; h->stride = stride; h->L = L; h->x = x; h->s = vs; h->ps = ps;
-        h->obj = ppl_on() && L.rhw && plat_prim == PLAT_PRIM_TRIANGLES && ps.depth_test && !ps.shader && L.diffuse >= 0 && L.ntex == 1;
+        h->obj = ppl_on() && !port_in_overlay && L.rhw && plat_prim == PLAT_PRIM_TRIANGLES && ps.depth_test && !ps.shader && L.diffuse >= 0 && L.ntex == 1;
         memcpy(h + 1, GP(vbase + lo * stride), (size_t)span * stride);
         uint16_t *ix = (uint16_t *)((uint8_t *)(h + 1) + vbytes); for (int i = 0; i < n; i++) ix[i] = (uint16_t)e32[i];
         free(e32);
