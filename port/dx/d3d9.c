@@ -587,8 +587,8 @@ static void ppl_light_at(const GroupHdr *g, const float *P, const float *N, floa
 }
 /* The pixel shader: rebuilds the pixel's view position from gl_FragCoord (u_c[0]: viewport x, y, 2/w, 2/h; u_c[1]: kx, ky,
  * -, light count), lights it the same way (u_c[2]: ambient, debug; u_c[3]: fog colour; u_c[4 + 2i]: light position;
- * u_c[5 + 2i]: light colour) and scales the engine's vertex colour by that over the vertex's own value (v_spec), which the
- * draw interpolates. The vertex normal's x and y come in the second texture coordinate set (z faces the eye). Stage 0's
+ * u_c[5 + 2i]: light colour) and maps it to the engine's brightness with the group's fit: v_diff.rgb + 4 * v_spec.rgb * light
+ * (offset and scale per channel, the same at every vertex of the group; see group_draw). The vertex normal's x and y come in the second texture coordinate set (z faces the eye). Stage 0's
  * texture times the diffuse colour, alpha from the texture (amode 0), the diffuse colour (1) or both (2). */
 static PlatShader *ppl_shader(int amode, int fog) {
     static PlatShader *cache[6]; int k = amode * 2 + fog;
@@ -613,7 +613,7 @@ static PlatShader *ppl_shader(int amode, int fog) {
         "  }\n"
         "  E = min(E, vec3(1.0));\n"
         "  if (u_c[2].w > 0.5) return vec4(E, 1.0);\n"
-        "  vec3 lit = min(v_diff.rgb * clamp(E / max(v_spec.rgb, vec3(0.03)), 0.0, 4.0), vec3(1.0));\n"
+        "  vec3 lit = min(v_diff.rgb + v_spec.rgb * 4.0 * E, vec3(1.0));\n"
         "  vec4 c = vec4(t.rgb * lit, %s);\n"
         "%s"
         "  return c;\n"
@@ -655,12 +655,26 @@ static void group_draw(void *data, PlatDrawFn submit) {
     if (ppl_wzoom < 0) { const char *e = getenv("SS2PORT_PPL_WZOOM"); ppl_wzoom = e && atof(e) > 0 ? (float)atof(e) : 0.5f; }
     float (*PP)[3] = NULL, (*NN)[3] = NULL;
     if (vs0) ppl_normals(V, nv, I, (int)ni, vs0, cls == 2 ? ppl_wzoom : 1.0f, &PP, &NN);
-    if (vs0 && ppl_lit && ppl_debug != 1)                            /* the per-vertex light the shader divides by, and the normal it interpolates */
+    /* The engine's vertex colours vary from vertex to vertex with its own model normals, which on some models (the
+     * Remaster's arms) barely follow the surface: that variation is the blotching. So they are not used per vertex: a least-
+     * squares fit per channel, engine colour = offset + scale * light here, maps this light model to the engine's level
+     * and tint (the offset takes ambient, self-illumination and lights not modelled), and the shader applies the fit to
+     * the per-pixel light. */
+    uint32_t fit_off = 0xFF000000u, fit_scale = 0xFF000000u;
+    if (vs0 && ppl_lit && ppl_debug != 1) {
+        double sE[3] = { 0 }, sC[3] = { 0 }, sEE[3] = { 0 }, sEC[3] = { 0 };
         for (uint32_t i = 0; i < nv; i++) {
-            float E[3]; ppl_light_at(gh, PP[i], NN[i], E);
-            V[i].specular = 0xFF000000u | (uint32_t)(E[0] * 255 + 0.5f) << 16 | (uint32_t)(E[1] * 255 + 0.5f) << 8 | (uint32_t)(E[2] * 255 + 0.5f);
-            V[i].u1 = NN[i][0]; V[i].v1 = NN[i][1];
+            float E[3]; ppl_light_at(gh, PP[i], NN[i], E); V[i].u1 = NN[i][0]; V[i].v1 = NN[i][1];
+            uint32_t d = V[i].diffuse; float C[3] = { ((d >> 16) & 255) / 255.0f, ((d >> 8) & 255) / 255.0f, (d & 255) / 255.0f };
+            for (int k = 0; k < 3; k++) { sE[k] += E[k]; sC[k] += C[k]; sEE[k] += (double)E[k] * E[k]; sEC[k] += (double)E[k] * C[k]; }
         }
+        for (int k = 0; k < 3; k++) {
+            double m = nv ? (double)nv : 1, mE = sE[k] / m, mC = sC[k] / m, var = sEE[k] / m - mE * mE, cov = sEC[k] / m - mE * mC, a, b;
+            if (var > 1e-4) { b = cov / var; a = mC - b * mE; } else { b = mE > 0.02 ? mC / mE : 0; a = mE > 0.02 ? 0 : mC; }   /* no spread: a plain scale */
+            if (b < 0) { b = 0; a = mC; } if (b > 4) b = 4; if (a < 0) a = 0; if (a > 1) a = 1;
+            fit_off |= (uint32_t)(a * 255 + 0.5) << (16 - 8 * k); fit_scale |= (uint32_t)(b / 4 * 255 + 0.5) << (16 - 8 * k);
+        }
+    }
     static uint16_t *ix16; static uint32_t i16cap; nv = 0;
     for (const uint8_t *q = p; q < end; ) {                          /* pass 2: each draw as it came */
         size_t total; memcpy(&total, q, sizeof total); Deferred *h = (Deferred *)(void *)(q + sizeof total); q += sizeof total + total;
@@ -671,6 +685,7 @@ static void group_draw(void *data, PlatDrawFn submit) {
             int am = ppl_amode(&h->ps);
             if (am >= 0 && gh->sh[am * 2 + (h->ps.fog != 0)]) {
                 PlatDrawState ps = h->ps; ps.shader = gh->sh[am * 2 + (h->ps.fog != 0)]; ps.stage[1].texture = NULL;
+                for (uint32_t i = 0; i < h->span; i++) { out[i].diffuse = (out[i].diffuse & 0xFF000000u) | (fit_off & 0xFFFFFFu); out[i].specular = fit_scale; }
                 if (i16cap < (uint32_t)h->nidx) { i16cap = (uint32_t)h->nidx; ix16 = realloc(ix16, i16cap * 2); }
                 memcpy(ix16, ix, (size_t)h->nidx * 2);
                 submit(h->prim, out, (int)h->span, ix16, h->nidx, &ps); ppl_n_lit++; continue;
