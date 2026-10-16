@@ -185,8 +185,8 @@ int fp_00641760(CPU *c) { return entry_trace(c, 0x641760); }   /* slot 0x58 */
 int fp_00637650(CPU *c) { return entry_trace(c, 0x637650); }   /* float-heavy helper of 0x6380a0 */
 
 /* ---------------------------------------------------------------- per-pixel lighting: what the light callback sees
- * SS2PORT_PPL_LIGHTS=1: entry hook on obj_light_callback (0x5ed7d0, symbols/manual.sym) that writes the inputs of a few
- * calls (after the game has run a while) to ppl_lights.txt: the light lists, the object transform and the first vertices
+ * Entry hook on obj_light_callback (0x5ed7d0, symbols/manual.sym). SS2PORT_PPL_LIGHTS=1 also writes the inputs of its
+ * first calls to ppl_lights.txt: the light lists, the object transform and the first vertices
  * with their transformed points, so the light and view transforms can be worked out offline. Returns 0: the game is
  * unchanged. */
 static void dump_words(FILE *f, const char *tag, uint32_t a, uint32_t n) {
@@ -194,11 +194,11 @@ static void dump_words(FILE *f, const char *tag, uint32_t a, uint32_t n) {
     for (uint32_t i = 0; i < n; i++) { uint32_t v = RD32(a + 4 * i); float x; memcpy(&x, &v, 4); fprintf(f, " %08x:%.6g", v, x); }
     fprintf(f, "\n");
 }
-int fp_005ed7d0(CPU *c) {
+static void ppl_lights_dump(CPU *c) {
     static int on = -1; static uint32_t calls; static FILE *f;
     if (on < 0) { const char *e = getenv("SS2PORT_PPL_LIGHTS"); on = e && *e && *e != '0'; }
-    if (!on || ++calls > 40) { if (f) { fclose(f); f = NULL; port_warn("per-pixel lighting: wrote ppl_lights.txt"); } return 0; }   /* the engine caches object lighting: few calls */
-    if (!f && !(f = fopen("ppl_lights.txt", "w"))) { on = 0; return 0; }
+    if (!on || ++calls > 40) { if (f) { fclose(f); f = NULL; port_warn("per-pixel lighting: wrote ppl_lights.txt"); } return; }   /* the engine caches object lighting: few calls */
+    if (!f && !(f = fopen("ppl_lights.txt", "w"))) { on = 0; return; }
     uint32_t sp = c->esp, n = RD32(sp + 4), out = RD32(sp + 8), ent = RD32(sp + 12), verts = RD32(sp + 16), pts = RD32(sp + 20);
     uint32_t ctx = RD32(0xa458b0u), np = RD32(0x940458u), nd = RD32(0x94045cu);
     fprintf(f, "CALL %u count=%u out=%08x entries=%08x verts=%08x points=%08x ctx=%08x pointlights=%u otherlights=%u rgb=%u selfillum_flag=%u lightsdirty=%u\n",
@@ -218,5 +218,22 @@ int fp_005ed7d0(CPU *c) {
     dump_words(f, "PTOFFS", RD32(0xa45ee0u), 16);
     fflush(f);
     if (calls == 1) port_warn("per-pixel lighting: the light callback ran; writing ppl_lights.txt");
+}
+/* The lights the engine is about to light this object with (the point lights it chose for it, world space, at 0x93fe48,
+ * 0x30 bytes each: position, 3 unused, RGB colour, -, -, radius; count at 0x940458) and the ambient term it starts from
+ * (0xa3b62c + 0x940448..50). dx/d3d9.c reads them for the draws that follow: port_ppl_light[0] = count, [1..3] ambient
+ * RGB, then per light x y z r g b radius. port_ppl_light_ver changes when they change. */
+float port_ppl_light[4 + 8 * 7]; uint32_t port_ppl_light_ver;
+int fp_005ed7d0(CPU *c) {
+    float L[4 + 8 * 7]; uint32_t n = RD32(0x940458u); if (n > 8) n = 8;
+    float base; uint32_t u = RD32(0xa3b62cu); memcpy(&base, &u, 4);
+    memset(L, 0, sizeof L); L[0] = (float)n;
+    for (int k = 0; k < 3; k++) { u = RD32(0x940448u + 4u * (uint32_t)k); float a; memcpy(&a, &u, 4); L[1 + k] = base + a; }
+    for (uint32_t i = 0; i < n; i++) {
+        static const int fld[7] = { 0, 1, 2, 6, 7, 8, 11 };
+        for (int k = 0; k < 7; k++) { u = RD32(0x93fe48u + 0x30u * i + 4u * (uint32_t)fld[k]); memcpy(&L[4 + 7 * i + k], &u, 4); }
+    }
+    if (memcmp(L, port_ppl_light, sizeof L)) { memcpy(port_ppl_light, L, sizeof L); port_ppl_light_ver++; }
+    ppl_lights_dump(c);
     return 0;
 }

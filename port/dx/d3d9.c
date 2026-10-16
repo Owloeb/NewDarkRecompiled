@@ -417,6 +417,7 @@ static void trace_draw(const Layout *L, uint32_t prims, uint32_t type, Device *d
 void port_entrytrace_dump(void);
 static void trace_frame_end(void) {
     ppl_frame++; if (ppl_frame == 601 && ppl_dumpf) { fclose(ppl_dumpf); ppl_dumpf = NULL; port_warn("per-pixel lighting: wrote ppl_dump.txt"); }
+    { extern uint64_t ppl_n_lit_x, ppl_n_unlit_x; if (ppl_frame == 600 && (ppl_n_lit_x || ppl_n_unlit_x)) port_warn("per-pixel lighting: %llu model draws lit per pixel, %llu left as they were (stage set-up not supported)", (unsigned long long)ppl_n_lit_x, (unsigned long long)ppl_n_unlit_x); }
     if (trace_on <= 0) return;
     if (++trace_frame % 600) return;
     port_entrytrace_dump();
@@ -483,7 +484,12 @@ static int md_draw(void) {
     }
     return 0;
 }
-static int ppl_on(void) { if (ppl_debug < 0) { const char *e = getenv("SS2PORT_PPL_DEBUG"); ppl_debug = e && *e && *e != '0'; } return ppl_debug; }
+static int ppl_lit = -1;                                        /* SS2PORT_PPL=1: light models per pixel */
+static int ppl_on(void) {
+    if (ppl_debug < 0) { const char *e = getenv("SS2PORT_PPL_DEBUG"); ppl_debug = e && *e ? atoi(e) : 0; if (ppl_debug < 0) ppl_debug = 0; }
+    if (ppl_lit < 0) { const char *e = getenv("SS2PORT_PPL"); ppl_lit = (e && *e && *e != '0') || ppl_debug == 2; if (ppl_lit && !shaders_on()) ppl_lit = 0; }
+    return ppl_debug || ppl_lit;
+}
 static float ppl_wzoom = -1;
 /* SS2PORT_PPL_DUMP=1: writes the draws of frame 600 to ppl_dump.txt (every draw: its class and state; model draws: their
  * vertices) so the classification and the rebuilt geometry can be checked offline. */
@@ -499,7 +505,7 @@ static void ppl_dump_draw(const Deferred *h, const PlatVertex *v, const uint16_t
     for (uint32_t i = 0; i < h->span; i++) fprintf(ppl_dumpf, "V %u %.7g %.7g %.7g %.7g %08x\n", i, v[i].x, v[i].y, v[i].z, v[i].w, v[i].diffuse);
     for (int i = 0; i < h->nidx; i++) fprintf(ppl_dumpf, "%s%u", i ? " " : "I ", ix[i]); fprintf(ppl_dumpf, "\n");
 }                                    /* the first-person weapon's zoom (focal length H * zoom / 1.5) */
-static void ppl_normals(PlatVertex *v, uint32_t span, const uint32_t *ix, int nidx, const VState *s, float zoom) {
+static void ppl_normals(PlatVertex *v, uint32_t span, const uint32_t *ix, int nidx, const VState *s, float zoom, float (**outP)[3], float (**outN)[3]) {
     float vw = s->vp[2] ? (float)s->vp[2] : 1, vh = s->vp[3] ? (float)s->vp[3] : 1, kx = 0.75f * vw / vh / zoom, ky = 0.75f / zoom;   /* focal length H * zoom / 1.5 */
     static float (*P)[3], (*N)[3]; static uint32_t *rep_, *hash; static uint32_t cap, hcap;
     if (cap < span) { cap = span; P = realloc(P, cap * sizeof *P); N = realloc(N, cap * sizeof *N); rep_ = realloc(rep_, cap * 4); }
@@ -523,11 +529,17 @@ static void ppl_normals(PlatVertex *v, uint32_t span, const uint32_t *ix, int ni
         if (n[0] * a[0] + n[1] * a[1] + n[2] * a[2] > 0) { n[0] = -n[0]; n[1] = -n[1]; n[2] = -n[2]; }
         for (int k = 0; k < 3; k++) { float *d = N[rep_[ix[t + k]]]; d[0] += n[0]; d[1] += n[1]; d[2] += n[2]; }
     }
+    static float (*NN)[3]; static uint32_t ncap;
+    if (ncap < span) { ncap = span; NN = realloc(NN, ncap * sizeof *NN); }
     for (uint32_t i = 0; i < span; i++) {
         const float *n = N[rep_[i]]; float l = sqrtf(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]); if (l <= 0) l = 1;
-        float r = 0.5f + 0.5f * n[0] / l, g = 0.5f + 0.5f * n[1] / l, b = 0.5f - 0.5f * n[2] / l;   /* blue: facing the eye */
-        v[i].diffuse = 0xFF000000u | (uint32_t)(r * 255) << 16 | (uint32_t)(g * 255) << 8 | (uint32_t)(b * 255);
+        NN[i][0] = n[0] / l; NN[i][1] = n[1] / l; NN[i][2] = n[2] / l;
+        if (ppl_debug == 1) {
+            float r = 0.5f + 0.5f * NN[i][0], g = 0.5f + 0.5f * NN[i][1], b = 0.5f - 0.5f * NN[i][2];   /* blue: facing the eye */
+            v[i].diffuse = 0xFF000000u | (uint32_t)(r * 255) << 16 | (uint32_t)(g * 255) << 8 | (uint32_t)(b * 255);
+        }
     }
+    *outP = P; *outN = NN;
 }
 
 #define DEF_A4(n) (((n) + 3u) & ~(size_t)3u)
@@ -543,8 +555,89 @@ static void deferred_draw(void *data, PlatDrawFn submit) {             /* on the
 }
 /* A run of model draws held back by ppl_hold, in order: their vertices are processed together so that normals can be
  * smoothed across draws (the engine draws the first-person weapon one polygon per draw), then each goes out as it came. */
+/* What a group of held model draws is lit with: the lights the engine chose for the object (core/fastpaths.c, hook on its
+ * light callback) moved into the view space ppl_normals rebuilds (x right, y up, z forward, engine units), with the
+ * camera of the pass that drew them (the engine's camera copy at 0xa57e00: position, then 16-bit bank, pitch, heading). */
+typedef struct { int nl; float amb[3]; float l[8][7]; float kx, ky; PlatShader *sh[6]; } GroupHdr;
+extern float port_ppl_light[4 + 8 * 7]; extern uint32_t port_ppl_light_ver;   /* core/fastpaths.c (needs --fastpaths) */
+static void ppl_view_lights(GroupHdr *g) {
+    float px, py, pz; uint32_t u;
+    u = RD32(0xa57e00u); memcpy(&px, &u, 4); u = RD32(0xa57e04u); memcpy(&py, &u, 4); u = RD32(0xa57e08u); memcpy(&pz, &u, 4);
+    double h = RD16(0xa57e14u) * (6.283185307179586 / 65536), pt = RD16(0xa57e12u) * (6.283185307179586 / 65536);
+    float f[3] = { (float)(cos(h) * cos(pt)), (float)(sin(h) * cos(pt)), (float)-sin(pt) }, r[3] = { (float)sin(h), (float)-cos(h), 0 };
+    float up[3] = { (float)(cos(h) * sin(pt)), (float)(sin(h) * sin(pt)), (float)cos(pt) };
+    g->nl = (int)port_ppl_light[0]; if (g->nl > 8) g->nl = 8; if (g->nl < 0) g->nl = 0;
+    for (int k = 0; k < 3; k++) g->amb[k] = port_ppl_light[1 + k];
+    for (int i = 0; i < g->nl; i++) {
+        const float *L = &port_ppl_light[4 + 7 * i]; float d[3] = { L[0] - px, L[1] - py, L[2] - pz };
+        g->l[i][0] = r[0] * d[0] + r[1] * d[1] + r[2] * d[2]; g->l[i][1] = up[0] * d[0] + up[1] * d[1] + up[2] * d[2]; g->l[i][2] = f[0] * d[0] + f[1] * d[1] + f[2] * d[2];
+        for (int k = 3; k < 7; k++) g->l[i][k] = L[k];
+    }
+}
+/* the light the engine's formula gives at view position P with unit normal N: ambient + per light colour * min(1, cos / distance) */
+static void ppl_light_at(const GroupHdr *g, const float *P, const float *N, float E[3]) {
+    for (int k = 0; k < 3; k++) E[k] = g->amb[k];
+    for (int i = 0; i < g->nl; i++) {
+        float d[3] = { g->l[i][0] - P[0], g->l[i][1] - P[1], g->l[i][2] - P[2] }, dd = d[0] * d[0] + d[1] * d[1] + d[2] * d[2], nd = N[0] * d[0] + N[1] * d[1] + N[2] * d[2];
+        if (nd <= 0) continue;
+        float k = nd / (dd > 1e-4f ? dd : 1e-4f); if (k > 1) k = 1;
+        for (int c = 0; c < 3; c++) E[c] += g->l[i][3 + c] * k;
+    }
+    for (int k = 0; k < 3; k++) E[k] = E[k] < 0 ? 0 : E[k] > 1 ? 1 : E[k];
+}
+/* The pixel shader: rebuilds the pixel's view position from gl_FragCoord (u_c[0]: viewport x, y, 2/w, 2/h; u_c[1]: kx, ky,
+ * -, light count), lights it the same way (u_c[2]: ambient, debug; u_c[3]: fog colour; u_c[4 + 2i]: light position;
+ * u_c[5 + 2i]: light colour) and scales the engine's vertex colour by that over the vertex's own value (v_spec), which the
+ * draw interpolates. The vertex normal's x and y come in the second texture coordinate set (z faces the eye). Stage 0's
+ * texture times the diffuse colour, alpha from the texture (amode 0), the diffuse colour (1) or both (2). */
+static PlatShader *ppl_shader(int amode, int fog) {
+    static PlatShader *cache[6]; int k = amode * 2 + fog;
+    if (cache[k]) return cache[k];
+    static const char *alpha[3] = { "t.a", "v_diff.a", "t.a * v_diff.a" };
+    char src[3072];
+    snprintf(src, sizeof src,
+        "uniform vec4 u_c[20];\n"
+        "vec4 ps_main() {\n"
+        "  vec4 t = texture2D(u_t0, v_uv.xy);\n"
+        "  float z = 1.0 / gl_FragCoord.w;\n"
+        "  vec2 ndc = vec2((gl_FragCoord.x - u_c[0].x) * u_c[0].z - 1.0, 1.0 - (gl_FragCoord.y - u_c[0].y) * u_c[0].w);\n"
+        "  vec3 P = vec3(ndc.x * z * u_c[1].x, ndc.y * z * u_c[1].y, z);\n"
+        "  vec2 nxy = v_uv.zw;\n"
+        "  vec3 n = normalize(vec3(nxy, -sqrt(max(1.0 - dot(nxy, nxy), 0.0))));\n"
+        "  vec3 E = u_c[2].rgb;\n"
+        "  for (int i = 0; i < 8; i++) {\n"
+        "    if (float(i) < u_c[1].w) {\n"
+        "      vec3 d = u_c[4 + 2 * i].xyz - P;\n"
+        "      E += u_c[5 + 2 * i].rgb * min(max(dot(n, d), 0.0) / max(dot(d, d), 0.0001), 1.0);\n"
+        "    }\n"
+        "  }\n"
+        "  E = min(E, vec3(1.0));\n"
+        "  if (u_c[2].w > 0.5) return vec4(E, 1.0);\n"
+        "  vec3 lit = min(v_diff.rgb * clamp(E / max(v_spec.rgb, vec3(0.03)), 0.0, 4.0), vec3(1.0));\n"
+        "  vec4 c = vec4(t.rgb * lit, %s);\n"
+        "%s"
+        "  return c;\n"
+        "}\n", alpha[amode], fog ? "  c.rgb = mix(u_c[3].rgb, c.rgb, clamp(v_fog, 0.0, 1.0));\n" : "");
+    return cache[k] = plat_shader_create(src);
+}
+/* which alpha the stage-0 state asks for (see ppl_shader), or -1 when per-pixel lighting can't reproduce the stages */
+static int ppl_amode(const PlatDrawState *st) {
+    const PlatStage *g = &st->stage[0];
+    if (!g->texture || st->specular || st->stage[1].color_op != PLAT_TOP_DISABLE || g->color_op != PLAT_TOP_MODULATE) return -1;
+    if (!((g->color_arg1 == PLAT_ARG_TEXTURE && g->color_arg2 == PLAT_ARG_DIFFUSE) || (g->color_arg1 == PLAT_ARG_DIFFUSE && g->color_arg2 == PLAT_ARG_TEXTURE))) return -1;
+    int a1 = g->alpha_arg1 == PLAT_ARG_CURRENT ? PLAT_ARG_DIFFUSE : g->alpha_arg1, a2 = g->alpha_arg2 == PLAT_ARG_CURRENT ? PLAT_ARG_DIFFUSE : g->alpha_arg2;
+    int ok1 = a1 == PLAT_ARG_TEXTURE || a1 == PLAT_ARG_DIFFUSE, ok2 = a2 == PLAT_ARG_TEXTURE || a2 == PLAT_ARG_DIFFUSE;
+    if (g->alpha_op == PLAT_TOP_SELECTARG1 && ok1) return a1 == PLAT_ARG_TEXTURE ? 0 : 1;
+    if (g->alpha_op == PLAT_TOP_SELECTARG2 && ok2) return a2 == PLAT_ARG_TEXTURE ? 0 : 1;
+    if (g->alpha_op == PLAT_TOP_MODULATE && ok1 && ok2) return a1 != a2 ? 2 : a1 == PLAT_ARG_TEXTURE ? 0 : 1;
+    return -1;
+}
+uint64_t ppl_n_lit_x, ppl_n_unlit_x;                          /* coverage, reported once at frame 600 */
+#define ppl_n_lit ppl_n_lit_x
+#define ppl_n_unlit ppl_n_unlit_x
 static void group_draw(void *data, PlatDrawFn submit) {
-    const uint8_t *g = data; size_t n; memcpy(&n, g, sizeof n); const uint8_t *p = g + sizeof n, *end = p + n;
+    const uint8_t *g = data; size_t n; memcpy(&n, g, sizeof n); const GroupHdr *gh = (const GroupHdr *)(void *)(g + sizeof n);
+    const uint8_t *p = (const uint8_t *)(gh + 1), *end = g + sizeof n + n;
     static PlatVertex *V; static uint32_t *I; static uint32_t vcap, icap; static uint8_t *done; static uint32_t dcap;
     uint32_t nv = 0, ni = 0; const VState *vs0 = NULL; int cls = 0;
     for (const uint8_t *q = p; q < end; ) {                          /* pass 1: vertices of every draw, one index list */
@@ -560,14 +653,31 @@ static void group_draw(void *data, PlatDrawFn submit) {
         nv += h->span; ni += (uint32_t)h->nidx; vs0 = &h->s; cls = h->obj;
     }
     if (ppl_wzoom < 0) { const char *e = getenv("SS2PORT_PPL_WZOOM"); ppl_wzoom = e && atof(e) > 0 ? (float)atof(e) : 0.5f; }
-    if (vs0) ppl_normals(V, nv, I, (int)ni, vs0, cls == 2 ? ppl_wzoom : 1.0f);
+    float (*PP)[3] = NULL, (*NN)[3] = NULL;
+    if (vs0) ppl_normals(V, nv, I, (int)ni, vs0, cls == 2 ? ppl_wzoom : 1.0f, &PP, &NN);
+    if (vs0 && ppl_lit && ppl_debug != 1)                            /* the per-vertex light the shader divides by, and the normal it interpolates */
+        for (uint32_t i = 0; i < nv; i++) {
+            float E[3]; ppl_light_at(gh, PP[i], NN[i], E);
+            V[i].specular = 0xFF000000u | (uint32_t)(E[0] * 255 + 0.5f) << 16 | (uint32_t)(E[1] * 255 + 0.5f) << 8 | (uint32_t)(E[2] * 255 + 0.5f);
+            V[i].u1 = NN[i][0]; V[i].v1 = NN[i][1];
+        }
     static uint16_t *ix16; static uint32_t i16cap; nv = 0;
     for (const uint8_t *q = p; q < end; ) {                          /* pass 2: each draw as it came */
         size_t total; memcpy(&total, q, sizeof total); Deferred *h = (Deferred *)(void *)(q + sizeof total); q += sizeof total + total;
         const uint8_t *raw = (const uint8_t *)(h + 1); const uint16_t *ix = (const uint16_t *)(raw + DEF_A4((size_t)h->span * h->stride));
         PlatVertex *out = V + nv; nv += h->span;
         int hud = 1; for (int i = 0; i < h->nidx && hud; i++) hud = out[ix[i]].z <= 0;   /* every vertex on the near plane: a HUD quad (the minimap) */
-        if (hud || !ppl_debug) { submit(h->prim, out, (int)h->span, ix, h->nidx, &h->ps); continue; }
+        if (!hud && ppl_lit && ppl_debug != 1) {
+            int am = ppl_amode(&h->ps);
+            if (am >= 0 && gh->sh[am * 2 + (h->ps.fog != 0)]) {
+                PlatDrawState ps = h->ps; ps.shader = gh->sh[am * 2 + (h->ps.fog != 0)]; ps.stage[1].texture = NULL;
+                if (i16cap < (uint32_t)h->nidx) { i16cap = (uint32_t)h->nidx; ix16 = realloc(ix16, i16cap * 2); }
+                memcpy(ix16, ix, (size_t)h->nidx * 2);
+                submit(h->prim, out, (int)h->span, ix16, h->nidx, &ps); ppl_n_lit++; continue;
+            }
+            ppl_n_unlit++;
+        }
+        if (hud || ppl_debug != 1) { submit(h->prim, out, (int)h->span, ix, h->nidx, &h->ps); continue; }
         if (h->ps.blend && h->ps.dst_blend == PLAT_BLEND_ONE) continue;  /* debug view: the additive fill / rim passes would wash it out */
         PlatDrawState ps = h->ps; ps.stage[0].color_op = PLAT_TOP_SELECTARG2; ps.stage[0].color_arg2 = PLAT_ARG_DIFFUSE; ps.stage[1].color_op = ps.stage[1].alpha_op = PLAT_TOP_DISABLE; ps.fog = 0;
         if (i16cap < (uint32_t)h->nidx) { i16cap = (uint32_t)h->nidx; ix16 = realloc(ix16, i16cap * 2); }
@@ -575,15 +685,38 @@ static void group_draw(void *data, PlatDrawFn submit) {
         submit(h->prim, out, (int)h->span, ix16, h->nidx, &ps);
     }
 }
-static uint8_t *grp; static size_t grp_n, grp_cap; static int grp_cls;
+static uint8_t *grp; static size_t grp_n, grp_cap; static int grp_cls; static uint32_t grp_ver;
 static void ppl_flush(void) {
     if (!grp_n) return;
     size_t n = grp_n - sizeof n; memcpy(grp, &n, sizeof n);
+    GroupHdr *g = (GroupHdr *)(void *)(grp + sizeof n);
+    if (ppl_lit && ppl_debug != 1) {                                 /* the shader's constants, in order with the draws */
+        const Deferred *h0 = (const Deferred *)(void *)((uint8_t *)(g + 1) + sizeof(size_t));
+        float vw = h0->s.vp[2] ? (float)h0->s.vp[2] : 1, vh = h0->s.vp[3] ? (float)h0->s.vp[3] : 1, c[20][4];
+        memset(c, 0, sizeof c);
+        c[0][0] = (float)h0->s.vp[0]; c[0][1] = (float)h0->s.vp[1]; c[0][2] = 2 / vw; c[0][3] = 2 / vh;
+        c[1][0] = g->kx; c[1][1] = g->ky; c[1][3] = (float)g->nl;
+        for (int k = 0; k < 3; k++) c[2][k] = g->amb[k];
+        c[2][3] = ppl_debug == 2 ? 1.0f : 0.0f;
+        uint32_t fc = h0->ps.fog_color; c[3][0] = ((fc >> 16) & 255) / 255.0f; c[3][1] = ((fc >> 8) & 255) / 255.0f; c[3][2] = (fc & 255) / 255.0f;
+        for (int i = 0; i < g->nl; i++) { memcpy(c[4 + 2 * i], g->l[i], 12); memcpy(c[5 + 2 * i], &g->l[i][3], 12); c[4 + 2 * i][3] = g->l[i][6]; }
+        plat_gfx_shader_constants(0, 20, c[0]);
+    }
     plat_gfx_deferred(group_draw, grp, grp_n); grp_n = 0;
 }
 static void ppl_hold(const void *blob, size_t total, int cls) {
-    if (grp_n && (cls != grp_cls || grp_n + total > (4u << 20) - 64)) ppl_flush();
-    if (!grp_n) grp_n = sizeof(size_t);
+    if (grp_n && (cls != grp_cls || port_ppl_light_ver != grp_ver || grp_n + total > (4u << 20) - 64 - sizeof(GroupHdr))) ppl_flush();
+    if (!grp_n) {                                                    /* a new group: what it is lit with */
+        grp_n = sizeof(size_t) + sizeof(GroupHdr);
+        if (grp_cap < grp_n) { grp_cap = 65536; grp = realloc(grp, grp_cap); }
+        GroupHdr *g = (GroupHdr *)(void *)(grp + sizeof(size_t)); memset(g, 0, sizeof *g);
+        const Deferred *h = blob;
+        if (ppl_wzoom < 0) { const char *e = getenv("SS2PORT_PPL_WZOOM"); ppl_wzoom = e && atof(e) > 0 ? (float)atof(e) : 0.5f; }
+        float zoom = cls == 2 ? ppl_wzoom : 1.0f, vw = h->s.vp[2] ? (float)h->s.vp[2] : 1, vh = h->s.vp[3] ? (float)h->s.vp[3] : 1;
+        g->kx = 0.75f * vw / vh / zoom; g->ky = 0.75f / zoom;
+        if (ppl_lit && ppl_debug != 1) { ppl_view_lights(g); for (int k = 0; k < 6; k++) g->sh[k] = ppl_shader(k / 2, k % 2); }
+        grp_ver = port_ppl_light_ver;
+    }
     size_t need = grp_n + sizeof total + total;
     if (grp_cap < need) { grp_cap = need * 2; grp = realloc(grp, grp_cap); }
     memcpy(grp + grp_n, &total, sizeof total); memcpy(grp + grp_n + sizeof total, blob, total); grp_n += sizeof total + total; grp_cls = cls;

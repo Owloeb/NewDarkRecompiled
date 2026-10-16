@@ -102,7 +102,8 @@ SDL2 backend unless noted.
 | `SS2PORT_FULLSCREEN=0\|1` | Override the game's fullscreen choice. |
 | `SS2PORT_GLES=1` | Use OpenGL ES 2.0 instead of OpenGL 2.1. |
 | `SS2PORT_DRAWTRACE=1` | Development aid: every 600 frames, log each distinct engine call chain that draws, with how many draws and triangles it made and what kind (vertex format, depth test, texture size). Used to find the engine code behind a rendering feature. |
-| `SS2PORT_PPL_DEBUG=1` | Per-pixel lighting work in progress: draws models with the normals rebuilt from their geometry as colours (x red, y green, facing you blue) instead of their textures. |
+| `SS2PORT_PPL=1` | **Per-pixel lighting for models** (needs `--fastpaths` and pixel shaders): the engine's per-vertex lighting stays the base, and the light from the lights it chose for each object is redistributed per pixel, so large triangles near a light no longer show blotches. |
+| `SS2PORT_PPL_DEBUG=1` / `=2` | Per-pixel lighting checks: `1` draws models with the normals rebuilt from their geometry as colours (x red, y green, facing you blue); `2` draws only the per-pixel light. |
 | `SS2PORT_PPL_LIGHTS=1` | Per-pixel lighting work in progress (needs `--fastpaths`): writes what the engine's model lighting sees for a few calls (light lists, transforms, vertices) to `ppl_lights.txt`. |
 | `SS2PORT_NOSHADERS=1` | Report no pixel shader support to the game (as before pixel shaders were translated): it then skips its post-processing. |
 | `SS2PORT_NOVSYNC` | Present without vsync. |
