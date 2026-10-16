@@ -505,8 +505,8 @@ static void ppl_dump_draw(const Deferred *h, const PlatVertex *v, const uint16_t
     for (uint32_t i = 0; i < h->span; i++) fprintf(ppl_dumpf, "V %u %.7g %.7g %.7g %.7g %08x\n", i, v[i].x, v[i].y, v[i].z, v[i].w, v[i].diffuse);
     for (int i = 0; i < h->nidx; i++) fprintf(ppl_dumpf, "%s%u", i ? " " : "I ", ix[i]); fprintf(ppl_dumpf, "\n");
 }                                    /* the first-person weapon's zoom (focal length H * zoom / 1.5) */
-static void ppl_normals(PlatVertex *v, uint32_t span, const uint32_t *ix, int nidx, const VState *s, float zoom, float (**outP)[3], float (**outN)[3]) {
-    float vw = s->vp[2] ? (float)s->vp[2] : 1, vh = s->vp[3] ? (float)s->vp[3] : 1, kx = 0.75f * vw / vh / zoom, ky = 0.75f / zoom;   /* focal length H * zoom / 1.5 */
+static void ppl_normals(PlatVertex *v, uint32_t span, const uint32_t *ix, int nidx, float vw, float vh, float zoom, float (**outP)[3], float (**outN)[3]) {
+    float kx = 0.75f * vw / vh / zoom, ky = 0.75f / zoom;   /* focal length H * zoom / 1.5 */
     static float (*P)[3], (*N)[3]; static uint32_t *rep_, *hash; static uint32_t cap, hcap;
     if (cap < span) { cap = span; P = realloc(P, cap * sizeof *P); N = realloc(N, cap * sizeof *N); rep_ = realloc(rep_, cap * 4); }
     uint32_t hn = 16; while (hn < span * 2) hn <<= 1;
@@ -558,7 +558,10 @@ static void deferred_draw(void *data, PlatDrawFn submit) {             /* on the
 /* What a group of held model draws is lit with: the lights the engine chose for the object (core/fastpaths.c, hook on its
  * light callback) moved into the view space ppl_normals rebuilds (x right, y up, z forward, engine units), with the
  * camera of the pass that drew them (the engine's camera copy at 0xa57e00: position, then 16-bit bank, pitch, heading). */
-typedef struct { int nl; float amb[3]; float l[8][7]; float kx, ky; PlatShader *sh[6]; } GroupHdr;
+typedef struct { int nl; float amb[3]; float l[8][7]; float kx, ky, vp[4]; uint32_t fogc; PlatShader *sh[6]; } GroupHdr;
+/* a held model draw: its vertices are worked out when it is held (they are small; the engine state they come from is not),
+ * followed by span PlatVertex and nidx 16-bit indices */
+typedef struct { int prim, nidx, obj; uint32_t span; PlatDrawState ps; } Held;
 extern float port_ppl_light[4 + 8 * 7]; extern uint32_t port_ppl_light_ver;   /* core/fastpaths.c (needs --fastpaths) */
 static void ppl_view_lights(GroupHdr *g) {
     float px, py, pz; uint32_t u;
@@ -632,6 +635,12 @@ static int ppl_amode(const PlatDrawState *st) {
     if (g->alpha_op == PLAT_TOP_MODULATE && ok1 && ok2) return a1 != a2 ? 2 : a1 == PLAT_ARG_TEXTURE ? 0 : 1;
     return -1;
 }
+/* the same polygon as the draw before (every corner at the same place): its next material pass */
+static int ppl_same_poly(const PlatVertex *V, uint32_t a, uint32_t na, uint32_t b, uint32_t nb) {
+    if (na != nb) return 0;
+    for (uint32_t i = 0; i < na; i++) if (memcmp(&V[a + i].x, &V[b + i].x, 16)) return 0;
+    return 1;
+}
 /* draws of the same material pass: texture, blending and stage set-up */
 static uint64_t ppl_pass_key(const PlatDrawState *st) {
     const PlatStage *g = &st->stage[0]; uint64_t h = 1469598103934665603ull;
@@ -646,22 +655,20 @@ static void group_draw(void *data, PlatDrawFn submit) {
     const uint8_t *g = data; size_t n; memcpy(&n, g, sizeof n); const GroupHdr *gh = (const GroupHdr *)(void *)(g + sizeof n);
     const uint8_t *p = (const uint8_t *)(gh + 1), *end = g + sizeof n + n;
     static PlatVertex *V; static uint32_t *I; static uint32_t vcap, icap; static uint8_t *done; static uint32_t dcap;
-    uint32_t nv = 0, ni = 0; const VState *vs0 = NULL; int cls = 0;
+    uint32_t nv = 0, ni = 0; int cls = 0, any = 0;
     for (const uint8_t *q = p; q < end; ) {                          /* pass 1: vertices of every draw, one index list */
-        size_t total; memcpy(&total, q, sizeof total); Deferred *h = (Deferred *)(void *)(q + sizeof total); q += sizeof total + total;
-        const uint8_t *raw = (const uint8_t *)(h + 1); const uint16_t *ix = (const uint16_t *)(raw + DEF_A4((size_t)h->span * h->stride));
-        for (int i = 0; i < h->x.nlights; i++) h->x.lights[i] = &h->x.vlight[i];
+        size_t total; memcpy(&total, q, sizeof total); const Held *h = (const Held *)(const void *)(q + sizeof total); q += sizeof total + total;
+        const PlatVertex *hv = (const PlatVertex *)(h + 1); const uint16_t *ix = (const uint16_t *)(hv + h->span);
         if (vcap < nv + h->span) { vcap = (nv + h->span) * 2; V = realloc(V, (size_t)vcap * sizeof *V); }
         if (icap < ni + (uint32_t)h->nidx) { icap = (ni + (uint32_t)h->nidx) * 2; I = realloc(I, (size_t)icap * 4); }
-        if (dcap < h->span) { dcap = h->span; done = realloc(done, dcap); }
-        memset(done, 0, h->span);
-        for (int i = 0; i < h->nidx; i++) { uint16_t r = ix[i]; if (!done[r]) { done[r] = 1; vertex(&h->s, &h->L, &h->x, raw + (size_t)r * h->stride, &V[nv + r]); } I[ni + (uint32_t)i] = nv + r; }
-        ppl_dump_draw(h, V + nv, ix, h->obj);
-        nv += h->span; ni += (uint32_t)h->nidx; vs0 = &h->s; cls = h->obj;
+        memcpy(V + nv, hv, (size_t)h->span * sizeof *V);
+        for (int i = 0; i < h->nidx; i++) I[ni + (uint32_t)i] = nv + ix[i];
+        nv += h->span; ni += (uint32_t)h->nidx; cls = h->obj; any = 1;
     }
+    (void)done; (void)dcap;
     if (ppl_wzoom < 0) { const char *e = getenv("SS2PORT_PPL_WZOOM"); ppl_wzoom = e && atof(e) > 0 ? (float)atof(e) : 0.5f; }
     float (*PP)[3] = NULL, (*NN)[3] = NULL;
-    if (vs0) ppl_normals(V, nv, I, (int)ni, vs0, cls == 2 ? ppl_wzoom : 1.0f, &PP, &NN);
+    if (any) ppl_normals(V, nv, I, (int)ni, gh->vp[2], gh->vp[3], cls == 2 ? ppl_wzoom : 1.0f, &PP, &NN);
     /* The engine's vertex colours vary from vertex to vertex with its own model normals, which on some models (the
      * Remaster's arms) barely follow the surface: that variation is the blotching, in every pass of the material (the
      * base pass, and the fill / rim / shine passes whose alpha follows the viewing angle). So they are not used per
@@ -671,7 +678,7 @@ static void group_draw(void *data, PlatDrawFn submit) {
      * draws get the colour fit applied per pixel; the others get both fits at their vertices. */
     typedef struct { uint64_t key; double n, sE[3], sC[3], sEE[3], sEC[3], bA[16], bN[16]; float off[3], scale[3], al[16]; } PassFit;
     static PassFit fit[32]; static float (*EG)[4]; static uint32_t egcap; int nfit = 0;
-    int fitting = vs0 && ppl_lit && ppl_debug != 1;
+    int fitting = any && ppl_lit && ppl_debug != 1;
     if (fitting) {
         if (egcap < nv) { egcap = nv; EG = realloc(EG, (size_t)egcap * sizeof *EG); }
         for (uint32_t i = 0; i < nv; i++) {
@@ -679,10 +686,11 @@ static void group_draw(void *data, PlatDrawFn submit) {
             float pl = sqrtf(PP[i][0] * PP[i][0] + PP[i][1] * PP[i][1] + PP[i][2] * PP[i][2]); if (pl <= 0) pl = 1;
             float inc = -(NN[i][0] * PP[i][0] + NN[i][1] * PP[i][1] + NN[i][2] * PP[i][2]) / pl; EG[i][3] = 1 - (inc < 0 ? 0 : inc > 1 ? 1 : inc);
         }
-        uint32_t o = 0;
+        uint32_t o = 0, prev = 0xFFFFFFFFu, prevn = 0; int ord = 0;
         for (const uint8_t *q = p; q < end; ) {                      /* accumulate per pass */
-            size_t total; memcpy(&total, q, sizeof total); Deferred *h = (Deferred *)(void *)(q + sizeof total); q += sizeof total + total;
-            uint64_t key = ppl_pass_key(&h->ps); int f = 0;
+            size_t total; memcpy(&total, q, sizeof total); const Held *h = (const Held *)(const void *)(q + sizeof total); q += sizeof total + total;
+            ord = prev != 0xFFFFFFFFu && ppl_same_poly(V, o, h->span, prev, prevn) ? ord + 1 : 0; prev = o; prevn = h->span;   /* the same polygon again: its next pass */
+            uint64_t key = ppl_pass_key(&h->ps) ^ (uint64_t)ord * 0x9E3779B97F4A7C15ull; int f = 0;
             while (f < nfit && fit[f].key != key) f++;
             if (f == nfit) { if (nfit < 32) { memset(&fit[nfit], 0, sizeof fit[0]); fit[nfit].key = key; nfit++; } else f = 31; }
             PassFit *F = &fit[f];
@@ -715,14 +723,15 @@ static void group_draw(void *data, PlatDrawFn submit) {
             { int last = 15; while (last > 0 && F->bN[last] <= 0) last--; for (int k = last + 1; k < 16; k++) F->al[k] = F->al[last]; }
         }
     }
-    static uint16_t *ix16; static uint32_t i16cap; nv = 0;
+    static uint16_t *ix16; static uint32_t i16cap; nv = 0; uint32_t prev2 = 0xFFFFFFFFu, prevn2 = 0; int ord2 = 0;
     for (const uint8_t *q = p; q < end; ) {                          /* pass 2: each draw as it came */
-        size_t total; memcpy(&total, q, sizeof total); Deferred *h = (Deferred *)(void *)(q + sizeof total); q += sizeof total + total;
-        const uint8_t *raw = (const uint8_t *)(h + 1); const uint16_t *ix = (const uint16_t *)(raw + DEF_A4((size_t)h->span * h->stride));
+        size_t total; memcpy(&total, q, sizeof total); const Held *h = (const Held *)(const void *)(q + sizeof total); q += sizeof total + total;
+        const uint16_t *ix = (const uint16_t *)((const PlatVertex *)(h + 1) + h->span);
         PlatVertex *out = V + nv; uint32_t o = nv; nv += h->span;
+        ord2 = prev2 != 0xFFFFFFFFu && ppl_same_poly(V, o, h->span, prev2, prevn2) ? ord2 + 1 : 0; prev2 = o; prevn2 = h->span;
         int hud = 1; for (int i = 0; i < h->nidx && hud; i++) hud = out[ix[i]].z <= 0;   /* every vertex on the near plane: a HUD quad (the minimap) */
         if (!hud && fitting) {
-            uint64_t key = ppl_pass_key(&h->ps); int f = 0; while (f < nfit - 1 && fit[f].key != key) f++;
+            uint64_t key = ppl_pass_key(&h->ps) ^ (uint64_t)ord2 * 0x9E3779B97F4A7C15ull; int f = 0; while (f < nfit - 1 && fit[f].key != key) f++;
             const PassFit *F = &fit[f]; int am = ppl_amode(&h->ps), lit = am >= 0 && gh->sh[am * 2 + (h->ps.fog != 0)];
             uint32_t sc = 0xFF000000u; for (int k = 0; k < 3; k++) sc |= (uint32_t)(F->scale[k] / 4 * 255 + 0.5f) << (16 - 8 * k);
             for (uint32_t i = 0; i < h->span; i++) {
@@ -754,35 +763,46 @@ static void ppl_flush(void) {
     size_t n = grp_n - sizeof n; memcpy(grp, &n, sizeof n);
     GroupHdr *g = (GroupHdr *)(void *)(grp + sizeof n);
     if (ppl_lit && ppl_debug != 1) {                                 /* the shader's constants, in order with the draws */
-        const Deferred *h0 = (const Deferred *)(void *)((uint8_t *)(g + 1) + sizeof(size_t));
-        float vw = h0->s.vp[2] ? (float)h0->s.vp[2] : 1, vh = h0->s.vp[3] ? (float)h0->s.vp[3] : 1, c[20][4];
-        memset(c, 0, sizeof c);
-        c[0][0] = (float)h0->s.vp[0]; c[0][1] = (float)h0->s.vp[1]; c[0][2] = 2 / vw; c[0][3] = 2 / vh;
+        float c[20][4]; memset(c, 0, sizeof c);
+        c[0][0] = g->vp[0]; c[0][1] = g->vp[1]; c[0][2] = 2 / g->vp[2]; c[0][3] = 2 / g->vp[3];
         c[1][0] = g->kx; c[1][1] = g->ky; c[1][3] = (float)g->nl;
         for (int k = 0; k < 3; k++) c[2][k] = g->amb[k];
         c[2][3] = ppl_debug == 2 ? 1.0f : 0.0f;
-        uint32_t fc = h0->ps.fog_color; c[3][0] = ((fc >> 16) & 255) / 255.0f; c[3][1] = ((fc >> 8) & 255) / 255.0f; c[3][2] = (fc & 255) / 255.0f;
+        uint32_t fc = g->fogc; c[3][0] = ((fc >> 16) & 255) / 255.0f; c[3][1] = ((fc >> 8) & 255) / 255.0f; c[3][2] = (fc & 255) / 255.0f;
         for (int i = 0; i < g->nl; i++) { memcpy(c[4 + 2 * i], g->l[i], 12); memcpy(c[5 + 2 * i], &g->l[i][3], 12); c[4 + 2 * i][3] = g->l[i][6]; }
         plat_gfx_shader_constants(0, 20, c[0]);
     }
     plat_gfx_deferred(group_draw, grp, grp_n); grp_n = 0;
 }
 static void ppl_hold(const void *blob, size_t total, int cls) {
-    if (grp_n && (cls != grp_cls || port_ppl_light_ver != grp_ver || grp_n + total > (1u << 20) - 256 - sizeof(GroupHdr))) ppl_flush();
+    (void)total;
+    Deferred *h = (Deferred *)(uintptr_t)blob;                       /* draw()'s own scratch blob */
+    const uint8_t *raw = (const uint8_t *)(h + 1); const uint16_t *ix = (const uint16_t *)(raw + DEF_A4((size_t)h->span * h->stride));
+    size_t need = sizeof(size_t) + sizeof(Held) + (size_t)h->span * sizeof(PlatVertex) + DEF_A4((size_t)h->nidx * 2);
+    if (grp_n && (cls != grp_cls || port_ppl_light_ver != grp_ver || grp_n + need > (64u << 20))) ppl_flush();
     if (!grp_n) {                                                    /* a new group: what it is lit with */
         grp_n = sizeof(size_t) + sizeof(GroupHdr);
         if (grp_cap < grp_n) { grp_cap = 65536; grp = realloc(grp, grp_cap); }
         GroupHdr *g = (GroupHdr *)(void *)(grp + sizeof(size_t)); memset(g, 0, sizeof *g);
-        const Deferred *h = blob;
         if (ppl_wzoom < 0) { const char *e = getenv("SS2PORT_PPL_WZOOM"); ppl_wzoom = e && atof(e) > 0 ? (float)atof(e) : 0.5f; }
         float zoom = cls == 2 ? ppl_wzoom : 1.0f, vw = h->s.vp[2] ? (float)h->s.vp[2] : 1, vh = h->s.vp[3] ? (float)h->s.vp[3] : 1;
         g->kx = 0.75f * vw / vh / zoom; g->ky = 0.75f / zoom;
+        g->vp[0] = (float)h->s.vp[0]; g->vp[1] = (float)h->s.vp[1]; g->vp[2] = vw; g->vp[3] = vh; g->fogc = h->ps.fog_color;
         if (ppl_lit && ppl_debug != 1) { ppl_view_lights(g); for (int k = 0; k < 6; k++) g->sh[k] = ppl_shader(k / 2, k % 2); }
         grp_ver = port_ppl_light_ver;
     }
-    size_t need = grp_n + sizeof total + total;
-    if (grp_cap < need) { grp_cap = need * 2; grp = realloc(grp, grp_cap); }
-    memcpy(grp + grp_n, &total, sizeof total); memcpy(grp + grp_n + sizeof total, blob, total); grp_n += sizeof total + total; grp_cls = cls;
+    if (grp_cap < grp_n + need) { while (grp_cap < grp_n + need) grp_cap *= 2; grp = realloc(grp, grp_cap); }
+    uint8_t *e = grp + grp_n; size_t body = need - sizeof(size_t); memcpy(e, &body, sizeof body);
+    Held *d = (Held *)(void *)(e + sizeof(size_t)); d->prim = h->prim; d->nidx = h->nidx; d->obj = cls; d->span = h->span; d->ps = h->ps;
+    PlatVertex *v = (PlatVertex *)(d + 1); uint16_t *dix = (uint16_t *)(v + h->span);
+    for (int i = 0; i < h->x.nlights; i++) h->x.lights[i] = &h->x.vlight[i];
+    static uint8_t *seen; static uint32_t seencap;
+    if (seencap < h->span) { seencap = h->span; seen = realloc(seen, seencap); }
+    memset(seen, 0, h->span); memset(v, 0, (size_t)h->span * sizeof *v);
+    for (int i = 0; i < h->nidx; i++) { uint16_t r = ix[i]; if (!seen[r]) { seen[r] = 1; vertex(&h->s, &h->L, &h->x, raw + (size_t)r * h->stride, &v[r]); } }
+    memcpy(dix, ix, (size_t)h->nidx * 2);
+    ppl_dump_draw(h, v, ix, cls);
+    grp_n += need; grp_cls = cls;
 }
 static void draw(Device *d, uint32_t type, uint32_t prims, uint32_t vbase, uint32_t stride, uint32_t idx, int idx32, int32_t base_vertex, uint32_t min_index, uint32_t num_vertices) {
     uint32_t nseq; int plat_prim;
