@@ -147,42 +147,6 @@ int fp_006ebc90(CPU *c) {
     return 1;
 }
 
-/* ---------------------------------------------------------------- entry traces (SS2PORT_DRAWTRACE=1)
- * Not fast paths: each of these only records who called the function (the call chain recovered from the guest stack,
- * as dx/d3d9.c's draw trace does) and returns 0, so the original always runs and nothing changes. They exist to find
- * the engine code that lights objects, upstream of the draws the draw trace sees. Logged with the draw trace. */
-typedef struct { uint32_t fn, chain[6]; int n; uint64_t calls; uint32_t arg[3]; } EntryRow;
-static EntryRow *entry_rows; static int entry_n, entry_on = -1;
-static int entry_retaddr(uint32_t v) {
-    if (v < 0x00401006u || v >= 0x00780000u) return 0;
-    const uint8_t *p = GP(v);
-    return p[-5] == 0xE8 || (p[-2] == 0xFF && (p[-1] & 0x38) == 0x10) || (p[-3] == 0xFF && (p[-2] & 0x38) == 0x10) || (p[-6] == 0xFF && (p[-5] & 0x38) == 0x10);
-}
-static int entry_trace(CPU *c, uint32_t fn) {
-    if (entry_on < 0) { const char *e = getenv("SS2PORT_DRAWTRACE"); entry_on = e && *e && *e != '0'; }
-    if (!entry_on) return 0;
-    EntryRow r; memset(&r, 0, sizeof r); r.fn = fn;
-    for (uint32_t a = c->esp; r.n < 6 && a < c->esp + 2048; a += 4) { uint32_t v = RD32(a); if (entry_retaddr(v)) r.chain[r.n++] = v; }
-    for (int i = 0; i < entry_n; i++) if (entry_rows[i].fn == fn && entry_rows[i].n == r.n && !memcmp(entry_rows[i].chain, r.chain, sizeof r.chain)) { entry_rows[i].calls++; return 0; }
-    if (entry_n >= 2048) return 0;
-    r.calls = 1; for (int k = 0; k < 3; k++) r.arg[k] = RD32(c->esp + 4 + 4 * (uint32_t)k);
-    entry_rows = realloc(entry_rows, (size_t)(entry_n + 1) * sizeof *entry_rows); entry_rows[entry_n++] = r;
-    return 0;
-}
-void port_entrytrace_dump(void) {
-    for (int i = 0; i < entry_n; i++) {
-        EntryRow *q = &entry_rows[i]; char ch[96]; int o = 0;
-        for (int k = 0; k < q->n; k++) o += snprintf(ch + o, sizeof ch - (size_t)o, " %06x", q->chain[k]);
-        port_warn("ENTRYTRACE %06x %9llu first args %08x %08x %08x callers:%s", q->fn, (unsigned long long)q->calls, q->arg[0], q->arg[1], q->arg[2], ch);
-    }
-}
-int fp_006380a0(CPU *c) { return entry_trace(c, 0x6380a0); }   /* draws a list of polygons (items of 0x164 bytes) through the renderer interface */
-int fp_00640f00(CPU *c) { return entry_trace(c, 0x640f00); }   /* renderer interface (vtable 0x77efb0) slot 0x48 */
-int fp_006410e0(CPU *c) { return entry_trace(c, 0x6410e0); }   /* slot 0x4c */
-int fp_006412e0(CPU *c) { return entry_trace(c, 0x6412e0); }   /* slot 0x50 */
-int fp_006414f0(CPU *c) { return entry_trace(c, 0x6414f0); }   /* slot 0x54 */
-int fp_00641760(CPU *c) { return entry_trace(c, 0x641760); }   /* slot 0x58 */
-int fp_00637650(CPU *c) { return entry_trace(c, 0x637650); }   /* float-heavy helper of 0x6380a0 */
 
 /* ---------------------------------------------------------------- per-pixel lighting: what the light callback sees
  * Entry hook on obj_light_callback (0x5ed7d0, symbols/manual.sym). SS2PORT_PPL_LIGHTS=1 also writes the inputs of its

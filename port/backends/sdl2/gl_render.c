@@ -272,14 +272,14 @@ static Prog *program(const PlatDrawState *st) {
     return p;
 }
 /* pixel shaders from the front end (plat_shader_create): one program per alpha-test setting, linked at first use */
-struct PlatShader { char *src; GLuint prog[9]; GLint u_c[9], u_aref[9], u_zbias[9]; int nc, failed; };
-static float shader_c[32][4];
+struct PlatShader { char *src; GLuint prog[9]; GLint u_c[9], u_aref[9], u_zbias[9]; uint32_t cver[9]; int nc, failed; };
+static float shader_c[32][4]; static uint32_t shader_cver = 1;   /* bumped when the constants change */
 PlatShader *glr_shader_new(const char *glsl) { PlatShader *s = calloc(1, sizeof *s); if (!s) return NULL; s->src = malloc(strlen(glsl) + 1); strcpy(s->src, glsl);
     const char *u = strstr(glsl, "u_c["); s->nc = u ? atoi(u + 4) : 0; if (s->nc > 32) s->nc = 32; return s; }
 void glr_shader_destroy(PlatShader *s) { if (!s) return; for (int i = 0; i < 9; i++) if (s->prog[i]) glDeleteProgram(s->prog[i]); free(s->src); free(s); }
 void glr_shader_constants(int start, int count, const float *v) {
     if (start < 0 || start >= 32) return; if (count > 32 - start) count = 32 - start;
-    if (count > 0) memcpy(shader_c[start], v, (size_t)count * 16);
+    if (count > 0 && memcmp(shader_c[start], v, (size_t)count * 16)) { memcpy(shader_c[start], v, (size_t)count * 16); shader_cver++; }
 }
 static GLuint shader_program(PlatShader *sh, const PlatDrawState *st, int *slot) {
     int k = st->alpha_test ? st->alpha_func + 1 : 0; *slot = k;
@@ -361,7 +361,7 @@ void glr_draw(int prim, const PlatVertex *v, int nverts, const uint16_t *idx, in
     if (!nverts || !nidx) return;
     if (st->shader) {
         int k; GLuint sp = shader_program(st->shader, st, &k); if (!sp) return;
-        glUseProgram(sp); if (st->shader->u_c[k] >= 0 && st->shader->nc > 0) glUniform4fv(st->shader->u_c[k], st->shader->nc, shader_c[0]);
+        glUseProgram(sp); if (st->shader->u_c[k] >= 0 && st->shader->nc > 0 && st->shader->cver[k] != shader_cver) { glUniform4fv(st->shader->u_c[k], st->shader->nc, shader_c[0]); st->shader->cver[k] = shader_cver; }
         glUniform1f(st->shader->u_aref[k], (float)st->alpha_ref); glUniform1f(st->shader->u_zbias[k], st->depth_bias);
     } else {
     Prog *p = program(st); glUseProgram(p->prog);

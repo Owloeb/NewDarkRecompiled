@@ -414,13 +414,11 @@ static void trace_draw(const Layout *L, uint32_t prims, uint32_t type, Device *d
     trace_rows = realloc(trace_rows, (size_t)(trace_n + 1) * sizeof *trace_rows);
     r.draws = 1; r.tris = type >= 4 ? prims : 0; r.frames = (int)trace_frame; trace_rows[trace_n++] = r;
 }
-void port_entrytrace_dump(void);
 static void trace_frame_end(void) {
     ppl_frame++; if (ppl_frame == 601 && ppl_dumpf) { fclose(ppl_dumpf); ppl_dumpf = NULL; port_warn("per-pixel lighting: wrote ppl_dump.txt"); }
     { extern uint64_t ppl_n_lit_x, ppl_n_unlit_x; if (ppl_frame == 600 && (ppl_n_lit_x || ppl_n_unlit_x)) port_warn("per-pixel lighting: %llu model draws lit per pixel, %llu smoothed per vertex (stage set-up the shader doesn't cover)", (unsigned long long)ppl_n_lit_x, (unsigned long long)ppl_n_unlit_x); }
     if (trace_on <= 0) return;
     if (++trace_frame % 600) return;
-    port_entrytrace_dump();
     port_warn("DRAWTRACE frame %u: %d distinct call chains (draws, triangles, fvf, rhw, ztest, D3D lighting, texture 0, chain innermost first)", trace_frame, trace_n);
     for (int i = 0; i < trace_n; i++) {
         TraceRow *q = &trace_rows[i]; char ch[160]; int o = 0;
@@ -651,7 +649,23 @@ static uint64_t ppl_pass_key(const PlatDrawState *st) {
 uint64_t ppl_n_lit_x, ppl_n_unlit_x;                          /* coverage, reported once at frame 600 */
 #define ppl_n_lit ppl_n_lit_x
 #define ppl_n_unlit ppl_n_unlit_x
+/* consecutive draws with the same state go out as one (a model's polygons often come one per draw) */
+static PlatVertex *mv; static uint16_t *mi; static uint32_t mvn, mvcap, min_, micap; static PlatDrawState mst; static int mprim = -1;
+static PlatDrawFn msubmit;
+static void emit_flush(PlatDrawFn submit) {
+    if (mprim >= 0 && min_) submit(mprim, mv, (int)mvn, mi, (int)min_, &mst);
+    mprim = -1; mvn = min_ = 0; (void)msubmit;
+}
+static void emit(int prim, const PlatVertex *v, uint32_t nv, const uint16_t *ix, int ni, const PlatDrawState *st) {
+    if (mprim >= 0 && (prim != mprim || mvn + nv > 65535 || memcmp(st, &mst, sizeof mst))) emit_flush(msubmit);
+    if (mvcap < mvn + nv) { mvcap = (mvn + nv) * 2; mv = realloc(mv, (size_t)mvcap * sizeof *mv); }
+    if (micap < min_ + (uint32_t)ni) { micap = (min_ + (uint32_t)ni) * 2; mi = realloc(mi, (size_t)micap * 2); }
+    memcpy(mv + mvn, v, (size_t)nv * sizeof *v);
+    for (int i = 0; i < ni; i++) mi[min_ + (uint32_t)i] = (uint16_t)(mvn + ix[i]);
+    mvn += nv; min_ += (uint32_t)ni; mst = *st; mprim = prim;
+}
 static void group_draw(void *data, PlatDrawFn submit) {
+    msubmit = submit;
     const uint8_t *g = data; size_t n; memcpy(&n, g, sizeof n); const GroupHdr *gh = (const GroupHdr *)(void *)(g + sizeof n);
     const uint8_t *p = (const uint8_t *)(gh + 1), *end = g + sizeof n + n;
     static PlatVertex *V; static uint32_t *I; static uint32_t vcap, icap; static uint8_t *done; static uint32_t dcap;
@@ -678,7 +692,7 @@ static void group_draw(void *data, PlatDrawFn submit) {
      * draws get the colour fit applied per pixel; the others get both fits at their vertices. */
     typedef struct { uint64_t key; double n, sE[3], sC[3], sEE[3], sEC[3], bA[16], bN[16]; float off[3], scale[3], al[16]; } PassFit;
     static PassFit fit[32]; static float (*EG)[4]; static uint32_t egcap; int nfit = 0;
-    int fitting = any && ppl_lit && ppl_debug != 1;
+    int fitting = any && ppl_lit && ppl_debug != 1 && gh->nl > 0;   /* no point lights: nothing to redistribute */
     if (fitting) {
         if (egcap < nv) { egcap = nv; EG = realloc(EG, (size_t)egcap * sizeof *EG); }
         for (uint32_t i = 0; i < nv; i++) {
@@ -723,12 +737,34 @@ static void group_draw(void *data, PlatDrawFn submit) {
             { int last = 15; while (last > 0 && F->bN[last] <= 0) last--; for (int k = last + 1; k < 16; k++) F->al[k] = F->al[last]; }
         }
     }
-    static uint16_t *ix16; static uint32_t i16cap; nv = 0; uint32_t prev2 = 0xFFFFFFFFu, prevn2 = 0; int ord2 = 0;
-    for (const uint8_t *q = p; q < end; ) {                          /* pass 2: each draw as it came */
+    /* The draws in order, with each one's pass number within its polygon. A model whose polygons come one at a time with
+     * all their material passes (base, fill, rim...) goes out pass by pass instead (every base pass, then every fill...),
+     * so the draws merge into a few: the same picture when the extra passes only add on top of a base pass that writes
+     * depth (every draw depth-tested, the depth-writing ones opaque or alpha-blended, the others not writing depth).
+     * SS2PORT_PPL_REORDER=0 keeps the original order. */
+    typedef struct { const Held *h; uint32_t o; int ord; } Ent;
+    static Ent *ent; static uint32_t entcap; uint32_t nent = 0; int maxord = 0, reorder = fitting;
+    static int reorder_env = -1; if (reorder_env < 0) { const char *e = getenv("SS2PORT_PPL_REORDER"); reorder_env = !(e && *e == '0'); }
+    nv = 0;
+    { uint32_t prev2 = 0xFFFFFFFFu, prevn2 = 0; int ord2 = 0;
+      for (const uint8_t *q = p; q < end; ) {
         size_t total; memcpy(&total, q, sizeof total); const Held *h = (const Held *)(const void *)(q + sizeof total); q += sizeof total + total;
-        const uint16_t *ix = (const uint16_t *)((const PlatVertex *)(h + 1) + h->span);
-        PlatVertex *out = V + nv; uint32_t o = nv; nv += h->span;
+        uint32_t o = nv; nv += h->span;
         ord2 = prev2 != 0xFFFFFFFFu && ppl_same_poly(V, o, h->span, prev2, prevn2) ? ord2 + 1 : 0; prev2 = o; prevn2 = h->span;
+        if (entcap <= nent) { entcap = (nent + 1) * 2; ent = realloc(ent, (size_t)entcap * sizeof *ent); }
+        ent[nent++] = (Ent){ h, o, ord2 }; if (ord2 > maxord) maxord = ord2;
+        const PlatDrawState *st = &h->ps;
+        if (!st->depth_test) reorder = 0;
+        if (st->depth_write && st->blend && !(st->src_blend == PLAT_BLEND_SRC_ALPHA && st->dst_blend == PLAT_BLEND_INV_SRC_ALPHA)) reorder = 0;
+      } }
+    if (!reorder_env || maxord == 0 || maxord > 15) reorder = 0;
+    static uint16_t *ix16; static uint32_t i16cap;
+    for (int pass_ = 0; pass_ <= (reorder ? maxord : 0); pass_++)
+    for (uint32_t en = 0; en < nent; en++) {                         /* pass 2: each draw as it came (or pass by pass) */
+        if (reorder && ent[en].ord != pass_) continue;
+        const Held *h = ent[en].h; uint32_t o = ent[en].o; int ord2 = ent[en].ord;
+        const uint16_t *ix = (const uint16_t *)((const PlatVertex *)(h + 1) + h->span);
+        PlatVertex *out = V + o;
         int hud = 1; for (int i = 0; i < h->nidx && hud; i++) hud = out[ix[i]].z <= 0;   /* every vertex on the near plane: a HUD quad (the minimap) */
         if (!hud && fitting) {
             uint64_t key = ppl_pass_key(&h->ps) ^ (uint64_t)ord2 * 0x9E3779B97F4A7C15ull; int f = 0; while (f < nfit - 1 && fit[f].key != key) f++;
@@ -745,17 +781,18 @@ static void group_draw(void *data, PlatDrawFn submit) {
             }
             if (i16cap < (uint32_t)h->nidx) { i16cap = (uint32_t)h->nidx; ix16 = realloc(ix16, i16cap * 2); }
             memcpy(ix16, ix, (size_t)h->nidx * 2);
-            if (lit) { PlatDrawState ps = h->ps; ps.shader = gh->sh[am * 2 + (h->ps.fog != 0)]; ps.stage[1].texture = NULL; submit(h->prim, out, (int)h->span, ix16, h->nidx, &ps); ppl_n_lit++; }
-            else { submit(h->prim, out, (int)h->span, ix16, h->nidx, &h->ps); ppl_n_unlit++; }
+            if (lit) { PlatDrawState ps = h->ps; ps.shader = gh->sh[am * 2 + (h->ps.fog != 0)]; ps.stage[1].texture = NULL; emit(h->prim, out, h->span, ix16, h->nidx, &ps); ppl_n_lit++; }
+            else { emit(h->prim, out, h->span, ix16, h->nidx, &h->ps); ppl_n_unlit++; }
             continue;
         }
-        if (hud || ppl_debug != 1) { submit(h->prim, out, (int)h->span, ix, h->nidx, &h->ps); continue; }
+        if (hud || ppl_debug != 1) { emit(h->prim, out, h->span, ix, h->nidx, &h->ps); continue; }
         if (h->ps.blend && h->ps.dst_blend == PLAT_BLEND_ONE) continue;  /* debug view: the additive fill / rim passes would wash it out */
         PlatDrawState ps = h->ps; ps.stage[0].color_op = PLAT_TOP_SELECTARG2; ps.stage[0].color_arg2 = PLAT_ARG_DIFFUSE; ps.stage[1].color_op = ps.stage[1].alpha_op = PLAT_TOP_DISABLE; ps.fog = 0;
         if (i16cap < (uint32_t)h->nidx) { i16cap = (uint32_t)h->nidx; ix16 = realloc(ix16, i16cap * 2); }
         memcpy(ix16, ix, (size_t)h->nidx * 2);
-        submit(h->prim, out, (int)h->span, ix16, h->nidx, &ps);
+        emit(h->prim, out, h->span, ix16, h->nidx, &ps);
     }
+    emit_flush(submit);
 }
 static uint8_t *grp; static size_t grp_n, grp_cap; static int grp_cls; static uint32_t grp_ver;
 static void ppl_flush(void) {

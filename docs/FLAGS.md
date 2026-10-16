@@ -104,7 +104,9 @@ SDL2 backend unless noted.
 | `SS2PORT_DRAWTRACE=1` | Development aid: every 600 frames, log each distinct engine call chain that draws, with how many draws and triangles it made and what kind (vertex format, depth test, texture size). Used to find the engine code behind a rendering feature. |
 | `SS2PORT_PPL=1` | **Per-pixel lighting for models** (needs `--fastpaths` and pixel shaders): the engine's per-vertex lighting stays the base, and the light from the lights it chose for each object is redistributed per pixel, so large triangles near a light no longer show blotches. |
 | `SS2PORT_PPL_DEBUG=1` / `=2` | Per-pixel lighting checks: `1` draws models with the normals rebuilt from their geometry as colours (x red, y green, facing you blue); `2` draws only the per-pixel light. |
-| `SS2PORT_PPL_LIGHTS=1` | Per-pixel lighting work in progress (needs `--fastpaths`): writes what the engine's model lighting sees for a few calls (light lists, transforms, vertices) to `ppl_lights.txt`. |
+| `SS2PORT_PPL_REORDER=0` | Per-pixel lighting: keep a model's draws in the engine's order instead of sending them pass by pass (base passes, then fill, then rim). Only for comparison; the picture is the same either way for depth-tested materials. |
+| `SS2PORT_PPL_DUMP=1` | Per-pixel lighting check: writes the draws of frame 600 (class, state, vertices, call chain) to `ppl_dump.txt`. |
+| `SS2PORT_PPL_LIGHTS=1` | Per-pixel lighting check (needs `--fastpaths`): writes what the engine's model lighting sees for a few calls (light lists, transforms, vertices) to `ppl_lights.txt`. |
 | `SS2PORT_NOSHADERS=1` | Report no pixel shader support to the game (as before pixel shaders were translated): it then skips its post-processing. |
 | `SS2PORT_NOVSYNC` | Present without vsync. |
 | `SS2PORT_RENDER_THREAD=1` | Run the OpenGL renderer on a thread of its own (`backends/sdl2/gl_thread.c`): the game records each frame's drawing and goes on to the next while that thread draws it, at most one frame behind. Off by default on the desktop; on by default on the Vita. |
