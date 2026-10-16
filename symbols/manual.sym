@@ -39,7 +39,7 @@
 0x00627a40 func md_setup_subobject         # transforms a subobject's points, then calls the light callback [0xa45ed8](count, out, light entries, verts, points)
 0x006274f0 func md_render_node             # recursive walk of the model's node tree
 0x00627be0 func md_render_polygon          # copies each vertex's lighting result into its point (+0x20, or +0x20/+0x2c/+0x30 in RGB mode) and draws
-0x005ed7d0 func obj_light_callback         # the md light callback (installed by 0x608440): 0x5ea980 for the scene lights, then self-illumination
+0x005ed7d0 func obj_light_callback         # the md light callback (installed by 0x608440); the object's point lights are at 0x93fe48 (0x30 each: xyz, -, rgb, -, -, radius; count 0x940458), ambient 0xa3b62c + 0x940448..50: 0x5ea980 for the scene lights, then self-illumination
 0x005ea980 func obj_light_points           # per-vertex lighting kernel: count, out, packed normals (stride 8), point indices, verts
 0x006380a0 func r3_draw_polygon_list       # (polygons of 0x164 bytes, vertex count 3..50) through the renderer interface (vtable 0x77efb0)
 0x0063f7f0 func r3_flush_batch             # renderer interface slot 0x04: flushes the queued polygons (slot 0xac, 0x650f40) to Direct3D

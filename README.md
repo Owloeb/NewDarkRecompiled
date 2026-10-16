@@ -176,7 +176,7 @@ variables, switch files and developer tools.
    [portable host](port/README.md).
 4. Next for the portable host: ~~pixel shaders~~ (done: the game's ps_2_0 post-processing, bloom included, is translated
    to GLSL and matches the native Direct3D build), ~~per-pixel lighting~~ (done for models, opt-in: `SS2PORT_PPL=1`;
-   lights from the sun and other non-point sources are still per vertex), cube/volume textures, native Linux mouselook
+   objects lit only by the sun and other non-point sources get smoothed per-vertex lighting), cube/volume textures, native Linux mouselook
    testing, further backends.
 5. Speed, driven by the [PS Vita backend](port/backends/vita/README.md). In place (all opt-in on the PC, default output
    unchanged): register caching with a checked calling-convention contract, a proof of which registers each function

@@ -206,13 +206,16 @@ codes for keys.
   (`dx/d3d9_shader.c`; the game's own 16 post-processing shaders all translate, and two are checked pixel for pixel
   against hand-computed results on Mesa, desktop GL and GLES; bloom matches the native Direct3D build in game). Vertex shaders are refused (the game has none). Cube
   and volume textures are not drawn; `ProcessVertices` is not implemented.
-- **Per-pixel lighting (opt-in, `SS2PORT_PPL=1`, needs `--fastpaths`):** NewDark lights models per vertex on the CPU and
+- **Per-pixel lighting (opt-in, `SS2PORT_PPL=1`, needs `--fastpaths` and pixel shaders):** NewDark lights models per vertex on the CPU and
   sends finished colours. The port recognises model draws (the engine's model renderer on the call stack, or the
   first-person weapon after its depth-only clear), rebuilds their view-space positions and smooth normals, takes the
   point lights the engine chose for each object from a hook on its light callback (`0x5ed7d0`), and lights each pixel
   with the engine's own formula (ambient + colour × min(1, cos / distance)). Per material pass, the engine's colours and
   angle-based alpha are fitted to these smooth quantities, so its noisy per-vertex values (the 25th Anniversary arms)
-  no longer show. Models drawn polygon by polygon with all their passes go out pass by pass and merge into a few draws.
+  no longer show. Objects without point lights (lit by the sun, spots and other sources not decoded yet) get their
+  colours fitted to the smooth normal instead (smooth per-vertex lighting rather than per pixel). Models drawn polygon by
+  polygon with all their passes go out pass by pass and merge into a few draws. Off with `--no-shaders` or
+  `SS2PORT_NOSHADERS=1`.
   All in `dx/d3d9.c` (search `ppl_`); checks: `SS2PORT_PPL_DEBUG=1|2`, `SS2PORT_PPL_DUMP=1`, `SS2PORT_PPL_LIGHTS=1`.
 - **PS Vita:** `backends/vita/` plays, level changes and saves included: about 15-21 fps exploring, 6-8 in firefights,
   limited by the CPU running the recompiled code. Build steps in its README, measurements and ideas in `backends/vita/PERF.md`.
