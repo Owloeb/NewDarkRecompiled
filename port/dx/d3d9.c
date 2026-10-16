@@ -690,9 +690,10 @@ static void group_draw(void *data, PlatDrawFn submit) {
      * quantities to the engine's: colour = offset + scale * light here (per channel; the offset takes ambient, self-
      * illumination and lights not modelled), and alpha as a table over g = 1 - cos(viewing angle) (16 bins, averaged). Passes the shader
      * draws get the colour fit applied per pixel; the others get both fits at their vertices. */
-    typedef struct { uint64_t key; double n, sE[3], sC[3], sEE[3], sEC[3], bA[16], bN[16]; float off[3], scale[3], al[16]; } PassFit;
+    typedef struct { uint64_t key; double n, sE[3], sC[3], sEE[3], sEC[3], bA[16], bN[16], nn[4][4], nc[3][4]; float off[3], scale[3], al[16], dir[3][4]; } PassFit;
     static PassFit fit[32]; static float (*EG)[4]; static uint32_t egcap; int nfit = 0;
-    int fitting = any && ppl_lit && ppl_debug != 1 && gh->nl > 0;   /* no point lights: nothing to redistribute */
+    int fitting = any && ppl_lit && ppl_debug != 1;
+    int dirfit = fitting && gh->nl == 0;   /* no point lights (lit by the sun, spots...): colour = offset + a . normal, per vertex */
     if (fitting) {
         if (egcap < nv) { egcap = nv; EG = realloc(EG, (size_t)egcap * sizeof *EG); }
         for (uint32_t i = 0; i < nv; i++) {
@@ -713,6 +714,8 @@ static void group_draw(void *data, PlatDrawFn submit) {
                 F->n++;
                 for (int k = 0; k < 3; k++) { F->sE[k] += EG[i][k]; F->sC[k] += C[k]; F->sEE[k] += (double)EG[i][k] * EG[i][k]; F->sEC[k] += (double)EG[i][k] * C[k]; }
                 int bin = (int)(g * 15.999f); F->bA[bin] += A; F->bN[bin]++;
+                if (dirfit) { const double x[4] = { 1, NN[i][0], NN[i][1], NN[i][2] };
+                    for (int r = 0; r < 4; r++) { for (int c2 = 0; c2 < 4; c2++) F->nn[r][c2] += x[r] * x[c2]; for (int k = 0; k < 3; k++) F->nc[k][r] += x[r] * C[k]; } }
             }
             o += h->span;
         }
@@ -723,6 +726,18 @@ static void group_draw(void *data, PlatDrawFn submit) {
                 if (var > 1e-4) { bb = cov / var; a = mC - bb * mE; } else { bb = mE > 0.02 ? mC / mE : 0; a = mE > 0.02 ? 0 : mC; }   /* no spread: a plain scale */
                 if (bb < 0) { bb = 0; a = mC; } if (bb > 4) bb = 4; if (a < 0) a = 0; if (a > 1) a = 1;
                 F->off[k] = (float)a; F->scale[k] = (float)bb;
+            }
+            if (dirfit) for (int k = 0; k < 3; k++) {                /* colour = d0 + d . normal: 4x4 least squares, a little ridge on the normal terms */
+                double M[4][5];
+                for (int r = 0; r < 4; r++) { for (int c2 = 0; c2 < 4; c2++) M[r][c2] = F->nn[r][c2] + (r == c2 && r ? 1e-3 * m : 0); M[r][4] = F->nc[k][r]; }
+                int ok = 1;
+                for (int c2 = 0; c2 < 4 && ok; c2++) {
+                    int piv = c2; for (int r = c2 + 1; r < 4; r++) if (fabs(M[r][c2]) > fabs(M[piv][c2])) piv = r;
+                    if (fabs(M[piv][c2]) < 1e-12) { ok = 0; break; }
+                    if (piv != c2) for (int j = 0; j < 5; j++) { double t2 = M[c2][j]; M[c2][j] = M[piv][j]; M[piv][j] = t2; }
+                    for (int r = 0; r < 4; r++) if (r != c2) { double fct = M[r][c2] / M[c2][c2]; for (int j = c2; j < 5; j++) M[r][j] -= fct * M[c2][j]; }
+                }
+                for (int r = 0; r < 4; r++) F->dir[k][r] = ok ? (float)(M[r][4] / M[r][r]) : (r ? 0 : (float)(F->sC[k] / m));
             }
             int first = -1;                                          /* alpha table: bin averages, empty bins from their neighbours */
             for (int k = 0; k < 16; k++) if (F->bN[k] > 0) { F->al[k] = (float)(F->bA[k] / F->bN[k]); if (first < 0) first = k; }
@@ -768,14 +783,17 @@ static void group_draw(void *data, PlatDrawFn submit) {
         int hud = 1; for (int i = 0; i < h->nidx && hud; i++) hud = out[ix[i]].z <= 0;   /* every vertex on the near plane: a HUD quad (the minimap) */
         if (!hud && fitting) {
             uint64_t key = ppl_pass_key(&h->ps) ^ (uint64_t)ord2 * 0x9E3779B97F4A7C15ull; int f = 0; while (f < nfit - 1 && fit[f].key != key) f++;
-            const PassFit *F = &fit[f]; int am = ppl_amode(&h->ps), lit = am >= 0 && gh->sh[am * 2 + (h->ps.fog != 0)];
+            const PassFit *F = &fit[f]; int am = ppl_amode(&h->ps), lit = !dirfit && am >= 0 && gh->sh[am * 2 + (h->ps.fog != 0)];
             uint32_t sc = 0xFF000000u; for (int k = 0; k < 3; k++) sc |= (uint32_t)(F->scale[k] / 4 * 255 + 0.5f) << (16 - 8 * k);
             for (uint32_t i = 0; i < h->span; i++) {
                 float g = EG[o + i][3] * 16 - 0.5f, c[3]; int k0 = (int)floorf(g); float fr = g - (float)k0;
                 if (k0 < 0) { k0 = 0; fr = 0; } if (k0 >= 15) { k0 = 14; fr = 1; }
                 float A = F->al[k0] + (F->al[k0 + 1] - F->al[k0]) * fr;
                 A = A < 0 ? 0 : A > 1 ? 1 : A;
-                for (int k = 0; k < 3; k++) { c[k] = lit ? F->off[k] : F->off[k] + F->scale[k] * EG[o + i][k]; c[k] = c[k] < 0 ? 0 : c[k] > 1 ? 1 : c[k]; }
+                for (int k = 0; k < 3; k++) {
+                    c[k] = dirfit ? F->dir[k][0] + F->dir[k][1] * NN[o + i][0] + F->dir[k][2] * NN[o + i][1] + F->dir[k][3] * NN[o + i][2] : lit ? F->off[k] : F->off[k] + F->scale[k] * EG[o + i][k];
+                    c[k] = c[k] < 0 ? 0 : c[k] > 1 ? 1 : c[k];
+                }
                 out[i].diffuse = (uint32_t)(A * 255 + 0.5f) << 24 | (uint32_t)(c[0] * 255 + 0.5f) << 16 | (uint32_t)(c[1] * 255 + 0.5f) << 8 | (uint32_t)(c[2] * 255 + 0.5f);
                 if (lit) out[i].specular = sc;
             }
