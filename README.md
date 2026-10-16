@@ -106,8 +106,9 @@ Put options **before** `SS2.exe`; anything after it goes to the game. Under WSL,
 verified on Windows only: WSLg cannot capture the pointer and native Linux is untested. **Gaps:** vertex shaders and
 cube/volume textures (the game falls back to fixed-function), C++ exceptions, `fmsel.dll`. Pixel shaders (the
 post-processing: bloom, colour correction, blur) are translated to GLSL and look the same as on native Direct3D.
-Optional per-pixel lighting for models (`SS2PORT_PPL=1`, needs `--fastpaths`) removes the blotchy per-vertex lighting
-on large triangles, such as the 25th Anniversary arms and weapons.
+Per-pixel lighting for models (on by default with shaders; off with `--no-ppl` or `SS2PORT_PPL=0`) removes the blotchy
+per-vertex lighting on large triangles, such as the 25th Anniversary arms and weapons. Build with `--fastpaths` for
+per-pixel light from point lights.
 
 ## How It Works
 
@@ -175,7 +176,7 @@ variables, switch files and developer tools.
 3. ~~A platform layer so the recompiled game can run beyond 32-bit Windows.~~ Done: see the
    [portable host](port/README.md).
 4. Next for the portable host: ~~pixel shaders~~ (done: the game's ps_2_0 post-processing, bloom included, is translated
-   to GLSL and matches the native Direct3D build), ~~per-pixel lighting~~ (done for models, opt-in: `SS2PORT_PPL=1`;
+   to GLSL and matches the native Direct3D build), ~~per-pixel lighting~~ (done for models, on by default;
    objects lit only by the sun and other non-point sources get smoothed per-vertex lighting), cube/volume textures, native Linux mouselook
    testing, further backends.
 5. Speed, driven by the [PS Vita backend](port/backends/vita/README.md). In place (all opt-in on the PC, default output
