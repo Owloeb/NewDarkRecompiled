@@ -417,7 +417,7 @@ static void trace_draw(const Layout *L, uint32_t prims, uint32_t type, Device *d
 void port_entrytrace_dump(void);
 static void trace_frame_end(void) {
     ppl_frame++; if (ppl_frame == 601 && ppl_dumpf) { fclose(ppl_dumpf); ppl_dumpf = NULL; port_warn("per-pixel lighting: wrote ppl_dump.txt"); }
-    { extern uint64_t ppl_n_lit_x, ppl_n_unlit_x; if (ppl_frame == 600 && (ppl_n_lit_x || ppl_n_unlit_x)) port_warn("per-pixel lighting: %llu model draws lit per pixel, %llu left as they were (stage set-up not supported)", (unsigned long long)ppl_n_lit_x, (unsigned long long)ppl_n_unlit_x); }
+    { extern uint64_t ppl_n_lit_x, ppl_n_unlit_x; if (ppl_frame == 600 && (ppl_n_lit_x || ppl_n_unlit_x)) port_warn("per-pixel lighting: %llu model draws lit per pixel, %llu smoothed per vertex (stage set-up the shader doesn't cover)", (unsigned long long)ppl_n_lit_x, (unsigned long long)ppl_n_unlit_x); }
     if (trace_on <= 0) return;
     if (++trace_frame % 600) return;
     port_entrytrace_dump();
@@ -632,6 +632,13 @@ static int ppl_amode(const PlatDrawState *st) {
     if (g->alpha_op == PLAT_TOP_MODULATE && ok1 && ok2) return a1 != a2 ? 2 : a1 == PLAT_ARG_TEXTURE ? 0 : 1;
     return -1;
 }
+/* draws of the same material pass: texture, blending and stage set-up */
+static uint64_t ppl_pass_key(const PlatDrawState *st) {
+    const PlatStage *g = &st->stage[0]; uint64_t h = 1469598103934665603ull;
+    const uint64_t v[] = { (uint64_t)(uintptr_t)g->texture, st->blend, st->src_blend, st->dst_blend, g->color_op, g->color_arg1, g->color_arg2, g->alpha_op, g->alpha_arg1, g->alpha_arg2, st->texture_factor, st->alpha_test, st->stage[1].color_op };
+    for (unsigned i = 0; i < sizeof v / sizeof *v; i++) { h ^= v[i]; h *= 1099511628211ull; }
+    return h;
+}
 uint64_t ppl_n_lit_x, ppl_n_unlit_x;                          /* coverage, reported once at frame 600 */
 #define ppl_n_lit ppl_n_lit_x
 #define ppl_n_unlit ppl_n_unlit_x
@@ -656,41 +663,82 @@ static void group_draw(void *data, PlatDrawFn submit) {
     float (*PP)[3] = NULL, (*NN)[3] = NULL;
     if (vs0) ppl_normals(V, nv, I, (int)ni, vs0, cls == 2 ? ppl_wzoom : 1.0f, &PP, &NN);
     /* The engine's vertex colours vary from vertex to vertex with its own model normals, which on some models (the
-     * Remaster's arms) barely follow the surface: that variation is the blotching. So they are not used per vertex: a least-
-     * squares fit per channel, engine colour = offset + scale * light here, maps this light model to the engine's level
-     * and tint (the offset takes ambient, self-illumination and lights not modelled), and the shader applies the fit to
-     * the per-pixel light. */
-    uint32_t fit_off = 0xFF000000u, fit_scale = 0xFF000000u;
-    if (vs0 && ppl_lit && ppl_debug != 1) {
-        double sE[3] = { 0 }, sC[3] = { 0 }, sEE[3] = { 0 }, sEC[3] = { 0 };
+     * Remaster's arms) barely follow the surface: that variation is the blotching, in every pass of the material (the
+     * base pass, and the fill / rim / shine passes whose alpha follows the viewing angle). So they are not used per
+     * vertex. For each pass (draws with the same texture and blend set-up), least-squares fits map this group's smooth
+     * quantities to the engine's: colour = offset + scale * light here (per channel; the offset takes ambient, self-
+     * illumination and lights not modelled), and alpha as a table over g = 1 - cos(viewing angle) (16 bins, averaged). Passes the shader
+     * draws get the colour fit applied per pixel; the others get both fits at their vertices. */
+    typedef struct { uint64_t key; double n, sE[3], sC[3], sEE[3], sEC[3], bA[16], bN[16]; float off[3], scale[3], al[16]; } PassFit;
+    static PassFit fit[32]; static float (*EG)[4]; static uint32_t egcap; int nfit = 0;
+    int fitting = vs0 && ppl_lit && ppl_debug != 1;
+    if (fitting) {
+        if (egcap < nv) { egcap = nv; EG = realloc(EG, (size_t)egcap * sizeof *EG); }
         for (uint32_t i = 0; i < nv; i++) {
-            float E[3]; ppl_light_at(gh, PP[i], NN[i], E); V[i].u1 = NN[i][0]; V[i].v1 = NN[i][1];
-            uint32_t d = V[i].diffuse; float C[3] = { ((d >> 16) & 255) / 255.0f, ((d >> 8) & 255) / 255.0f, (d & 255) / 255.0f };
-            for (int k = 0; k < 3; k++) { sE[k] += E[k]; sC[k] += C[k]; sEE[k] += (double)E[k] * E[k]; sEC[k] += (double)E[k] * C[k]; }
+            ppl_light_at(gh, PP[i], NN[i], EG[i]); V[i].u1 = NN[i][0]; V[i].v1 = NN[i][1];
+            float pl = sqrtf(PP[i][0] * PP[i][0] + PP[i][1] * PP[i][1] + PP[i][2] * PP[i][2]); if (pl <= 0) pl = 1;
+            float inc = -(NN[i][0] * PP[i][0] + NN[i][1] * PP[i][1] + NN[i][2] * PP[i][2]) / pl; EG[i][3] = 1 - (inc < 0 ? 0 : inc > 1 ? 1 : inc);
         }
-        for (int k = 0; k < 3; k++) {
-            double m = nv ? (double)nv : 1, mE = sE[k] / m, mC = sC[k] / m, var = sEE[k] / m - mE * mE, cov = sEC[k] / m - mE * mC, a, b;
-            if (var > 1e-4) { b = cov / var; a = mC - b * mE; } else { b = mE > 0.02 ? mC / mE : 0; a = mE > 0.02 ? 0 : mC; }   /* no spread: a plain scale */
-            if (b < 0) { b = 0; a = mC; } if (b > 4) b = 4; if (a < 0) a = 0; if (a > 1) a = 1;
-            fit_off |= (uint32_t)(a * 255 + 0.5) << (16 - 8 * k); fit_scale |= (uint32_t)(b / 4 * 255 + 0.5) << (16 - 8 * k);
+        uint32_t o = 0;
+        for (const uint8_t *q = p; q < end; ) {                      /* accumulate per pass */
+            size_t total; memcpy(&total, q, sizeof total); Deferred *h = (Deferred *)(void *)(q + sizeof total); q += sizeof total + total;
+            uint64_t key = ppl_pass_key(&h->ps); int f = 0;
+            while (f < nfit && fit[f].key != key) f++;
+            if (f == nfit) { if (nfit < 32) { memset(&fit[nfit], 0, sizeof fit[0]); fit[nfit].key = key; nfit++; } else f = 31; }
+            PassFit *F = &fit[f];
+            for (uint32_t i = o; i < o + h->span; i++) {
+                uint32_t d = V[i].diffuse; float C[3] = { ((d >> 16) & 255) / 255.0f, ((d >> 8) & 255) / 255.0f, (d & 255) / 255.0f }, A = (d >> 24) / 255.0f, g = EG[i][3];
+                F->n++;
+                for (int k = 0; k < 3; k++) { F->sE[k] += EG[i][k]; F->sC[k] += C[k]; F->sEE[k] += (double)EG[i][k] * EG[i][k]; F->sEC[k] += (double)EG[i][k] * C[k]; }
+                int bin = (int)(g * 15.999f); F->bA[bin] += A; F->bN[bin]++;
+            }
+            o += h->span;
+        }
+        for (int f = 0; f < nfit; f++) {                             /* solve */
+            PassFit *F = &fit[f]; double m = F->n > 0 ? F->n : 1;
+            for (int k = 0; k < 3; k++) {
+                double mE = F->sE[k] / m, mC = F->sC[k] / m, var = F->sEE[k] / m - mE * mE, cov = F->sEC[k] / m - mE * mC, a, bb;
+                if (var > 1e-4) { bb = cov / var; a = mC - bb * mE; } else { bb = mE > 0.02 ? mC / mE : 0; a = mE > 0.02 ? 0 : mC; }   /* no spread: a plain scale */
+                if (bb < 0) { bb = 0; a = mC; } if (bb > 4) bb = 4; if (a < 0) a = 0; if (a > 1) a = 1;
+                F->off[k] = (float)a; F->scale[k] = (float)bb;
+            }
+            int first = -1;                                          /* alpha table: bin averages, empty bins from their neighbours */
+            for (int k = 0; k < 16; k++) if (F->bN[k] > 0) { F->al[k] = (float)(F->bA[k] / F->bN[k]); if (first < 0) first = k; }
+            if (first < 0) { for (int k = 0; k < 16; k++) F->al[k] = 1; continue; }
+            for (int k = 0; k < first; k++) F->al[k] = F->al[first];
+            for (int k = first + 1, last = first; k < 16; k++) {
+                if (F->bN[k] <= 0) continue;
+                for (int j = last + 1; j < k; j++) F->al[j] = F->al[last] + (F->al[k] - F->al[last]) * (float)(j - last) / (float)(k - last);
+                last = k;
+                if (k == 15) break;
+            }
+            { int last = 15; while (last > 0 && F->bN[last] <= 0) last--; for (int k = last + 1; k < 16; k++) F->al[k] = F->al[last]; }
         }
     }
     static uint16_t *ix16; static uint32_t i16cap; nv = 0;
     for (const uint8_t *q = p; q < end; ) {                          /* pass 2: each draw as it came */
         size_t total; memcpy(&total, q, sizeof total); Deferred *h = (Deferred *)(void *)(q + sizeof total); q += sizeof total + total;
         const uint8_t *raw = (const uint8_t *)(h + 1); const uint16_t *ix = (const uint16_t *)(raw + DEF_A4((size_t)h->span * h->stride));
-        PlatVertex *out = V + nv; nv += h->span;
+        PlatVertex *out = V + nv; uint32_t o = nv; nv += h->span;
         int hud = 1; for (int i = 0; i < h->nidx && hud; i++) hud = out[ix[i]].z <= 0;   /* every vertex on the near plane: a HUD quad (the minimap) */
-        if (!hud && ppl_lit && ppl_debug != 1) {
-            int am = ppl_amode(&h->ps);
-            if (am >= 0 && gh->sh[am * 2 + (h->ps.fog != 0)]) {
-                PlatDrawState ps = h->ps; ps.shader = gh->sh[am * 2 + (h->ps.fog != 0)]; ps.stage[1].texture = NULL;
-                for (uint32_t i = 0; i < h->span; i++) { out[i].diffuse = (out[i].diffuse & 0xFF000000u) | (fit_off & 0xFFFFFFu); out[i].specular = fit_scale; }
-                if (i16cap < (uint32_t)h->nidx) { i16cap = (uint32_t)h->nidx; ix16 = realloc(ix16, i16cap * 2); }
-                memcpy(ix16, ix, (size_t)h->nidx * 2);
-                submit(h->prim, out, (int)h->span, ix16, h->nidx, &ps); ppl_n_lit++; continue;
+        if (!hud && fitting) {
+            uint64_t key = ppl_pass_key(&h->ps); int f = 0; while (f < nfit - 1 && fit[f].key != key) f++;
+            const PassFit *F = &fit[f]; int am = ppl_amode(&h->ps), lit = am >= 0 && gh->sh[am * 2 + (h->ps.fog != 0)];
+            uint32_t sc = 0xFF000000u; for (int k = 0; k < 3; k++) sc |= (uint32_t)(F->scale[k] / 4 * 255 + 0.5f) << (16 - 8 * k);
+            for (uint32_t i = 0; i < h->span; i++) {
+                float g = EG[o + i][3] * 16 - 0.5f, c[3]; int k0 = (int)floorf(g); float fr = g - (float)k0;
+                if (k0 < 0) { k0 = 0; fr = 0; } if (k0 >= 15) { k0 = 14; fr = 1; }
+                float A = F->al[k0] + (F->al[k0 + 1] - F->al[k0]) * fr;
+                A = A < 0 ? 0 : A > 1 ? 1 : A;
+                for (int k = 0; k < 3; k++) { c[k] = lit ? F->off[k] : F->off[k] + F->scale[k] * EG[o + i][k]; c[k] = c[k] < 0 ? 0 : c[k] > 1 ? 1 : c[k]; }
+                out[i].diffuse = (uint32_t)(A * 255 + 0.5f) << 24 | (uint32_t)(c[0] * 255 + 0.5f) << 16 | (uint32_t)(c[1] * 255 + 0.5f) << 8 | (uint32_t)(c[2] * 255 + 0.5f);
+                if (lit) out[i].specular = sc;
             }
-            ppl_n_unlit++;
+            if (i16cap < (uint32_t)h->nidx) { i16cap = (uint32_t)h->nidx; ix16 = realloc(ix16, i16cap * 2); }
+            memcpy(ix16, ix, (size_t)h->nidx * 2);
+            if (lit) { PlatDrawState ps = h->ps; ps.shader = gh->sh[am * 2 + (h->ps.fog != 0)]; ps.stage[1].texture = NULL; submit(h->prim, out, (int)h->span, ix16, h->nidx, &ps); ppl_n_lit++; }
+            else { submit(h->prim, out, (int)h->span, ix16, h->nidx, &h->ps); ppl_n_unlit++; }
+            continue;
         }
         if (hud || ppl_debug != 1) { submit(h->prim, out, (int)h->span, ix, h->nidx, &h->ps); continue; }
         if (h->ps.blend && h->ps.dst_blend == PLAT_BLEND_ONE) continue;  /* debug view: the additive fill / rim passes would wash it out */
@@ -720,7 +768,7 @@ static void ppl_flush(void) {
     plat_gfx_deferred(group_draw, grp, grp_n); grp_n = 0;
 }
 static void ppl_hold(const void *blob, size_t total, int cls) {
-    if (grp_n && (cls != grp_cls || port_ppl_light_ver != grp_ver || grp_n + total > (4u << 20) - 64 - sizeof(GroupHdr))) ppl_flush();
+    if (grp_n && (cls != grp_cls || port_ppl_light_ver != grp_ver || grp_n + total > (1u << 20) - 256 - sizeof(GroupHdr))) ppl_flush();
     if (!grp_n) {                                                    /* a new group: what it is lit with */
         grp_n = sizeof(size_t) + sizeof(GroupHdr);
         if (grp_cap < grp_n) { grp_cap = 65536; grp = realloc(grp, grp_cap); }
