@@ -206,7 +206,7 @@ codes for keys.
   (`dx/d3d9_shader.c`; the game's own 16 post-processing shaders all translate, and two are checked pixel for pixel
   against hand-computed results on Mesa, desktop GL and GLES; bloom matches the native Direct3D build in game). Vertex shaders are refused (the game has none). Cube
   and volume textures are not drawn; `ProcessVertices` is not implemented.
-- **Per-pixel lighting (on with pixel shaders; off with `--no-ppl` or `SS2PORT_PPL=0`):** NewDark lights models per vertex on the CPU and
+- **Per-pixel lighting (off by default; `SS2PORT_PPL=1` or `--ppl` turns it on; needs pixel shaders):** NewDark lights models per vertex on the CPU and
   sends finished colours. The port recognises model draws (the engine's model renderer on the call stack, or the
   first-person weapon after its depth-only clear), rebuilds their view-space positions and smooth normals, takes the
   point lights the engine chose for each object from a hook on its light callback (`0x5ed7d0`), and lights each pixel

@@ -482,14 +482,16 @@ static int md_draw(void) {
     }
     return 0;
 }
-static int ppl_lit = -1;                                        /* light models per pixel: on with pixel shaders unless SS2PORT_PPL=0 or built --no-ppl */
+static int ppl_lit = -1;                                        /* light models per pixel: off unless SS2PORT_PPL=1 (or built with --ppl, which turns it on by default; SS2PORT_PPL=0 then turns it off); needs pixel shaders */
 static int ppl_on(void) {
     if (ppl_debug < 0) { const char *e = getenv("SS2PORT_PPL_DEBUG"); ppl_debug = e && *e ? atoi(e) : 0; if (ppl_debug < 0) ppl_debug = 0; }
     if (ppl_lit < 0) {
-        const char *e = getenv("SS2PORT_PPL"); ppl_lit = !(e && *e == '0') || ppl_debug == 2;
-#ifdef PORT_NO_PPL
-        ppl_lit = 0;                                                  /* built with port/build.py --no-ppl */
+        const char *e = getenv("SS2PORT_PPL"); int def = 0;
+#ifdef PORT_PPL_DEFAULT
+        def = 1;                                                      /* built with port/build.py --ppl */
 #endif
+        ppl_lit = e && *e ? *e != '0' : def;
+        if (ppl_debug == 2) ppl_lit = 1;
         if (ppl_lit && !shaders_on()) ppl_lit = 0;
     }
     return ppl_debug || ppl_lit;
