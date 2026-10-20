@@ -194,15 +194,49 @@ static inline double FROUND(CPU *c, double v){
     default: return trunc(v);
     }
 }
-static inline uint32_t F2I32(CPU *c, double v){
+/* fist/fistp (and the 16-bit forms): round per the control word and store the integer, or the "integer indefinite" when
+ * the rounded value does not fit (or v is NaN). Same results as FROUND + a range check, without libm: on ARMv7 (the
+ * Vita) floor/ceil/trunc/nearbyint are library calls, and nearbyint saves and restores FPSCR, which stalls the VFP
+ * pipeline. The range test is done on v itself, with the bounds each rounding mode maps into [lo, hi]; inside them v
+ * fits an int32, so the C conversion (which truncates) is exact, and floor/ceil correct it by one.
+ * Nearest-even uses the 1.5 * 2^52 trick, valid for |v| < 2^51 under the host's default rounding mode (the mode nearbyint
+ * uses too). It needs double arithmetic without excess precision, so a host that evaluates in x87 extended precision
+ * (32-bit x86 without SSE2 math) keeps the libm path. port/tests/f2i checks the two against each other. */
+#if defined(__FLT_EVAL_METHOD__) && __FLT_EVAL_METHOD__ == 0 && !defined(RT_F2I_LIBM)
+#define RT_F2I_FAST 1
+#endif
+static inline int32_t rt_f2i_(CPU *c, double v, double lo, double hi, int *ok){
+#ifdef RT_F2I_FAST
+    switch ((c->cw >> 10) & 3) {
+    case 0:                                                     /* nearest, ties to even */
+        if (!(v >= lo - 0.5 && v < hi + 0.5)) break;            /* hi + 0.5 rounds (to even) past hi */
+        *ok = 1; return (int32_t)((v + 6755399441055744.0) - 6755399441055744.0);
+    case 1: {                                                   /* down */
+        if (!(v >= lo && v < hi + 1.0)) break;
+        int32_t t = (int32_t)v; *ok = 1; return t - ((double)t > v);
+    }
+    case 2: {                                                   /* up */
+        if (!(v > lo - 1.0 && v <= hi)) break;
+        int32_t t = (int32_t)v; *ok = 1; return t + ((double)t < v);
+    }
+    default:                                                    /* toward zero */
+        if (!(v > lo - 1.0 && v < hi + 1.0)) break;
+        *ok = 1; return (int32_t)v;
+    }
+    *ok = 0; return 0;
+#else
     double r = FROUND(c, v);
-    if (!(r >= -2147483648.0 && r <= 2147483647.0)) return 0x80000000u;
-    return (uint32_t)(int32_t)r;
+    if (!(r >= lo && r <= hi)) { *ok = 0; return 0; }
+    *ok = 1; return (int32_t)r;
+#endif
+}
+static inline uint32_t F2I32(CPU *c, double v){
+    int ok; int32_t r = rt_f2i_(c, v, -2147483648.0, 2147483647.0, &ok);
+    return ok ? (uint32_t)r : 0x80000000u;
 }
 static inline uint16_t F2I16(CPU *c, double v){
-    double r = FROUND(c, v);
-    if (!(r >= -32768.0 && r <= 32767.0)) return 0x8000u;
-    return (uint16_t)(int16_t)r;
+    int ok; int32_t r = rt_f2i_(c, v, -32768.0, 32767.0, &ok);
+    return ok ? (uint16_t)(int16_t)r : 0x8000u;
 }
 static inline uint64_t F2I64(CPU *c, double v){
     double r = FROUND(c, v);

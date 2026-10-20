@@ -71,7 +71,10 @@ For building by hand: `cmake -S port -B build/port -DPORT_GENERATED=out/port [-D
 | `PORT_SYSTEM` | System layer: `posix` [default off Windows] or `win32`. |
 | `PORT_PREEMPT` | [ON] Let other guest threads run at loop heads. The game spin-waits, so leave it on. |
 | `PORT_VIDEO` | [ON] Built-in cutscene decoder (AVI, Indeo 5, PCM; LGPL code from `video/`). OFF: no cutscenes. |
-| `PORT_PROF` | [OFF] **Profiling build.** Every 20 s the log lists the 30 guest functions and host imports that took the most time (`[port] PROF 12.3% nd_0068bff0`). Summarise with `tools/fnprof.py`. Slightly slower. |
+| `PORT_PROF` | [OFF] **Profiling build.** Every 20 s the log lists the 30 guest functions and host imports that took the most time (`[port] PROF 12.3% nd_0068bff0`), and `ss2port_prof.txt` in the game folder is rewritten with everything sampled since start. Summarise with `tools/fnprof.py`; make a hot-file list with `tools/hotfiles.py`. Slightly slower. |
+| `PORT_GAME_OPT` | [empty: the build type's] Optimisation flags for the generated code only, e.g. `-O2` or `-Os` (the Release default `-O3` makes the most code, against a 32 KB instruction cache on the Vita). With `PORT_GAME_HOT` it applies to the files not listed and defaults to `-Os`. |
+| `PORT_GAME_HOT` | [empty] A list of hot generated `.c` file names (`tools/hotfiles.py`). Listed files are compiled with `PORT_GAME_HOT_OPT`, the rest with `PORT_GAME_OPT`. Must come from a profile of the same lift. |
+| `PORT_GAME_HOT_OPT` | [`-O2`] Optimisation flags for the files listed in `PORT_GAME_HOT`. |
 | `PORT_PPL` | [OFF] Per-pixel lighting for models on by default (`dx/d3d9.c`, `ppl_*`; needs `PORT_SHADERS`). OFF: off unless `SS2PORT_PPL=1`, the engine's per-vertex lighting as it is. |
 | `PORT_SHADERS` | [ON] Translate the game's pixel shaders to GLSL (`dx/d3d9_shader.c`). OFF: report none; the game skips its post-processing, and per-pixel lighting is unavailable. |
 | `CMAKE_BUILD_TYPE` | [RelWithDebInfo] Usual CMake meaning. |
@@ -149,6 +152,7 @@ checked test session, `-DPORT_PROF=ON` for the profiler).
 | --- | --- |
 | `--swap-sticks` | Move with the right stick, look with the left. |
 | `--look-speed N` | Look speed in percent [100]. |
+| `--arm-clock N` | CPU clock in MHz. By default the clocks are raised to the most an application may set (CPU 444, bus 222, GPU 222, crossbar 166) but never lowered, so an overclocking plugin's higher setting is kept. `N` above 444 only takes with such a plugin; `0` leaves every clock as it is. The log's `clocks:` line says what they ended up at. |
 | `--no-watchdog` | Turn off the hang watchdog (which forces a core dump when the game neither draws nor touches a file for 90 s). |
 | `--no-readahead` | Turn off read-ahead for files read straight through. |
 | `--no-render-thread` | Render on the game's thread. By default vitaGL runs on a render thread of its own on core 1 (`backends/sdl2/gl_thread.c`), so drawing a frame overlaps computing the next; the game runs at most one frame ahead of the screen. The profile line then shows `render N% (..., own thread)` for how busy that thread is and `game waits for renderer N%`. |
@@ -210,10 +214,12 @@ Builds a game-free 32-bit test program, lifts it and runs it on the host. No gam
 | `tools/suggest_names.py <darkrecomp_record.txt> <nd_meta.json> [--sym F] [--tags F] [--report F] [--emit F]` | Turn a play-session record into a naming work list (functions per activity, hot functions, OS/DirectX callers, strings) and notes for `name_sources.py`. |
 | `tools/where.py <exe> <addr> [before] [after]` | Disassemble around a guest address (e.g. from a crash report); `-s` prints the string there. |
 | `tools/fnprof.py <exe> <log> [skip] [top]` | Average the `PROF` tables of a `PORT_PROF` build and describe the hottest guest functions. |
+| `tools/hotfiles.py <ss2port_prof.txt> <out/port> [--cover 0.95] [-o hot.txt]` | The fewest generated `.c` files that hold `--cover` of the time spent in recompiled code, for `-DPORT_GAME_HOT`. Also takes an `ss2port.log` (coarser: only its top-30 tables). |
 | `port/tools/check_shims.py`, `check_com.py` | Check every shim's and COM method's stack-pop count against the MinGW headers. |
 | `harness/abi_test/run.sh` | `--cache-regs` end to end: contract, preservation proof, `RT_ABI_CHECK` and `--abi-exempt`, with two negative controls that must be caught. Prints PASS/FAIL per check. |
 | `harness/abi_test/csmith_fuzz.py [--seeds a-b] [--float]` | Random C programs (needs Csmith) lifted plain and with `--cache-regs`; results must agree and the checked build must report nothing. |
 | `port/tests/glthread/run.sh` | Render-thread stress test: 600,000 random renderer calls through the thread and directly must hash identically (ThreadSanitizer). |
+| `port/tests/f2i/run.sh` | `fist`/`fistp` conversions (`F2I32`/`F2I16` in `runtime/rt.h`) against the libm version in all four rounding modes, 34 million cases, natively and (with `arm-linux-gnueabihf-gcc` and `qemu-arm`) on 32-bit ARM. |
 | `port/tests/sndcache/run.sh` | Vita sound-cache test against a replayed working set, every byte checked (ThreadSanitizer). |
 | `port/tests/fastpaths/check.py <dump> [trials]` | Each fast path against the game's own code in Unicorn. `<dump>`: `tools/where.py` output for the functions, from your `SS2.exe` (kept on your machine). Needs `pip install unicorn keystone-engine`. |
 | `port/tools/gen_ifaces.py` | Generate the COM interface tables. |
@@ -230,4 +236,5 @@ Set by the build scripts; listed so the generated code can be read. You normally
 | `RT_RING` | Remember the last guest functions entered, for crash reports. | `build_win.py` |
 | `RT_BUDGET` | Count down at loop heads and hand control back to the harness. | `build.sh` (test harness) |
 | `RT_SHADOW` | Check every return address against a shadow stack. | `build.sh` (test harness) |
+| `RT_F2I_LIBM` | `fist`/`fistp` round through libm (`nearbyint`, `floor`, ...) instead of the inline conversion; the inline one is used wherever doubles have no excess precision. For comparison only. | by hand (`port/tests/f2i`) |
 | `RT_TRACE` | Call `rt_trace` at every instruction (very slow). | `build_trace.sh` |

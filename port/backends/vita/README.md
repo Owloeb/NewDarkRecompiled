@@ -40,6 +40,11 @@ cmake -S port -B build/vita -DPORT_GENERATED=out/port -DPORT_BACKEND=vita -DCMAK
 cmake --build build/vita -j
 ```
 
+Optimisation of the generated code (no relift, only a recompile): `-DPORT_GAME_OPT=-O2` instead of the Release `-O3`, or
+size for cold code and speed for hot code from a profile: run a `-DPORT_PROF=ON` build for a few minutes of play, copy
+`ux0:data/ss2/ss2port_prof.txt` back, then `python3 tools/hotfiles.py ss2port_prof.txt out/port -o hot.txt` and configure with
+`-DPORT_GAME_HOT=$PWD/hot.txt` (hot files `-O2`, the rest `-Os`). See `PERF.md` for how to compare builds.
+
 Changes to the host (anything under `port/`) only need the `cmake --build` step; `build.py` relifts only when the lifter, the
 game files or a lift option changed. The `out/port` DLL lifts are for low addresses: a later PC build relifts the three DLLs
 (not `SS2.exe`).
@@ -66,7 +71,8 @@ depth after a call", put the address it names in a file and add `--x87-exempt FI
 - Copy the whole game folder (with `SS2.exe`, `Data/`, `OSM/`, `lgvid.dll`, ...) to `ux0:data/ss2/`.
 - Optional `ux0:data/ss2/ss2port.txt` with host options, e.g. `--guest-space 256 --verbose`. Vita-only:
   `--swap-sticks` (move with the right stick, look with the left), `--look-speed 150` (percent), `--no-watchdog`,
-  `--no-readahead`. Sound archives (`SND.CRF`, `SND2.CRF`) also go through a small cache with per-sound read-ahead (`sndcache.c`; `--no-sound-cache` turns it off), because several playing sounds interleave their reads and look random to the window.
+  `--no-readahead`, `--arm-clock N` (CPU MHz; by default the clocks are raised to 444/222/222/166 but never lowered, so an
+  overclocking plugin's setting is kept; `0` leaves them alone; the log's `clocks:` line shows the result). Sound archives (`SND.CRF`, `SND2.CRF`) also go through a small cache with per-sound read-ahead (`sndcache.c`; `--no-sound-cache` turns it off), because several playing sounds interleave their reads and look random to the window.
 - Rendering runs on a thread of its own on core 1 (`backends/sdl2/gl_thread.c`): the game thread (core 0) records each frame's draw calls into a 4 MB buffer and moves on while the render thread replays them through vitaGL, at most one frame behind. Audio, file and guest worker threads use core 2. `--no-render-thread` in `ss2port.txt` puts rendering back on the game thread.
 - Resolution: `game_screen_size 960 544` in `cam.cfg` (the Vita's screen) costs nothing extra: the GPU is mostly idle.
   Settings in `cam_ext.cfg` that affect the GPU (multisampling, anisotropic filtering, mipmaps) make no difference either.

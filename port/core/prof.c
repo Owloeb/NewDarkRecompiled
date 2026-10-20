@@ -4,18 +4,43 @@
  * A thread reads it about every millisecond and every 20 s logs the 30 names seen most often:
  *     [port] PROF  12.3% nd_0068bff0
  * A function is charged until the next function entry or loop head, so straight-line code after a call is charged to the callee.
- * tools/fnprof.py averages these tables and describes the hottest guest functions. Nothing here exists in a normal build. */
+ * tools/fnprof.py averages these tables and describes the hottest guest functions.
+ * The same 20 s tick also rewrites ss2port_prof.txt (in the current directory: the game folder) with every name sampled
+ * since start, most samples first ("count name" lines). tools/hotfiles.py turns it into the list of hot generated files
+ * for cmake -DPORT_GAME_HOT (hot files compiled for speed, the rest for size). Nothing here exists in a normal build. */
 #include "plat.h"
 #ifdef RT_PROF
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
+#include <stdlib.h>
 
 const char *volatile rt_prof_cur;
 
 #define PROF_SLOTS 4096
 static const char *prof_key[PROF_SLOTS]; static unsigned prof_cnt[PROF_SLOTS];
 
+/* since start, for ss2port_prof.txt; bigger than the 20 s table, which only ever holds what one window touched */
+#define CUM_SLOTS 32768
+static const char *cum_key[CUM_SLOTS]; static unsigned cum_cnt[CUM_SLOTS], cum_total;
+static void cum_add(const char *k) {
+    unsigned h = (unsigned)(((uintptr_t)k >> 2) * 2654435761u) % CUM_SLOTS, n = 0;
+    while (cum_key[h] && cum_key[h] != k) { if (++n >= CUM_SLOTS) return; h = (h + 1) % CUM_SLOTS; }
+    cum_key[h] = k; cum_cnt[h]++; cum_total++;
+}
+static int cum_cmp(const void *a, const void *b) {
+    unsigned x = cum_cnt[*(const int *)a], y = cum_cnt[*(const int *)b]; return x < y ? 1 : x > y ? -1 : 0;
+}
+static void cum_write(void) {
+    static int idx[CUM_SLOTS]; int n = 0;
+    for (int i = 0; i < CUM_SLOTS; i++) if (cum_cnt[i]) idx[n++] = i;
+    qsort(idx, (size_t)n, sizeof *idx, cum_cmp);
+    int err; PlatFile *f = plat_fs_open("ss2port_prof.txt", PLAT_WRITE | PLAT_CREATE | PLAT_TRUNCATE, &err); if (!f) return;
+    char b[256]; int l = snprintf(b, sizeof b, "# ss2port profile: %u samples (about 1 ms each) since start; count name\n", cum_total);
+    plat_fs_write(f, b, (uint64_t)l);
+    for (int i = 0; i < n; i++) { l = snprintf(b, sizeof b, "%u %s\n", cum_cnt[idx[i]], cum_key[idx[i]]); if (l > 0 && l < (int)sizeof b) plat_fs_write(f, b, (uint64_t)l); }
+    plat_fs_close(f);
+}
 static void plog(const char *fmt, const char *s, double pct, unsigned n) {
     char b[200]; if (s) snprintf(b, sizeof b, fmt, pct, s); else snprintf(b, sizeof b, fmt, n); plat_log_write(PLAT_LOG_INFO, b);
 }
@@ -27,9 +52,10 @@ static void prof_thread(void *arg) {
         unsigned h = (unsigned)(((uintptr_t)k >> 2) * 2654435761u) % PROF_SLOTS, n = 0;
         while (prof_key[h] && prof_key[h] != k && n++ < PROF_SLOTS) h = (h + 1) % PROF_SLOTS;
         if (n >= PROF_SLOTS) continue;
-        prof_key[h] = k; prof_cnt[h]++; total++;
+        prof_key[h] = k; prof_cnt[h]++; total++; cum_add(k);
         if (plat_time_ns() - t0 >= 20000000000ull) {
             t0 = plat_time_ns();
+            cum_write();
             plog("[port] PROF %u samples; top guest functions:", NULL, 0, total);
             for (int r = 0; r < 30; r++) {
                 int best = -1; for (int i = 0; i < PROF_SLOTS; i++) if (prof_cnt[i] && (best < 0 || prof_cnt[i] > prof_cnt[best])) best = i;

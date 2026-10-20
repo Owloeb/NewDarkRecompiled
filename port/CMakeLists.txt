@@ -44,7 +44,43 @@ target_include_directories(game PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../runtime $
 target_compile_definitions(game PRIVATE ${GEN_DEFS})
 # -ffp-contract=off: x87 math is translated to C doubles (in C locals with --cache-regs); fusing a*b+c on hosts with
 # a fused multiply-add would round differently from the original. (The Vita's VFPv3 has none, so it costs nothing there.)
-target_compile_options(game PRIVATE -w -fwrapv -fno-strict-aliasing -ffp-contract=off)
+# -fno-math-errno: sqrt and friends need not set the host's errno, which recompiled code never reads (the guest C runtime
+# has its own errno in guest memory), so sqrt becomes one instruction without a fallback call.
+target_compile_options(game PRIVATE -w -fwrapv -fno-strict-aliasing -ffp-contract=off -fno-math-errno)
+# Optimisation level of the generated code. The build type's flags come first and the last -O wins, so these override it.
+# PORT_GAME_OPT applies to every generated file (e.g. -O2: -O3, the Release default, unrolls and duplicates code, and the
+# generated code is tens of MB against a 32 KB instruction cache on the Vita). With PORT_GAME_HOT (a list of generated file
+# names, from tools/hotfiles.py and a PORT_PROF profile), the listed files get PORT_GAME_HOT_OPT and the rest PORT_GAME_OPT,
+# which then defaults to -Os: code that rarely runs is made small, code that runs a lot is made fast.
+set(PORT_GAME_OPT "" CACHE STRING "optimisation flags for the generated code (e.g. -O2 or -Os); empty: the build type's (-Os with PORT_GAME_HOT)")
+set(PORT_GAME_HOT "" CACHE FILEPATH "list of hot generated .c file names (tools/hotfiles.py); they get PORT_GAME_HOT_OPT")
+set(PORT_GAME_HOT_OPT "-O2" CACHE STRING "optimisation flags for the files listed in PORT_GAME_HOT")
+set(GAME_OPT "${PORT_GAME_OPT}")
+if(PORT_GAME_HOT AND NOT GAME_OPT)
+  set(GAME_OPT -Os)
+endif()
+if(GAME_OPT)
+  separate_arguments(GAME_OPT)
+  target_compile_options(game PRIVATE ${GAME_OPT})
+endif()
+if(PORT_GAME_HOT)
+  file(STRINGS ${PORT_GAME_HOT} HOT_FILES REGEX "^[^#]")
+  separate_arguments(HOT_OPT UNIX_COMMAND "${PORT_GAME_HOT_OPT}")
+  set(NHOT 0)
+  foreach(src ${GEN_SRC})
+    get_filename_component(b ${src} NAME)
+    if(b IN_LIST HOT_FILES)
+      set_source_files_properties(${src} PROPERTIES COMPILE_OPTIONS "${HOT_OPT}")
+      math(EXPR NHOT "${NHOT} + 1")
+    endif()
+  endforeach()
+  list(LENGTH GEN_SRC NGEN)
+  message(STATUS "generated code: ${NHOT} hot files (${PORT_GAME_HOT_OPT}), ${NGEN} in all; the rest ${GAME_OPT}")
+  if(NHOT EQUAL 0)
+    message(WARNING "none of the files in ${PORT_GAME_HOT} is among the generated sources: is it from this lift?")
+  endif()
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${PORT_GAME_HOT})
+endif()
 
 # ---- the shared platform layer: Win32, the C runtime and DirectX on top of plat.h
 file(GLOB CORE_SRC ${CMAKE_CURRENT_SOURCE_DIR}/core/*.c ${CMAKE_CURRENT_SOURCE_DIR}/win32/*.c ${CMAKE_CURRENT_SOURCE_DIR}/crt/*.c ${CMAKE_CURRENT_SOURCE_DIR}/dx/*.c)

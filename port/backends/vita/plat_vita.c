@@ -11,6 +11,7 @@
  *   --swap-sticks        move with the right stick, look with the left
  *   --look-speed N       right-stick look speed, default 100 (percent)
  *   --no-render-thread   render on the game's thread (by default vitaGL runs on a thread of its own, on core 1: gl_thread.c)
+ *   --arm-clock N        CPU clock in MHz (default: 444, or what an overclocking plugin already set if higher); 0 leaves all clocks alone
  *
  * Controls (keys meant to match SS2's usual binds; check them against your bind file and change the table below):
  *   left stick  W A S D           right stick  mouse look / cursor
@@ -323,6 +324,28 @@ static int read_options(const char *path, char **out, int max) {
     }
     fclose(f); return n;
 }
+/* Clocks. By default they are raised to the highest the system lets an application set (CPU 444 MHz, bus 222, GPU 222,
+ * crossbar 166) but never lowered: an overclocking plugin (LOLIcon, PSVshell, ...) may already have set more, and lowering
+ * it would throw that away. --arm-clock N asks for N MHz (above 444 only works with such a plugin); --arm-clock 0 leaves
+ * every clock as it is. The log says what the clocks are once set. */
+static int arm_clock = -1;
+static void raise_clock(const char *what, int now, int want, int (*set)(int)) {
+    if (now >= want) return;
+    int r = set(want);
+    if (r < 0) vlog("could not set the %s clock to %d MHz (error %08x)", what, want, (unsigned)r);
+}
+static void vita_set_clocks(void) {
+    if (arm_clock != 0) {
+        int arm = scePowerGetArmClockFrequency();
+        if (arm_clock < 0) raise_clock("CPU", arm, 444, scePowerSetArmClockFrequency);
+        else if (arm != arm_clock) { int r = scePowerSetArmClockFrequency(arm_clock); if (r < 0) vlog("could not set the CPU clock to %d MHz (error %08x)", arm_clock, (unsigned)r); }
+        raise_clock("bus", scePowerGetBusClockFrequency(), 222, scePowerSetBusClockFrequency);
+        raise_clock("GPU", scePowerGetGpuClockFrequency(), 222, scePowerSetGpuClockFrequency);
+        raise_clock("GPU crossbar", scePowerGetGpuXbarClockFrequency(), 166, scePowerSetGpuXbarClockFrequency);
+    }
+    vlog("clocks: CPU %d MHz, bus %d, GPU %d, GPU crossbar %d%s", scePowerGetArmClockFrequency(), scePowerGetBusClockFrequency(),
+         scePowerGetGpuClockFrequency(), scePowerGetGpuXbarClockFrequency(), arm_clock == 0 ? " (left as they were: --arm-clock 0)" : "");
+}
 static int ends_with_exe(const char *s) { size_t l = strlen(s); return l >= 4 && !strcasecmp(s + l - 4, ".exe"); }
 
 int main(int argc, char **argv) {
@@ -330,7 +353,6 @@ int main(int argc, char **argv) {
     mkdir(VITA_GAME_DIR, 0777);
     if (!freopen(VITA_GAME_DIR "/ss2port.log", "w", stderr)) freopen("ux0:data/ss2port.log", "w", stderr);
     setvbuf(stderr, NULL, _IOLBF, 1024);
-    scePowerSetArmClockFrequency(444); scePowerSetBusClockFrequency(222); scePowerSetGpuClockFrequency(222); scePowerSetGpuXbarClockFrequency(166);
     sceCtrlSetSamplingMode(SCE_CTRL_MODE_ANALOG_WIDE);
     sceTouchSetSamplingState(SCE_TOUCH_PORT_FRONT, SCE_TOUCH_SAMPLING_STATE_START);
     chdir(VITA_GAME_DIR);
@@ -346,6 +368,7 @@ int main(int argc, char **argv) {
         if (!strcmp(opt[i], "--no-readahead")) { vita_readahead = 0; continue; }
         if (!strcmp(opt[i], "--no-sound-cache")) { vita_sound_cache = 0; continue; }
         if (!strcmp(opt[i], "--no-render-thread")) { vita_render_thread = 0; continue; }
+        if (!strcmp(opt[i], "--arm-clock") && i + 1 < nopt) { arm_clock = atoi(opt[++i]); continue; }
         if (!strcmp(opt[i], "--look-speed") && i + 1 < nopt) { look_speed = (float)atof(opt[++i]) / 100.0f; continue; }
         if (!strcmp(opt[i], "--guest-space") || !strcmp(opt[i], "--guest-backed")) have_space = 1;
         if (ends_with_exe(opt[i])) have_exe = 1;
@@ -354,6 +377,7 @@ int main(int argc, char **argv) {
     if (!have_space) {                                   /* must come before the exe: everything after it goes to the game */
         memmove(av + 5, av + 1, (size_t)(ac - 1) * sizeof *av); av[1] = "--guest-space"; av[2] = VITA_GUEST_SPACE_MB_STR; av[3] = "--guest-backed"; av[4] = VITA_GUEST_BACKED_MB_STR; ac += 4;
     }
+    vita_set_clocks();
     if (!have_exe) av[ac++] = VITA_GAME_DIR "/SS2.exe";
     av[ac] = NULL;
     { char b[400]; int n = snprintf(b, sizeof b, "[vita] command line:"); for (int i = 1; i < ac && n < (int)sizeof b - 2; i++) n += snprintf(b + n, sizeof b - (size_t)n, " %s", av[i]); plat_log_write(PLAT_LOG_INFO, b); }

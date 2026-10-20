@@ -76,6 +76,23 @@ Same kind of sessions (Medical/Engineering, exploration and combat), PORT_PROF b
 - Where the time goes now (combat): a flat profile across thousands of functions; float-heavy code (models, animation,
   lighting) and object queries at the top, none above ~2%. Frame time follows the number of objects drawn.
 
+## Changes of 2026-10-20 (not yet measured on the Vita)
+- **Clocks:** the port used to set the CPU to 444 MHz at start, which threw away an overclocking plugin's higher clock. Now
+  it only raises clocks (`--arm-clock N` / `0` to choose or leave them; the log's `clocks:` line). The numbers above were
+  all taken at 444; note the clock with every new measurement.
+- **`fist`/`fistp` without libm** (`runtime/rt.h`, `F2I32`/`F2I16`): they rounded through `nearbyint`/`floor`/`ceil`/`trunc`,
+  which are library calls on ARMv7 (`nearbyint` also saves and restores FPSCR). Now an inline range check and VFP conversion;
+  same results in all rounding modes (`port/tests/f2i/run.sh`, 34 million cases on x86-64 and on ARM under QEMU, three
+  planted bugs caught). Needs no relift, only a recompile. `fistp qword` (`F2I64`) and `frndint` still use libm.
+- **`-fno-math-errno`** on the generated code: `sqrt` is one instruction without a fallback call.
+- **Optimisation level of the generated code** (`PORT_GAME_OPT`, `PORT_GAME_HOT`, `tools/hotfiles.py`; README section 2).
+  Expected: `-O2` or hot/cold beats `-O3` through the instruction cache. To be measured.
+
+How to compare two builds: same save, same route, same clock, a `PORT_PROF=OFF` build, the `profile:` lines' fps and `game cpu`
+over the same stretch (exploring and a firefight separately), at least two runs each. Suggested order: current build with
+the new clock behaviour only (`-DPORT_GAME_OPT=-O3`, which is the old level); then `-O2`; then a hot list (profile it first);
+then `-Os` everywhere as a control.
+
 ## What did not help
 - **An AI efficiency mod.** `AI_Efficiency` on the `Monsters` archetype (a gamesys DML: distant AIs think less often, also
   in combat and in view) loaded fine and made enemies visibly dumber, and combat fps did not change. AI thinking is not
@@ -94,7 +111,7 @@ Same kind of sessions (Medical/Engineering, exploration and combat), PORT_PROF b
 3. The remaining D3D front-end work on the game thread (~5%: index expansion, state snapshot, copying).
 4. Fewer objects per frame in heavy scenes (engine-side: particle and debris limits), if the look can take it.
 5. Compiler experiments: -O3, ARM instead of Thumb (low expected value).
-Done: indirect-call cache, x87 in locals, callee-saved register elision (preservation proof), render thread, read-ahead
+Done: libm-free `fist`/`fistp`, `-fno-math-errno`, the optimisation-level options (to be measured), indirect-call cache, x87 in locals, callee-saved register elision (preservation proof), render thread, read-ahead
 and sound cache, buffered writes.
 
 ## Debugging hangs and crashes (what we learned)
